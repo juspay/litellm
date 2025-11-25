@@ -1,6 +1,6 @@
 # What is this?
 ## Handler file for calling claude-3 on vertex ai
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -23,6 +23,28 @@ class VertexAIError(Exception):
         super().__init__(
             self.message
         )  # Call the base class constructor with the parameters it needs
+
+
+def get_anthropic_beta_from_headers(headers: Dict) -> List[str]:
+    """
+    Extract anthropic-beta header values and convert them to a list.
+    Supports comma-separated values from user headers.
+
+    Used by Vertex AI Anthropic transformation for consistent handling
+    of anthropic-beta headers that should be passed to Vertex AI.
+
+    Args:
+        headers (dict): Request headers dictionary
+
+    Returns:
+        List[str]: List of anthropic beta feature strings, empty list if no header
+    """
+    anthropic_beta_header = headers.get("anthropic-beta")
+    if not anthropic_beta_header:
+        return []
+
+    # Split comma-separated values and strip whitespace
+    return [beta.strip() for beta in anthropic_beta_header.split(",")]
 
 
 class VertexAIAnthropicConfig(AnthropicConfig):
