@@ -18,12 +18,12 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.release_candidate_tag || github.ref }}
       
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       
@@ -35,7 +35,7 @@ jobs:
           virtualenvs-in-project: true
       
       - name: Cache Poetry dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cache/pypoetry
@@ -81,7 +81,7 @@ jobs:
           fi
       
       - name: Upload test artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         if: always()
         with:
           name: LLM-Translation-Artifact-${{ github.event.inputs.release_candidate_tag || github.ref_name }}

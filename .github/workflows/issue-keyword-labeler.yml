@@ -13,7 +13,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Scan for provider keywords
         id: scan
@@ -24,7 +24,7 @@ jobs:
 
       - name: Ensure label exists
         if: steps.scan.outputs.found == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -51,7 +51,7 @@ jobs:
 
       - name: Add label to the issue
         if: steps.scan.outputs.found == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
