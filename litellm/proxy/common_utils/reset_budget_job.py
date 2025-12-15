@@ -556,7 +556,7 @@ class ResetBudgetJob:
         item_type: Literal["key", "team", "user"],
     ):
         """
-        In-place, updates spend=0, and sets budget_reset_at to current_time + budget_duration
+        In-place, updates spend=0, sets budget_reset_at to current_time + budget_duration, and updates updated_at
 
         Common logic for resetting budget for a team, user, or key
         """
@@ -598,6 +598,9 @@ class ResetBudgetJob:
                             counter_key,
                             redis_err,
                         )
+            # Update the updated_at timestamp to reflect the budget reset
+            if hasattr(item, "updated_at"):
+                item.updated_at = current_time
 
             if hasattr(item, "budget_duration") and item.budget_duration is not None:
                 # Get standardized reset time based on budget duration
@@ -639,6 +642,10 @@ class ResetBudgetJob:
     ) -> Optional[LiteLLM_EndUserTable]:
         try:
             enduser.spend = 0.0
+            # Update the updated_at timestamp to reflect the budget reset
+            if hasattr(enduser, "updated_at"):
+                from datetime import datetime, timezone
+                enduser.updated_at = datetime.now(timezone.utc)
         except Exception as e:
             verbose_proxy_logger.exception(
                 "Error resetting budget for enduser: %s. Item: %s", e, enduser
@@ -670,6 +677,10 @@ class ResetBudgetJob:
                     budget.budget_reset_at = current_time + timedelta(
                         seconds=duration_s
                     )
+
+                # Update the updated_at timestamp to reflect the budget reset
+                if hasattr(budget, "updated_at"):
+                    budget.updated_at = current_time
         except Exception as e:
             verbose_proxy_logger.exception(
                 "Error resetting budget_reset_at for budget: %s. Item: %s", e, budget
