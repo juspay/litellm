@@ -21,6 +21,17 @@ from ...openai.chat.gpt_transformation import OpenAIGPTConfig
 
 
 class HostedVLLMChatConfig(OpenAIGPTConfig):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Configuration option to disable tool schema cleaning
+        # Some vLLM instances have strict validation that requires
+        # 'additionalProperties' and 'strict' fields in tool schemas
+        # Can be controlled via environment variable HOSTED_VLLM_CLEAN_TOOL_SCHEMAS
+        import os
+        env_clean_tool_schemas = os.getenv("HOSTED_VLLM_CLEAN_TOOL_SCHEMAS", "true").lower()
+        self.clean_tool_schemas = kwargs.get("clean_tool_schemas",
+                                            env_clean_tool_schemas not in ["false", "0", "no"])
+
     def get_supported_openai_params(self, model: str) -> List[str]:
         params = super().get_supported_openai_params(model)
         params.append("reasoning_effort")
@@ -34,7 +45,7 @@ class HostedVLLMChatConfig(OpenAIGPTConfig):
         drop_params: bool,
     ) -> dict:
         _tools = non_default_params.pop("tools", None)
-        if _tools is not None:
+        if _tools is not None and self.clean_tool_schemas:
             # remove 'additionalProperties' from tools
             _tools = _remove_additional_properties(_tools)
             # remove 'strict' from tools
