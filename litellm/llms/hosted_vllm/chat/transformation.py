@@ -22,15 +22,15 @@ from ...openai.chat.gpt_transformation import OpenAIGPTConfig
 
 class HostedVLLMChatConfig(OpenAIGPTConfig):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
         # Configuration option to disable tool schema cleaning
         # Some vLLM instances have strict validation that requires
         # 'additionalProperties' and 'strict' fields in tool schemas
         # Can be controlled via environment variable HOSTED_VLLM_CLEAN_TOOL_SCHEMAS
         import os
         env_clean_tool_schemas = os.getenv("HOSTED_VLLM_CLEAN_TOOL_SCHEMAS", "true").lower()
-        self.clean_tool_schemas = kwargs.get("clean_tool_schemas",
+        self.clean_tool_schemas = kwargs.pop("clean_tool_schemas",
                                             env_clean_tool_schemas not in ["false", "0", "no"])
+        super().__init__(*args, **kwargs)
 
     def get_supported_openai_params(self, model: str) -> List[str]:
         params = super().get_supported_openai_params(model)
