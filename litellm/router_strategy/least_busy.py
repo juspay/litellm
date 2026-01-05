@@ -9,6 +9,7 @@
 import random
 from typing import Optional
 
+from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 
@@ -198,26 +199,33 @@ class LeastBusyLoggingHandler(CustomLogger):
         """
         Helper to get deployments using least busy strategy
         """
-        for d in healthy_deployments:
-            ## if healthy deployment not yet used
-            if d["model_info"]["id"] not in all_deployments:
-                all_deployments[d["model_info"]["id"]] = 0
-        # map deployment to id
-        # pick least busy deployment
+        # Extract healthy deployment IDs for logging
+        healthy_ids = [d["model_info"]["id"] for d in healthy_deployments]
+
+        print(f"[Least-Busy DEBUG] Cached all_deployments: {all_deployments}")
+        print(f"[Least-Busy DEBUG] Healthy deployment IDs: {healthy_ids}")
+
+        # Pick least busy deployment by iterating only through healthy deployments
+        # This ensures we don't consider stale/removed deployments from cache
         min_traffic = float("inf")
         min_deployment = None
-        for k, v in all_deployments.items():
-            if v < min_traffic:
-                min_traffic = v
-                min_deployment = k
-        if min_deployment is not None:
-            ## check if min deployment is a string, if so, cast it to int
-            for m in healthy_deployments:
-                if m["model_info"]["id"] == min_deployment:
-                    return m
+
+        for d in healthy_deployments:
+            deployment_id = d["model_info"]["id"]
+            # Get traffic count from cache, default to 0 if not yet tracked
+            traffic = all_deployments.get(deployment_id, 0)
+
+            if traffic < min_traffic:
+                min_traffic = traffic
+                min_deployment = d
+
+        # If no deployment found (empty healthy_deployments), return random choice
+        if min_deployment is None:
+            print("[Least-Busy DEBUG] WARNING: No deployment found, falling back to RANDOM choice")
             min_deployment = random.choice(healthy_deployments)
         else:
-            min_deployment = random.choice(healthy_deployments)
+            print(f"[Least-Busy DEBUG] Selected deployment ID: {min_deployment['model_info']['id']} with traffic={min_traffic}")
+
         return min_deployment
 
     def get_available_deployments(
