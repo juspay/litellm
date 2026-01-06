@@ -3,7 +3,7 @@ name: Build and Push to GCR
 on:
   push:
     branches:
-      - custom-v1.80.5-with-gcp-logger-pr
+      - release/prod
   workflow_dispatch:  # allows manual trigger for testing
 
 env:
@@ -52,6 +52,8 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ${{ steps.image.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Build Summary
         run: |
