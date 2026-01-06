@@ -48,7 +48,8 @@ class LeastBusyLoggingHandler(CustomLogger):
 
                 cache_key = self._get_request_count_cache_key(model_group, id)
                 # Atomic increment - no race condition possible
-                self.router_cache.increment_cache(key=cache_key, value=1)
+                # Use 10-minute TTL to handle long-running LLM requests
+                self.router_cache.increment_cache(key=cache_key, value=1, ttl=600)
         except Exception:
             pass
 
@@ -58,11 +59,12 @@ class LeastBusyLoggingHandler(CustomLogger):
         """
         cache_key = self._get_request_count_cache_key(model_group, deployment_id)
         # Use atomic increment with -1 to decrement
-        new_value = self.router_cache.increment_cache(key=cache_key, value=-1)
+        # Maintain 10-minute TTL to handle long-running requests
+        new_value = self.router_cache.increment_cache(key=cache_key, value=-1, ttl=600)
         # If we went negative due to a race condition (e.g., decrement before increment was visible),
         # reset to 0 to avoid negative counts affecting routing
         if new_value < 0:
-            self.router_cache.set_cache(key=cache_key, value=0)
+            self.router_cache.set_cache(key=cache_key, value=0, ttl=600)
 
     async def _async_decrement_request_count(self, model_group: str, deployment_id: str):
         """
@@ -70,10 +72,11 @@ class LeastBusyLoggingHandler(CustomLogger):
         """
         cache_key = self._get_request_count_cache_key(model_group, deployment_id)
         # Use atomic increment with -1 to decrement
-        new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1)
+        # Maintain 10-minute TTL to handle long-running requests
+        new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1, ttl=600)
         # If we went negative due to a race condition, reset to 0
         if new_value < 0:
-            await self.router_cache.async_set_cache(key=cache_key, value=0)
+            await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=600)
 
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:
