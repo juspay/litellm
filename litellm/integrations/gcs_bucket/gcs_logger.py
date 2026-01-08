@@ -3,6 +3,7 @@ Production Logger with GCS Support for LiteLLM Proxy Server
 Logs to separate GCS buckets for success/error events with custom folder structures
 """
 
+from curses import meta
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.gcs_bucket.gcs_bucket_base import GCSBucketBase
 from litellm._logging import verbose_logger
@@ -154,6 +155,7 @@ class ProductionGCSLogger(CustomLogger):
                     ),
                     "llm_api_duration_ms": metadata.get("llm_api_duration_ms"),
                 },
+                "headers": metadata.get("headers"),
             }
 
             if hasattr(response_obj, "choices") and response_obj.choices:
@@ -163,12 +165,16 @@ class ProductionGCSLogger(CustomLogger):
                     "content": None,
                     "tool_calls": None,
                     "function_call": None,
+                    "reasoning_content": None,
                 }
 
                 if hasattr(choice, "message"):
                     message = choice.message
                     success_log["response"]["content"] = getattr(
                         message, "content", None
+                    )
+                    success_log["response"]["reasoning_content"] = getattr(
+                        message, "reasoning_content", None
                     )
                     success_log["response"]["tool_calls"] = getattr(
                         message, "tool_calls", None
