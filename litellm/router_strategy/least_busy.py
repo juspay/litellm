@@ -11,6 +11,11 @@ from typing import List, Optional
 
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.types.utils import LiteLLMPydanticObjectBase
+
+
+class RoutingArgs(LiteLLMPydanticObjectBase):
+    ttl: int = 600  # default 10 mins - can be reduced via routing_strategy_args
 
 
 class LeastBusyLoggingHandler(CustomLogger):
@@ -18,8 +23,9 @@ class LeastBusyLoggingHandler(CustomLogger):
     logged_success: int = 0
     logged_failure: int = 0
 
-    def __init__(self, router_cache: DualCache):
+    def __init__(self, router_cache: DualCache, routing_args: dict = {}):
         self.router_cache = router_cache
+        self.routing_args = RoutingArgs(**routing_args)
 
     def _get_request_count_cache_key(self, model_group: str, deployment_id: str) -> str:
         """
@@ -48,8 +54,33 @@ class LeastBusyLoggingHandler(CustomLogger):
 
                 cache_key = self._get_request_count_cache_key(model_group, id)
                 # Atomic increment - no race condition possible
-                # Use 10-minute TTL to handle long-running LLM requests
-                self.router_cache.increment_cache(key=cache_key, value=1, ttl=600)
+                # Use TTL from routing_args to handle long-running LLM requests
+                self.router_cache.increment_cache(key=cache_key, value=1, ttl=self.routing_args.ttl)
+        except Exception:
+            pass
+
+    async def async_log_pre_api_call(self, model, messages, kwargs):
+        """
+        Async log when a model is being used.
+        Uses atomic increment to avoid race conditions.
+        """
+        try:
+            if kwargs["litellm_params"].get("metadata") is None:
+                pass
+            else:
+                model_group = kwargs["litellm_params"]["metadata"].get(
+                    "model_group", None
+                )
+                id = kwargs["litellm_params"].get("model_info", {}).get("id", None)
+                if model_group is None or id is None:
+                    return
+                elif isinstance(id, int):
+                    id = str(id)
+
+                cache_key = self._get_request_count_cache_key(model_group, id)
+                # Atomic increment - no race condition possible
+                # Use TTL from routing_args to handle long-running LLM requests
+                await self.router_cache.async_increment_cache(key=cache_key, value=1, ttl=self.routing_args.ttl)
         except Exception:
             pass
 
@@ -59,12 +90,12 @@ class LeastBusyLoggingHandler(CustomLogger):
         """
         cache_key = self._get_request_count_cache_key(model_group, deployment_id)
         # Use atomic increment with -1 to decrement
-        # Maintain 10-minute TTL to handle long-running requests
-        new_value = self.router_cache.increment_cache(key=cache_key, value=-1, ttl=600)
+        # Maintain TTL from routing_args to handle long-running requests
+        new_value = self.router_cache.increment_cache(key=cache_key, value=-1, ttl=self.routing_args.ttl)
         # If we went negative due to a race condition (e.g., decrement before increment was visible),
         # reset to 0 to avoid negative counts affecting routing
         if new_value < 0:
-            self.router_cache.set_cache(key=cache_key, value=0, ttl=600)
+            self.router_cache.set_cache(key=cache_key, value=0, ttl=self.routing_args.ttl)
 
     async def _async_decrement_request_count(self, model_group: str, deployment_id: str):
         """
@@ -72,11 +103,11 @@ class LeastBusyLoggingHandler(CustomLogger):
         """
         cache_key = self._get_request_count_cache_key(model_group, deployment_id)
         # Use atomic increment with -1 to decrement
-        # Maintain 10-minute TTL to handle long-running requests
-        new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1, ttl=600)
+        # Maintain TTL from routing_args to handle long-running requests
+        new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1, ttl=self.routing_args.ttl)
         # If we went negative due to a race condition, reset to 0
         if new_value < 0:
-            await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=600)
+            await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=self.routing_args.ttl)
 
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:

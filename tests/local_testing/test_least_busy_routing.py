@@ -439,3 +439,81 @@ async def test_async_get_least_busy_deployment():
     )
 
     assert selected["model_info"]["id"] == "dep-3", f"Expected dep-3, got {selected['model_info']['id']}"
+
+
+def test_configurable_ttl():
+    """
+    Test that the TTL for request count can be configured via routing_args.
+    """
+    test_cache = DualCache()
+    # Create logger with custom TTL (30 seconds instead of default 600)
+    routing_args = {"ttl": 30}
+    least_busy_logger = LeastBusyLoggingHandler(
+        router_cache=test_cache,
+        routing_args=routing_args,
+    )
+
+    # Verify the TTL is set correctly
+    assert least_busy_logger.routing_args.ttl == 30
+
+    model_group = "test-model"
+    deployment_id = "test-deployment"
+    kwargs = {
+        "litellm_params": {
+            "metadata": {
+                "model_group": model_group,
+            },
+            "model_info": {"id": deployment_id},
+        }
+    }
+
+    cache_key = f"deployment:{model_group}:{deployment_id}:request_count"
+
+    # Increment request count
+    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
+
+    # Verify the cache was set with the correct TTL (we can't directly check TTL,
+    # but we can verify it was set by checking the value)
+    assert test_cache.get_cache(key=cache_key) == 1
+
+    # Test with a very short TTL (1 second)
+    routing_args_short = {"ttl": 1}
+    least_busy_logger_short = LeastBusyLoggingHandler(
+        router_cache=test_cache,
+        routing_args=routing_args_short,
+    )
+    assert least_busy_logger_short.routing_args.ttl == 1
+
+
+@pytest.mark.asyncio
+async def test_async_configurable_ttl():
+    """
+    Test that the TTL for request count can be configured via routing_args (async).
+    """
+    test_cache = DualCache()
+    # Create logger with custom TTL (60 seconds)
+    routing_args = {"ttl": 60}
+    least_busy_logger = LeastBusyLoggingHandler(
+        router_cache=test_cache,
+        routing_args=routing_args,
+    )
+
+    # Verify the TTL is set correctly
+    assert least_busy_logger.routing_args.ttl == 60
+
+    model_group = "async-test-model"
+    deployment_id = "async-deployment"
+    kwargs = {
+        "litellm_params": {
+            "metadata": {
+                "model_group": model_group,
+            },
+            "model_info": {"id": deployment_id},
+        }
+    }
+
+    # Test async pre_api_call with custom TTL
+    await least_busy_logger.async_log_pre_api_call(model="test", messages=[], kwargs=kwargs)
+
+    cache_key = f"deployment:{model_group}:{deployment_id}:request_count"
+    assert test_cache.get_cache(key=cache_key) == 1

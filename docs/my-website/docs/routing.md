@@ -575,39 +575,48 @@ Picks a deployment with the least number of ongoing calls, it's handling.
 
 [**How to test**](https://github.com/BerriAI/litellm/blob/main/tests/local_testing/test_least_busy_routing.py)
 
+**Parameters**
+
+- `ttl` (int): Time in seconds before a request count expires. Default is `600` (10 minutes). Set this lower for faster rebalancing when requests complete quickly.
+
 ```python
-from litellm import Router 
+from litellm import Router
 import asyncio
 
-model_list = [{ # list of model deployments 
-	"model_name": "gpt-3.5-turbo", # model alias 
-	"litellm_params": { # params for litellm completion/embedding call 
+model_list = [{ # list of model deployments
+	"model_name": "gpt-3.5-turbo", # model alias
+	"litellm_params": { # params for litellm completion/embedding call
 		"model": "azure/chatgpt-v-2", # actual model name
 		"api_key": os.getenv("AZURE_API_KEY"),
 		"api_version": os.getenv("AZURE_API_VERSION"),
 		"api_base": os.getenv("AZURE_API_BASE"),
 	}
 }, {
-    "model_name": "gpt-3.5-turbo", 
-	"litellm_params": { # params for litellm completion/embedding call 
-		"model": "azure/chatgpt-functioncalling", 
+    "model_name": "gpt-3.5-turbo",
+	"litellm_params": { # params for litellm completion/embedding call
+		"model": "azure/chatgpt-functioncalling",
 		"api_key": os.getenv("AZURE_API_KEY"),
 		"api_version": os.getenv("AZURE_API_VERSION"),
 		"api_base": os.getenv("AZURE_API_BASE"),
 	}
 }, {
-    "model_name": "gpt-3.5-turbo", 
-	"litellm_params": { # params for litellm completion/embedding call 
-		"model": "gpt-3.5-turbo", 
+    "model_name": "gpt-3.5-turbo",
+	"litellm_params": { # params for litellm completion/embedding call
+		"model": "gpt-3.5-turbo",
 		"api_key": os.getenv("OPENAI_API_KEY"),
 	}
 }]
 
-# init router
-router = Router(model_list=model_list, routing_strategy="least-busy")
+# init router with least-busy routing and custom TTL
+router = Router(
+    model_list=model_list,
+    routing_strategy="least-busy",
+    routing_strategy_args={"ttl": 60},  # 60 seconds
+)
+
 async def router_acompletion():
 	response = await router.acompletion(
-		model="gpt-3.5-turbo", 
+		model="gpt-3.5-turbo",
 		messages=[{"role": "user", "content": "Hey, how's it going?"}]
 	)
 	print(response)

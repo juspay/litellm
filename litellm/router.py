@@ -709,7 +709,10 @@ class Router:
             routing_strategy == RoutingStrategy.LEAST_BUSY.value
             or routing_strategy == RoutingStrategy.LEAST_BUSY
         ):
-            self.leastbusy_logger = LeastBusyLoggingHandler(router_cache=self.cache)
+            self.leastbusy_logger = LeastBusyLoggingHandler(
+                router_cache=self.cache,
+                routing_args=routing_strategy_args,
+            )
             ## add callback
             if isinstance(litellm.input_callback, list):
                 litellm.input_callback.append(self.leastbusy_logger)  # type: ignore
