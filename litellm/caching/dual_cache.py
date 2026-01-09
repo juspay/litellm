@@ -177,6 +177,7 @@ class DualCache(BaseCache):
         keys: list,
         parent_otel_span: Optional[Span] = None,
         local_only: bool = False,
+        redis_only: bool = False,
         **kwargs,
     ):
         received_args = locals()
@@ -304,11 +305,22 @@ class DualCache(BaseCache):
         keys: list,
         parent_otel_span: Optional[Span] = None,
         local_only: bool = False,
+        redis_only: bool = False,
         **kwargs,
     ):
+        """
+        Async batch fetch values from cache.
+
+        Args:
+            redis_only: If True and Redis is configured, skip in-memory cache and read directly from Redis.
+                        If Redis is unavailable, returns list of None values (does NOT fall back to in-memory).
+                        If True but Redis is not configured, falls back to in-memory cache.
+        """
         try:
             result = [None] * len(keys)
-            if self.in_memory_cache is not None:
+            skip_in_memory = redis_only and self.redis_cache is not None
+
+            if self.in_memory_cache is not None and not skip_in_memory:
                 in_memory_result = await self.in_memory_cache.async_batch_get_cache(
                     keys, **kwargs
                 )
@@ -322,23 +334,23 @@ class DualCache(BaseCache):
                 - check the redis cache
                 """
                 current_time = time.time()
-                sublist_keys, previous_access_times = self._reserve_redis_batch_keys(
-                    current_time, keys, result
-                )
+                # When redis_only=True, query all keys from Redis (don't filter by in-memory result)
+                if redis_only:
+                    sublist_keys = keys
+                else:
+                    sublist_keys = self.get_redis_batch_keys(current_time, keys, result)
 
                 # Only hit Redis if enough time has passed since last access.
                 if len(sublist_keys) > 0:
-                    try:
-                        # If not found in in-memory cache, try fetching from Redis
-                        redis_result = await self.redis_cache.async_batch_get_cache(
-                            sublist_keys, parent_otel_span=parent_otel_span
-                        )
-                    except Exception:
-                        # Do not throttle subsequent callers if the Redis read fails.
-                        self._rollback_redis_batch_key_reservations(
-                            previous_access_times
-                        )
-                        raise
+                    # If not found in in-memory cache, try fetching from Redis
+                    redis_result = await self.redis_cache.async_batch_get_cache(
+                        sublist_keys, parent_otel_span=parent_otel_span
+                    )
+
+                    # Update the last access time for ALL queried keys
+                    # This includes keys with None values to throttle repeated Redis queries
+                    for key in sublist_keys:
+                        self.last_redis_batch_access_time[key] = current_time
 
                     # Short-circuit if redis_result is None or contains only None values
                     if redis_result is None or all(
@@ -353,7 +365,8 @@ class DualCache(BaseCache):
                     for key, value in redis_result.items():
                         result[key_to_index[key]] = value
 
-                        if value is not None and self.in_memory_cache is not None:
+                        # Don't update in-memory cache when redis_only=True
+                        if value is not None and self.in_memory_cache is not None and not redis_only:
                             await self.in_memory_cache.async_set_cache(
                                 key, value, **kwargs
                             )
