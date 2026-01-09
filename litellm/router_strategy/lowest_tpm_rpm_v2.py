@@ -438,8 +438,15 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         print_verbose("returning picked lowest tpm/rpm deployment.")
 
         if len(potential_deployments) > 0:
-            return random.choice(potential_deployments)
+            selected = random.choice(potential_deployments)
+            verbose_router_logger.debug(
+                f"[TPM-RPM-V2 DEBUG] Selected deployment ID: {selected['model_info']['id']} with tpm={lowest_tpm} (from {len(potential_deployments)} candidates)"
+            )
+            return selected
         else:
+            verbose_router_logger.debug(
+                "[TPM-RPM-V2 DEBUG] No suitable deployment found based on TPM/RPM limits"
+            )
             return None
 
     async def async_get_available_deployments(
@@ -456,7 +463,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         """
         # get list of potential deployments
         verbose_router_logger.debug(
-            f"get_available_deployments - Usage Based. model_group: {model_group}, healthy_deployments: {healthy_deployments}"
+            f"[TPM-RPM-V2 DEBUG] get_available_deployments - Usage Based. model_group: {model_group}, healthy_deployments: {healthy_deployments}"
         )
 
         dt = get_utc_datetime()
@@ -479,8 +486,15 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         combined_tpm_rpm_keys = tpm_keys + rpm_keys
 
         combined_tpm_rpm_values = await self.router_cache.async_batch_get_cache(
-            keys=combined_tpm_rpm_keys
+            keys=combined_tpm_rpm_keys, redis_only=True
         )  # [1, 2, None, ..]
+
+        # Check Redis availability - if all values are None, Redis might be down
+        none_count = sum(1 for v in combined_tpm_rpm_values if v is None) if combined_tpm_rpm_values else len(combined_tpm_rpm_keys)
+        if none_count == len(combined_tpm_rpm_keys) and none_count > 0:
+            verbose_router_logger.warning(
+                "[TPM-RPM-V2 WARNING] Redis returned None for all deployments - Redis may be unavailable. Proceeding with routing."
+            )
 
         if combined_tpm_rpm_values is not None:
             tpm_values = combined_tpm_rpm_values[: len(tpm_keys)]
@@ -576,7 +590,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         """
         # get list of potential deployments
         verbose_router_logger.debug(
-            f"get_available_deployments - Usage Based. model_group: {model_group}, healthy_deployments: {healthy_deployments}"
+            f"[TPM-RPM-V2 DEBUG] get_available_deployments - Usage Based. model_group: {model_group}, healthy_deployments: {healthy_deployments}"
         )
 
         dt = get_utc_datetime()
@@ -596,11 +610,19 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                 rpm_keys.append(rpm_key)
 
         tpm_values = self.router_cache.batch_get_cache(
-            keys=tpm_keys, parent_otel_span=parent_otel_span
+            keys=tpm_keys, parent_otel_span=parent_otel_span, redis_only=True
         )  # [1, 2, None, ..]
         rpm_values = self.router_cache.batch_get_cache(
-            keys=rpm_keys, parent_otel_span=parent_otel_span
+            keys=rpm_keys, parent_otel_span=parent_otel_span, redis_only=True
         )  # [1, 2, None, ..]
+
+        # Check Redis availability - if all values are None, Redis might be down
+        none_tpm_count = sum(1 for v in tpm_values if v is None) if tpm_values else len(tpm_keys)
+        none_rpm_count = sum(1 for v in rpm_values if v is None) if rpm_values else len(rpm_keys)
+        if none_tpm_count == len(tpm_keys) and none_rpm_count == len(rpm_keys) and len(tpm_keys) > 0:
+            verbose_router_logger.warning(
+                "[TPM-RPM-V2 WARNING] Redis returned None for all deployments - Redis may be unavailable. Proceeding with routing."
+            )
 
         deployment = self._common_checks_available_deployment(
             model_group=model_group,
