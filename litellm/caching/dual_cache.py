@@ -175,6 +175,7 @@ class DualCache(BaseCache):
         keys: list,
         parent_otel_span: Optional[Span] = None,
         local_only: bool = False,
+        redis_only: bool = False,
         **kwargs,
     ):
         received_args = locals()
@@ -278,11 +279,22 @@ class DualCache(BaseCache):
         keys: list,
         parent_otel_span: Optional[Span] = None,
         local_only: bool = False,
+        redis_only: bool = False,
         **kwargs,
     ):
+        """
+        Async batch fetch values from cache.
+
+        Args:
+            redis_only: If True and Redis is configured, skip in-memory cache and read directly from Redis.
+                        If Redis is unavailable, returns None for all keys (does NOT fall back to in-memory).
+                        If True but Redis is not configured, falls back to in-memory cache.
+        """
         try:
             result = [None] * len(keys)
-            if self.in_memory_cache is not None:
+            skip_in_memory = redis_only and self.redis_cache is not None
+
+            if self.in_memory_cache is not None and not skip_in_memory:
                 in_memory_result = await self.in_memory_cache.async_batch_get_cache(
                     keys, **kwargs
                 )
@@ -290,41 +302,57 @@ class DualCache(BaseCache):
                 if in_memory_result is not None:
                     result = in_memory_result
 
-            if None in result and self.redis_cache is not None and local_only is False:
+            if (skip_in_memory or None in result) and self.redis_cache is not None and local_only is False:
                 """
                 - for the none values in the result
                 - check the redis cache
                 """
-                current_time = time.time()
-                sublist_keys = self.get_redis_batch_keys(current_time, keys, result)
-
-                # Only hit Redis if the last access time was more than 5 seconds ago
-                if len(sublist_keys) > 0:
-                    # If not found in in-memory cache, try fetching from Redis
+                if skip_in_memory:
+                    # When redis_only=True, fetch all keys from Redis directly
+                    # Bypass in-memory cache and throttling logic
                     redis_result = await self.redis_cache.async_batch_get_cache(
-                        sublist_keys, parent_otel_span=parent_otel_span
+                        keys, parent_otel_span=parent_otel_span
                     )
-                    
-                    # Update the last access time for ALL queried keys
-                    # This includes keys with None values to throttle repeated Redis queries
-                    for key in sublist_keys:
-                        self.last_redis_batch_access_time[key] = current_time
-                    
-                    # Short-circuit if redis_result is None or contains only None values
-                    if redis_result is None or all(v is None for v in redis_result.values()):
-                        return result
 
-                    # Pre-compute key-to-index mapping for O(1) lookup
-                    key_to_index = {key: i for i, key in enumerate(keys)}
-                    
-                    # Update both result and in-memory cache in a single loop
-                    for key, value in redis_result.items():
-                        result[key_to_index[key]] = value
-                        
-                        if value is not None and self.in_memory_cache is not None:
-                            await self.in_memory_cache.async_set_cache(
-                                key, value, **kwargs
-                            )
+                    if redis_result is not None:
+                        # Pre-compute key-to-index mapping for O(1) lookup
+                        key_to_index = {key: i for i, key in enumerate(keys)}
+
+                        # Update result with Redis values
+                        for key, value in redis_result.items():
+                            result[key_to_index[key]] = value
+                else:
+                    # Normal flow: fetch only keys that are None or need refresh
+                    current_time = time.time()
+                    sublist_keys = self.get_redis_batch_keys(current_time, keys, result)
+
+                    # Only hit Redis if the last access time was more than expiry ago
+                    if len(sublist_keys) > 0:
+                        # If not found in in-memory cache, try fetching from Redis
+                        redis_result = await self.redis_cache.async_batch_get_cache(
+                            sublist_keys, parent_otel_span=parent_otel_span
+                        )
+
+                        # Update the last access time for ALL queried keys
+                        # This includes keys with None values to throttle repeated Redis queries
+                        for key in sublist_keys:
+                            self.last_redis_batch_access_time[key] = current_time
+
+                        # Short-circuit if redis_result is None or contains only None values
+                        if redis_result is None or all(v is None for v in redis_result.values()):
+                            return result
+
+                        # Pre-compute key-to-index mapping for O(1) lookup
+                        key_to_index = {key: i for i, key in enumerate(keys)}
+
+                        # Update both result and in-memory cache in a single loop
+                        for key, value in redis_result.items():
+                            result[key_to_index[key]] = value
+
+                            if value is not None and self.in_memory_cache is not None:
+                                await self.in_memory_cache.async_set_cache(
+                                    key, value, **kwargs
+                                )
 
             return result
         except Exception:

@@ -478,16 +478,24 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
 
         combined_tpm_rpm_keys = tpm_keys + rpm_keys
 
+        # Use redis_only=True to get global count across all pods
+        # This is critical for distributed deployments where multiple pods need to see
+        # the global TPM/RPM values, not their local stale view
         combined_tpm_rpm_values = await self.router_cache.async_batch_get_cache(
-            keys=combined_tpm_rpm_keys
+            keys=combined_tpm_rpm_keys, redis_only=True
         )  # [1, 2, None, ..]
 
         if combined_tpm_rpm_values is not None:
             tpm_values = combined_tpm_rpm_values[: len(tpm_keys)]
             rpm_values = combined_tpm_rpm_values[len(tpm_keys) :]
+
+            # Warn if Redis returned None for all deployments (may indicate Redis is unavailable)
+            if all(v is None for v in combined_tpm_rpm_values) and len(combined_tpm_rpm_keys) > 0:
+                print_verbose("[Usage-Based-Routing-V2 WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to treating all deployments as unused.")
         else:
             tpm_values = None
             rpm_values = None
+            print_verbose("[Usage-Based-Routing-V2 WARNING] Redis returned None - Redis may be unavailable. Falling back to treating all deployments as unused.")
 
         deployment = self._common_checks_available_deployment(
             model_group=model_group,
@@ -595,12 +603,22 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                 tpm_keys.append(tpm_key)
                 rpm_keys.append(rpm_key)
 
+        # Use redis_only=True to get global count across all pods
+        # This is critical for distributed deployments where multiple pods need to see
+        # the global TPM/RPM values, not their local stale view
         tpm_values = self.router_cache.batch_get_cache(
-            keys=tpm_keys, parent_otel_span=parent_otel_span
+            keys=tpm_keys, parent_otel_span=parent_otel_span, redis_only=True
         )  # [1, 2, None, ..]
         rpm_values = self.router_cache.batch_get_cache(
-            keys=rpm_keys, parent_otel_span=parent_otel_span
+            keys=rpm_keys, parent_otel_span=parent_otel_span, redis_only=True
         )  # [1, 2, None, ..]
+
+        # Warn if Redis returned None for all deployments (may indicate Redis is unavailable)
+        if tpm_values is not None and rpm_values is not None:
+            if all(v is None for v in tpm_values + rpm_values) and len(tpm_keys + rpm_keys) > 0:
+                print_verbose("[Usage-Based-Routing-V2 WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to treating all deployments as unused.")
+        else:
+            print_verbose("[Usage-Based-Routing-V2 WARNING] Redis returned None - Redis may be unavailable. Falling back to treating all deployments as unused.")
 
         deployment = self._common_checks_available_deployment(
             model_group=model_group,
