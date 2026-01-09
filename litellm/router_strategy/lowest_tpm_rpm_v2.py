@@ -59,6 +59,10 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             default_sync_interval=0.1,
         )
 
+    def _ensure_non_negative(self, value: Optional[float]) -> float:
+        """Ensure value is non-negative (protects against race conditions)."""
+        return max(0, float(value)) if value is not None else 0
+
     def pre_call_check(self, deployment: Dict) -> Optional[Dict]:
         """
         Pre-call check + update model rpm
@@ -401,11 +405,11 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
 
         tpm_dict = {}  # {model_id: 1, ..}
         for idx, key in enumerate(tpm_keys):
-            tpm_dict[tpm_keys[idx].split(":")[0]] = tpm_values[idx]
+            tpm_dict[tpm_keys[idx].split(":")[0]] = self._ensure_non_negative(tpm_values[idx])
 
         rpm_dict = {}  # {model_id: 1, ..}
         for idx, key in enumerate(rpm_keys):
-            rpm_dict[rpm_keys[idx].split(":")[0]] = rpm_values[idx]
+            rpm_dict[rpm_keys[idx].split(":")[0]] = self._ensure_non_negative(rpm_values[idx])
 
         try:
             input_tokens = token_counter(messages=messages, text=input)
@@ -479,7 +483,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         combined_tpm_rpm_keys = tpm_keys + rpm_keys
 
         combined_tpm_rpm_values = await self.router_cache.async_batch_get_cache(
-            keys=combined_tpm_rpm_keys
+            keys=combined_tpm_rpm_keys, redis_only=True
         )  # [1, 2, None, ..]
 
         if combined_tpm_rpm_values is not None:
@@ -488,6 +492,14 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         else:
             tpm_values = None
             rpm_values = None
+
+        # Check if all values are None (Redis unavailable)
+        if combined_tpm_rpm_values is not None and all(
+            v is None for v in combined_tpm_rpm_values
+        ):
+            print(
+                "[Usage-Based-Routing-V2 WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to random routing."
+            )
 
         deployment = self._common_checks_available_deployment(
             model_group=model_group,
@@ -525,7 +537,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                         _deployment_tpm = float("inf")
 
                     ### GET CURRENT TPM ###
-                    current_tpm = tpm_values[index] if tpm_values else 0
+                    current_tpm = self._ensure_non_negative(tpm_values[index]) if tpm_values else 0
 
                     ### GET DEPLOYMENT TPM LIMIT ###
                     _deployment_rpm = None
@@ -543,7 +555,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                         _deployment_rpm = float("inf")
 
                     ### GET CURRENT RPM ###
-                    current_rpm = rpm_values[index] if rpm_values else 0
+                    current_rpm = self._ensure_non_negative(rpm_values[index]) if rpm_values else 0
 
                     deployment_dict[id] = {
                         "current_tpm": current_tpm,
@@ -596,11 +608,19 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                 rpm_keys.append(rpm_key)
 
         tpm_values = self.router_cache.batch_get_cache(
-            keys=tpm_keys, parent_otel_span=parent_otel_span
+            keys=tpm_keys, redis_only=True, parent_otel_span=parent_otel_span
         )  # [1, 2, None, ..]
         rpm_values = self.router_cache.batch_get_cache(
-            keys=rpm_keys, parent_otel_span=parent_otel_span
+            keys=rpm_keys, redis_only=True, parent_otel_span=parent_otel_span
         )  # [1, 2, None, ..]
+
+        # Check if all values are None (Redis unavailable)
+        if (tpm_values is not None and all(v is None for v in tpm_values)) and (
+            rpm_values is not None and all(v is None for v in rpm_values)
+        ):
+            print(
+                "[Usage-Based-Routing-V2 WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to random routing."
+            )
 
         deployment = self._common_checks_available_deployment(
             model_group=model_group,
@@ -638,7 +658,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                         _deployment_tpm = float("inf")
 
                     ### GET CURRENT TPM ###
-                    current_tpm = tpm_values[index] if tpm_values else 0
+                    current_tpm = self._ensure_non_negative(tpm_values[index]) if tpm_values else 0
 
                     ### GET DEPLOYMENT TPM LIMIT ###
                     _deployment_rpm = None
@@ -656,7 +676,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                         _deployment_rpm = float("inf")
 
                     ### GET CURRENT RPM ###
-                    current_rpm = rpm_values[index] if rpm_values else 0
+                    current_rpm = self._ensure_non_negative(rpm_values[index]) if rpm_values else 0
 
                     deployment_dict[id] = {
                         "current_tpm": current_tpm,
