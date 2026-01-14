@@ -7474,7 +7474,13 @@ export const userAgentAnalyticsCall = async (
 };
 
 // New endpoint functions for DAU, WAU, MAU
-export const tagDauCall = async (accessToken: string, endDate: Date, tagFilter?: string, tagFilters?: string[]) => {
+export const tagDauCall = async (
+  accessToken: string,
+  endDate: Date,
+  tagFilter?: string,
+  tagFilters?: string[],
+  custom_llm_provider?: string,
+) => {
   /**
    * Get Daily Active Users (DAU) for last 7 days ending on endDate
    */
@@ -7492,6 +7498,11 @@ export const tagDauCall = async (accessToken: string, endDate: Date, tagFilter?:
     };
 
     queryParams.append("end_date", formatDate(endDate));
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
     if (tagFilters && tagFilters.length > 0) {
@@ -7530,7 +7541,13 @@ export const tagDauCall = async (accessToken: string, endDate: Date, tagFilter?:
   }
 };
 
-export const tagWauCall = async (accessToken: string, endDate: Date, tagFilter?: string, tagFilters?: string[]) => {
+export const tagWauCall = async (
+  accessToken: string,
+  endDate: Date,
+  tagFilter?: string,
+  tagFilters?: string[],
+  custom_llm_provider?: string,
+) => {
   /**
    * Get Weekly Active Users (WAU) for last 7 weeks ending on endDate
    */
@@ -7548,6 +7565,11 @@ export const tagWauCall = async (accessToken: string, endDate: Date, tagFilter?:
     };
 
     queryParams.append("end_date", formatDate(endDate));
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
     if (tagFilters && tagFilters.length > 0) {
@@ -7586,7 +7608,13 @@ export const tagWauCall = async (accessToken: string, endDate: Date, tagFilter?:
   }
 };
 
-export const tagMauCall = async (accessToken: string, endDate: Date, tagFilter?: string, tagFilters?: string[]) => {
+export const tagMauCall = async (
+  accessToken: string,
+  endDate: Date,
+  tagFilter?: string,
+  tagFilters?: string[],
+  custom_llm_provider?: string,
+) => {
   /**
    * Get Monthly Active Users (MAU) for last 7 months ending on endDate
    */
@@ -7604,6 +7632,11 @@ export const tagMauCall = async (accessToken: string, endDate: Date, tagFilter?:
     };
 
     queryParams.append("end_date", formatDate(endDate));
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
     if (tagFilters && tagFilters.length > 0) {
@@ -7677,6 +7710,7 @@ export const userAgentSummaryCall = async (
   startTime: Date,
   endTime: Date,
   tagFilters?: string[],
+  custom_llm_provider?: string,
 ) => {
   /**
    * Get user agent summary statistics
@@ -7696,6 +7730,11 @@ export const userAgentSummaryCall = async (
 
     queryParams.append("start_date", formatDate(startTime));
     queryParams.append("end_date", formatDate(endTime));
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
 
     // Handle multiple tag filters
     if (tagFilters && tagFilters.length > 0) {

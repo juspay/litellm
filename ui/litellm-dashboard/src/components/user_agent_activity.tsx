@@ -13,7 +13,7 @@ import {
   TabPanel,
   TabPanels,
 } from "@tremor/react";
-import { Select, Tooltip } from "antd";
+import { Select, Tooltip, Switch } from "antd";
 import { userAgentSummaryCall, tagDauCall, tagWauCall, tagMauCall, tagDistinctCall } from "./networking";
 import PerUserUsage from "./per_user_usage";
 import { DateRangePickerValue } from "@tremor/react";
@@ -84,6 +84,11 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
   const [mauLoading, setMauLoading] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
 
+  // Toggle state for filtering by hosted_vllm provider
+  const [showHostedVllmOnly, setShowHostedVllmOnly] = useState(false);
+  console.log('UserAgentActivity: Component mounted', { showHostedVllmOnly, CUSTOM_LLM_PROVIDER: 'hosted_vllm' });
+  const CUSTOM_LLM_PROVIDER = "hosted_vllm"; // Provider name to filter by
+
   // Use today's date as the end date for all API calls
   const today = new Date();
 
@@ -111,6 +116,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         today,
         userAgentFilter || undefined,
         selectedTags.length > 0 ? selectedTags : undefined,
+        showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
       );
       setDauData(data);
     } catch (error) {
@@ -130,6 +136,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         today,
         userAgentFilter || undefined,
         selectedTags.length > 0 ? selectedTags : undefined,
+        showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
       );
       setWauData(data);
     } catch (error) {
@@ -149,6 +156,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         today,
         userAgentFilter || undefined,
         selectedTags.length > 0 ? selectedTags : undefined,
+        showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
       );
       setMauData(data);
     } catch (error) {
@@ -168,6 +176,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         dateValue.from,
         dateValue.to,
         selectedTags.length > 0 ? selectedTags : undefined,
+        showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
       );
       setSummaryData(summary);
     } catch (error) {
@@ -193,7 +202,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }, 50);
 
     return () => clearTimeout(timeoutId);
-  }, [accessToken, userAgentFilter, selectedTags]);
+  }, [accessToken, userAgentFilter, selectedTags, showHostedVllmOnly]);
 
   // Effect for summary data (depends on date picker)
   useEffect(() => {
@@ -204,7 +213,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }, 50);
 
     return () => clearTimeout(timeoutId);
-  }, [accessToken, dateValue, selectedTags]);
+  }, [accessToken, dateValue, selectedTags, showHostedVllmOnly]);
 
   // Helper function to extract user agent from tag
   const extractUserAgent = (tag: string): string => {
@@ -368,6 +377,14 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }
   };
 
+  // Debug: Log component state
+  console.log('UserAgentActivity: Component state', {
+    showHostedVllmOnly,
+    CUSTOM_LLM_PROVIDER,
+    mountTime: new Date().toISOString()
+  });
+
+  console.log('UserAgentActivity: Component rendered');
   return (
     <div className="space-y-6 mt-6">
       {/* Summary Section Card */}
@@ -379,32 +396,46 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
               <Subtitle>Performance metrics for different user agents</Subtitle>
             </div>
 
-            {/* User Agent Filter */}
-            <div className="w-96">
-              <Text className="text-sm font-medium block mb-2">Filter by User Agents</Text>
-              <Select
-                mode="multiple"
-                placeholder="All User Agents"
-                value={selectedTags}
-                onChange={setSelectedTags}
-                style={{ width: "100%" }}
-                showSearch={true}
-                allowClear={true}
-                loading={tagsLoading}
-                optionFilterProp="label"
-                className="rounded-md"
-                maxTagCount="responsive"
-              >
-                {availableTags.map((tag) => {
-                  const userAgent = extractUserAgent(tag);
-                  const displayName = userAgent.length > 50 ? `${userAgent.substring(0, 50)}...` : userAgent;
-                  return (
-                    <Select.Option key={tag} value={tag} label={displayName} title={userAgent}>
-                      {displayName}
-                    </Select.Option>
-                  );
-                })}
-              </Select>
+            <div className="flex items-center gap-6">
+              {/* Toggle for hosted_vllm only */}
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={showHostedVllmOnly}
+                  onChange={setShowHostedVllmOnly}
+                  size="small"
+                />
+                <Text className="text-sm whitespace-nowrap">
+                  Self-hosted models only
+                </Text>
+              </div>
+
+              {/* User Agent Filter */}
+              <div className="w-80">
+                <Text className="text-sm font-medium block mb-2">Filter by User Agents</Text>
+                <Select
+                  mode="multiple"
+                  placeholder="All User Agents"
+                  value={selectedTags}
+                  onChange={setSelectedTags}
+                  style={{ width: "100%" }}
+                  showSearch={true}
+                  allowClear={true}
+                  loading={tagsLoading}
+                  optionFilterProp="label"
+                  className="rounded-md"
+                  maxTagCount="responsive"
+                >
+                  {availableTags.map((tag) => {
+                    const userAgent = extractUserAgent(tag);
+                    const displayName = userAgent.length > 50 ? `${userAgent.substring(0, 50)}...` : userAgent;
+                    return (
+                      <Select.Option key={tag} value={tag} label={displayName} title={userAgent}>
+                        {displayName}
+                      </Select.Option>
+                    );
+                  })}
+                </Select>
+              </div>
             </div>
           </div>
 

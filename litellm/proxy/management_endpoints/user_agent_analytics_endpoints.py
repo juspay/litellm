@@ -160,6 +160,10 @@ async def get_daily_active_users(
         default=None,
         description="Filter by multiple specific tags (optional, takes precedence over tag_filter)",
     ),
+    custom_llm_provider: Optional[str] = Query(
+        default=None,
+        description="Filter by custom LLM provider (e.g., 'hosted_vllm') (optional)",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -193,10 +197,15 @@ async def get_daily_active_users(
         start_dt = end_dt - timedelta(days=MAX_DAYS)
         start_date = start_dt.strftime("%Y-%m-%d")
         
-        # Build SQL query with optional tag filter(s)
+        # Build SQL query with optional tag filter(s) and custom_llm_provider filter
         where_clause = "WHERE dts.date >= $1 AND dts.date <= $2 AND vt.user_id IS NOT NULL"
         params = [start_date, end_date]
-        
+
+        # Add custom_llm_provider filter if provided
+        if custom_llm_provider:
+            where_clause += f" AND dts.custom_llm_provider = ${len(params) + 1}"
+            params.append(custom_llm_provider)
+
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
@@ -208,9 +217,10 @@ async def get_daily_active_users(
         elif tag_filter:
             where_clause += " AND dts.tag ILIKE $3"
             params.append(f"%{tag_filter}%")
-        
+        print(where_clause, params, "where_clause and params")
+
         sql_query = f"""
-        SELECT 
+        SELECT
             dts.tag,
             dts.date,
             COUNT(DISTINCT vt.user_id) as active_users
@@ -256,6 +266,10 @@ async def get_weekly_active_users(
         default=None,
         description="Filter by multiple specific tags (optional, takes precedence over tag_filter)",
     ),
+    custom_llm_provider: Optional[str] = Query(
+        default=None,
+        description="Filter by custom LLM provider (e.g., 'hosted_vllm') (optional)",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -294,10 +308,15 @@ async def get_weekly_active_users(
         start_dt = end_dt - timedelta(days=(MAX_WEEKS * 7 - 1))  # MAX_WEEKS weeks * 7 days - 1
         start_date = start_dt.strftime("%Y-%m-%d")
         
-        # Build SQL query with optional tag filter(s)
+        # Build SQL query with optional tag filter(s) and custom_llm_provider filter
         where_clause = "WHERE dts.date >= $1 AND dts.date <= $2 AND vt.user_id IS NOT NULL"
         params = [start_date, end_date]
-        
+
+        # Add custom_llm_provider filter if provided
+        if custom_llm_provider:
+            where_clause += f" AND dts.custom_llm_provider = ${len(params) + 1}"
+            params.append(custom_llm_provider)
+
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
@@ -309,8 +328,9 @@ async def get_weekly_active_users(
         elif tag_filter:
             where_clause += " AND dts.tag ILIKE $3"
             params.append(f"%{tag_filter}%")
-        
+
         # Use window function to group by weeks with clear week numbering
+        print(where_clause, params, "where_clause and params")
         sql_query = f"""
         WITH weekly_data AS (
             SELECT 
@@ -376,6 +396,10 @@ async def get_monthly_active_users(
         default=None,
         description="Filter by multiple specific tags (optional, takes precedence over tag_filter)",
     ),
+    custom_llm_provider: Optional[str] = Query(
+        default=None,
+        description="Filter by custom LLM provider (e.g., 'hosted_vllm') (optional)",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -414,10 +438,16 @@ async def get_monthly_active_users(
         start_dt = end_dt - timedelta(days=(MAX_MONTHS * 30 - 1))  # MAX_MONTHS months * 30 days - 1
         start_date = start_dt.strftime("%Y-%m-%d")
         
-        # Build SQL query with optional tag filter(s)
+        # Build SQL query with optional tag filter(s) and custom_llm_provider filter
         where_clause = "WHERE dts.date >= $1 AND dts.date <= $2 AND vt.user_id IS NOT NULL"
         params = [start_date, end_date]
-        
+
+        # Add custom_llm_provider filter if provided
+        if custom_llm_provider:
+            where_clause += f" AND dts.custom_llm_provider = ${len(params) + 1}"
+            params.append(custom_llm_provider)
+        print(where_clause, params, "where_clause and params")
+
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
@@ -429,7 +459,7 @@ async def get_monthly_active_users(
         elif tag_filter:
             where_clause += " AND dts.tag ILIKE $3"
             params.append(f"%{tag_filter}%")
-        
+
         # Use window function to group by months (30-day periods) with clear month numbering
         sql_query = f"""
         WITH monthly_data AS (
@@ -502,6 +532,10 @@ async def get_tag_summary(
         default=None,
         description="Filter by multiple specific tags (optional, takes precedence over tag_filter)",
     ),
+    custom_llm_provider: Optional[str] = Query(
+        default=None,
+        description="Filter by custom LLM provider (e.g., 'hosted_vllm') (optional)",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -529,10 +563,16 @@ async def get_tag_summary(
         datetime.strptime(start_date, "%Y-%m-%d")
         datetime.strptime(end_date, "%Y-%m-%d")
         
-        # Build SQL query with optional tag filter(s)
+        # Build SQL query with optional tag filter(s) and custom_llm_provider filter
         where_clause = "WHERE dts.date >= $1 AND dts.date <= $2"
         params = [start_date, end_date]
-        
+
+        # Add custom_llm_provider filter if provided
+        if custom_llm_provider:
+            where_clause += f" AND dts.custom_llm_provider = ${len(params) + 1}"
+            params.append(custom_llm_provider)
+        print(where_clause, params, "where_clause and params")
+
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
@@ -544,7 +584,7 @@ async def get_tag_summary(
         elif tag_filter:
             where_clause += " AND dts.tag ILIKE $3"
             params.append(f"%{tag_filter}%")
-        
+
         sql_query = f"""
         SELECT 
             dts.tag,
