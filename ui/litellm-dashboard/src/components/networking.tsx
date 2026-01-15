@@ -7823,6 +7823,56 @@ export const perUserAnalyticsCall = async (
   }
 };
 
+export const leaderboardCall = async (
+  accessToken: string,
+  limit?: number,
+  custom_llm_provider?: string,
+) => {
+  /**
+   * Get top active users by request count in the last 7 days
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/analytics/leaderboard` : `/user/analytics/leaderboard`;
+
+    const queryParams = new URLSearchParams();
+
+    if (limit) {
+      queryParams.append("limit", limit.toString());
+    }
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      const errorMessage = deriveErrorMessage(errorData);
+      handleError(errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch leaderboard:", error);
+    throw error;
+  }
+};
+
 const deriveErrorMessage = (errorData: any): string => {
   return (
     (errorData?.error && (errorData.error.message || errorData.error)) ||

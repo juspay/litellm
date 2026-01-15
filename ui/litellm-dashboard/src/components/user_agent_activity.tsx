@@ -13,8 +13,8 @@ import {
   TabPanel,
   TabPanels,
 } from "@tremor/react";
-import { Select, Tooltip, Switch } from "antd";
-import { userAgentSummaryCall, tagDauCall, tagWauCall, tagMauCall, tagDistinctCall } from "./networking";
+import { Select, Tooltip, Switch, Table } from "antd";
+import { userAgentSummaryCall, tagDauCall, tagWauCall, tagMauCall, tagDistinctCall, leaderboardCall } from "./networking";
 import PerUserUsage from "./per_user_usage";
 import { DateRangePickerValue } from "@tremor/react";
 import { ChartLoader } from "./shared/chart_loader";
@@ -54,6 +54,16 @@ interface DistinctTagsResponse {
   results: DistinctTagResponse[];
 }
 
+interface LeaderboardUser {
+  user_id: string;
+  user_email: string | null;
+  request_count: number;
+}
+
+interface LeaderboardResponse {
+  results: LeaderboardUser[];
+}
+
 interface UserAgentActivityProps {
   accessToken: string | null;
   userRole: string | null;
@@ -83,6 +93,10 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
   const [wauLoading, setWauLoading] = useState(false);
   const [mauLoading, setMauLoading] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [leaderboardLoading, setLeaderboardLoading] = useState(false);
+
+  // Leaderboard state
+  const [leaderboardData, setLeaderboardData] = useState<LeaderboardResponse>({ results: [] });
 
   // Toggle state for filtering by hosted_vllm provider
   const [showHostedVllmOnly, setShowHostedVllmOnly] = useState(false);
@@ -186,6 +200,24 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }
   };
 
+  const fetchLeaderboardData = async () => {
+    if (!accessToken) return;
+
+    setLeaderboardLoading(true);
+    try {
+      const data = await leaderboardCall(
+        accessToken,
+        100, // fetch up to 100 users
+        showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+      );
+      setLeaderboardData(data);
+    } catch (error) {
+      console.error("Failed to fetch leaderboard data:", error);
+    } finally {
+      setLeaderboardLoading(false);
+    }
+  };
+
   // Effect to fetch available tags on mount
   useEffect(() => {
     fetchAvailableTags();
@@ -214,6 +246,17 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
 
     return () => clearTimeout(timeoutId);
   }, [accessToken, dateValue, selectedTags, showHostedVllmOnly]);
+
+  // Effect for leaderboard data
+  useEffect(() => {
+    if (!accessToken) return;
+
+    const timeoutId = setTimeout(() => {
+      fetchLeaderboardData();
+    }, 50);
+
+    return () => clearTimeout(timeoutId);
+  }, [accessToken, showHostedVllmOnly]);
 
   // Helper function to extract user agent from tag
   const extractUserAgent = (tag: string): string => {
@@ -492,6 +535,65 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                 </Card>
               ))}
             </Grid>
+          )}
+        </div>
+      </Card>
+
+      {/* Leaderboard Section Card */}
+      <Card>
+        <div className="space-y-4">
+          <div>
+            <Title>Top Active Users</Title>
+            <Subtitle>Most active users in the last 7 days (by request count)</Subtitle>
+          </div>
+
+          {leaderboardLoading ? (
+            <ChartLoader isDateChanging={false} />
+          ) : (
+            <Table
+              dataSource={leaderboardData.results.map((user, index) => ({
+                key: user.user_id,
+                rank: index + 1,
+                user_id: user.user_id,
+                user_email: user.user_email || "-",
+                request_count: user.request_count,
+              }))}
+              columns={[
+                {
+                  title: "Rank",
+                  dataIndex: "rank",
+                  key: "rank",
+                  width: 60,
+                  render: (rank: number) => (
+                    <span className={`font-bold ${rank <= 3 ? "text-yellow-600" : ""}`}>
+                      {rank <= 3 ? ["🥇", "🥈", "🥉"][rank - 1] : `#${rank}`}
+                    </span>
+                  ),
+                },
+                {
+                  title: "User ID",
+                  dataIndex: "user_id",
+                  key: "user_id",
+                  ellipsis: true,
+                },
+                {
+                  title: "Email",
+                  dataIndex: "user_email",
+                  key: "user_email",
+                  ellipsis: true,
+                },
+                {
+                  title: "Requests",
+                  dataIndex: "request_count",
+                  key: "request_count",
+                  width: 120,
+                  render: (count: number) => formatAbbreviatedNumber(count),
+                },
+              ]}
+              pagination={false}
+              size="small"
+              scroll={{ y: 400 }}
+            />
           )}
         </div>
       </Card>
