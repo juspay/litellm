@@ -427,7 +427,6 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     mountTime: new Date().toISOString()
   });
 
-  console.log('UserAgentActivity: Component rendered');
   return (
     <div className="space-y-6 mt-6">
       {/* Summary Section Card */}

@@ -217,7 +217,7 @@ async def get_daily_active_users(
         elif tag_filter:
             where_clause += " AND dts.tag ILIKE $3"
             params.append(f"%{tag_filter}%")
-        print(where_clause, params, "where_clause and params")
+       
 
         sql_query = f"""
         SELECT
@@ -330,7 +330,6 @@ async def get_weekly_active_users(
             params.append(f"%{tag_filter}%")
 
         # Use window function to group by weeks with clear week numbering
-        print(where_clause, params, "where_clause and params")
         sql_query = f"""
         WITH weekly_data AS (
             SELECT 
@@ -446,7 +445,7 @@ async def get_monthly_active_users(
         if custom_llm_provider:
             where_clause += f" AND dts.custom_llm_provider = ${len(params) + 1}"
             params.append(custom_llm_provider)
-        print(where_clause, params, "where_clause and params")
+       
 
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
@@ -571,7 +570,7 @@ async def get_tag_summary(
         if custom_llm_provider:
             where_clause += f" AND dts.custom_llm_provider = ${len(params) + 1}"
             params.append(custom_llm_provider)
-        print(where_clause, params, "where_clause and params")
+       
 
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
