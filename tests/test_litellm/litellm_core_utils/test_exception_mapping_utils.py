@@ -36,6 +36,11 @@ context_window_test_cases = [
         "Input tokens exceed the configured limit of 272000 tokens. Your messages resulted in 509178 tokens. Please reduce the length of the messages.",
         True,
     ),
+    # VLLM error pattern
+    (
+        "Requested token count exceeds the model's maximum context length of 196608 tokens.",
+        True,
+    ),
     # Test case insensitivity
     ("ERROR: THIS MODEL'S MAXIMUM CONTEXT LENGTH IS 1024.", True),
     # Negative cases (should return False)
