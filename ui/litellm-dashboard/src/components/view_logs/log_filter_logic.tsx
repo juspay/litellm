@@ -32,6 +32,7 @@ export function useLogFilterLogic({
   setCurrentPage,
   userID,
   userRole,
+  currentPage,
 }: {
   logs: PaginatedResponse;
   accessToken: string | null;
@@ -42,6 +43,7 @@ export function useLogFilterLogic({
   setCurrentPage: (page: number) => void;
   userID: string | null;
   userRole: string | null;
+  currentPage: number;
 }) {
   const defaultFilters = useMemo<LogFilterState>(
     () => ({
@@ -115,6 +117,9 @@ export function useLogFilterLogic({
     return () => debouncedSearch.cancel();
   }, [debouncedSearch]);
 
+  // Track previous page to detect page changes
+  const prevPageRef = useRef(currentPage);
+
   const queryAllKeysQuery = useQuery({
     queryKey: ["allKeys"],
     queryFn: async () => {
@@ -137,6 +142,14 @@ export function useLogFilterLogic({
       ),
     [filters],
   );
+
+  // Re-fetch with correct page when page changes and backend filters are active
+  useEffect(() => {
+    if (hasBackendFilters && currentPage !== prevPageRef.current) {
+      performSearch(filters, currentPage);
+    }
+    prevPageRef.current = currentPage;
+  }, [currentPage, hasBackendFilters, filters, performSearch]);
 
   // Compute client-side filtered logs directly from incoming logs and filters
   const clientDerivedFilteredLogs: PaginatedResponse = useMemo(() => {

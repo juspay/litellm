@@ -7503,6 +7503,11 @@ export const tagDauCall = async (
       queryParams.append("custom_llm_provider", custom_llm_provider);
     }
 
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
     // Handle multiple tag filters (takes precedence over single tag filter)
     if (tagFilters && tagFilters.length > 0) {
       tagFilters.forEach((tag) => {
@@ -7553,6 +7558,11 @@ export const tagWauCall = async (
     let url = proxyBaseUrl ? `${proxyBaseUrl}/tag/wau` : `/tag/wau`;
 
     const queryParams = new URLSearchParams();
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
 
     // Add custom_llm_provider filter if provided
     if (custom_llm_provider) {
@@ -7612,6 +7622,11 @@ export const tagMauCall = async (
     const queryParams = new URLSearchParams();
 
     queryParams.append("months", months.toString());
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
 
     // Add custom_llm_provider filter if provided
     if (custom_llm_provider) {
