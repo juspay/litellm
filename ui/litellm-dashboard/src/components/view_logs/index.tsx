@@ -251,6 +251,7 @@ export default function SpendLogsTable({
     setCurrentPage,
     userID,
     userRole,
+    currentPage,
   });
 
   const fetchKeyHashForAlias = useCallback(
