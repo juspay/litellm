@@ -29,8 +29,6 @@ interface TagActiveUsersResponse {
   date: string;
   period_start?: string;
   period_end?: string;
-  week_offset?: number;
-  month_offset?: number;
 }
 
 interface ActiveUsersAnalyticsResponse {
@@ -392,7 +390,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     const chartData: any[] = [];
 
     // Generate all 7 week labels (most recent first)
-    // Backend uses: end_date = today + 1 day
+    // Backend format: "Week X (Mon DD)" where X = 1 (earliest) to 7 (most recent)
     const allWeekLabels: string[] = [];
     for (let i = 0; i < 7; i++) {
       const now = new Date();
@@ -402,12 +400,13 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
       const startDate = new Date(endDate);
       startDate.setDate(endDate.getDate() - 6);
 
+      // Backend format: "Week {7-i} ({startMonth} {startDay})"
+      // Week 1 = earliest (7 weeks ago), Week 7 = most recent
       const startMonth = startDate.toLocaleDateString('en-US', { month: 'short' });
       const startDay = startDate.getDate();
-      const endMonth = endDate.toLocaleDateString('en-US', { month: 'short' });
-      const endDay = endDate.getDate();
+      const weekNum = 7 - i;
 
-      allWeekLabels.push(`${startMonth} ${startDay} - ${endMonth} ${endDay}`);
+      allWeekLabels.push(`Week ${weekNum} (${startMonth} ${startDay})`);
     }
 
     // Generate entries for each week (all 7 weeks, even if empty)
@@ -426,7 +425,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     // Fill in actual data from API response
     wauData.results.forEach((item) => {
       const userAgent = extractUserAgent(item.tag);
-      // Match by date label (API format: "Jan 15 - Jan 21")
+      // Match by date label (API format: "Week 1 (Jan 15)")
       const weekEntry = chartData.find((d) => d.week === item.date);
       if (weekEntry) {
         weekEntry[userAgent] = item.active_users;
@@ -446,8 +445,8 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         const allMonthLabels: string[] = [];
         for (let i = 0; i < mauMonths; i++) {
           const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-          // Use 'short' for month and '2-digit' for year for better fit
-          // Use same format as backend: 'FMMonth YYYY'
+          // Use 'short' for month and 'numeric' for year for matching backend format
+          // Backend uses: TO_CHAR(..., 'Mon YYYY')
       const monthName = d.toLocaleString('default', { month: 'short', year: 'numeric' }); 
           allMonthLabels.push(monthName);
         }
@@ -553,17 +552,36 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                           <ChartLoader isDateChanging={false} />
                         ) : (
                           <>
-                            <Metric className="text-4xl mt-2">
-                              {(() => {
-                                // Get today's DAU count
-                                const today = new Date().toISOString().split('T')[0];
-                                const todayData = dauData.results.find(
-                                  (item) => item.date === today
+                            {(() => {
+                              const today = new Date();
+                              const todayStr = today.toISOString().split('T')[0];
+                              const fromDate = dateValue.from ? new Date(dateValue.from) : null;
+                              const toDate = dateValue.to ? new Date(dateValue.to) : null;
+
+                              // Check if today falls within selected date range
+                              const isTodayInRange = (!fromDate || today >= fromDate) && (!toDate || today <= toDate);
+
+                              if (!isTodayInRange) {
+                                return (
+                                  <>
+                                    <Metric className="text-4xl mt-2 text-gray-400">N/A</Metric>
+                                    <Text className="mt-1 text-gray-400">Outside selected range</Text>
+                                  </>
                                 );
-                                return formatAbbreviatedNumber(Number(todayData?.active_users) || 0);
-                              })()}
-                            </Metric>
-                            <Text className="mt-1">users today</Text>
+                              }
+
+                              const todayData = dauData.results.find(
+                                (item) => item.date === todayStr
+                              );
+                              return (
+                                <>
+                                  <Metric className="text-4xl mt-2">
+                                    {formatAbbreviatedNumber(Number(todayData?.active_users) || 0)}
+                                  </Metric>
+                                  <Text className="mt-1">users today</Text>
+                                </>
+                              );
+                            })()}
                           </>
                         )}
                       </Card>
@@ -583,8 +601,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                         {dauLoading ? (
                           <ChartLoader isDateChanging={false} />
                         ) : (
-                          <div className="overflow-x-auto pb-2" style={{ maxWidth: "100%", width: "100%" }}>
-                            <div style={{ minWidth: `${Math.max(dailyChartData.length * 60, 100)}%` }}>
+                          <div className="flex-1 overflow-x-auto pb-2">
                               <BarChart
                                 data={dailyChartData}
                                 index="date"
@@ -595,7 +612,6 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                                 stack={true}
                                 tickGap={5}
                               />
-                            </div>
                           </div>
                         )}
                       </div>

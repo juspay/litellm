@@ -29,11 +29,6 @@ MAX_TAGS = 250  # Maximum number of distinct tags to return
 router = APIRouter()
 
 
-# In-memory cache for leaderboard data to avoid repeated DB queries
-_leaderboard_cache: Dict[str, Any] = {}
-_CACHE_TTL_SECONDS = 60  # Cache expires after 60 seconds
-
-
 class TagActiveUsersResponse(BaseModel):
     """Response for tag active users metrics"""
     tag: str
@@ -207,11 +202,11 @@ async def get_daily_active_users(
         from datetime import timezone
 
         if end_date:
-            # User provided specific end date - use it directly (inclusive upper bound)
+            # User provided specific end date - interpret as inclusive calendar day
+            # We add 1 day and use the resulting date as the (exclusive) upper bound in the SQL query
             end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(
                 hour=0, minute=0, second=0, microsecond=0
-            )
-            # Note: we use <= in SQL, so this date is included
+            ) + timedelta(days=1)
         else:
             # Default: use today + 1 day for inclusive query
             end_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
@@ -228,7 +223,7 @@ async def get_daily_active_users(
         start_date_str = start_dt.strftime("%Y-%m-%d")
 
         # Build SQL query with optional tag filter(s) and custom_llm_provider filter
-        where_clause = "WHERE dts.date >= $1 AND dts.date <= $2 AND vt.user_id IS NOT NULL"
+        where_clause = "WHERE dts.date >= $1 AND dts.date < $2 AND vt.user_id IS NOT NULL"
         params = [start_date_str, end_date_str]
 
         # Add custom_llm_provider filter if provided
@@ -239,7 +234,7 @@ async def get_daily_active_users(
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
-            for i, tag in enumerate(tag_filters):
+            for tag in tag_filters:
                 param_index = len(params) + 1
                 tag_conditions.append(f"dts.tag = ${param_index}")
                 params.append(tag)
@@ -355,7 +350,7 @@ async def get_weekly_active_users(
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
-            for i, tag in enumerate(tag_filters):
+            for tag in tag_filters:
                 param_index = len(params) + 1
                 tag_conditions.append(f"dts.tag = ${param_index}")
                 params.append(tag)
@@ -605,7 +600,7 @@ async def get_tag_summary(
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
-            for i, tag in enumerate(tag_filters):
+            for tag in tag_filters:
                 param_index = len(params) + 1
                 tag_conditions.append(f"dts.tag = ${param_index}")
                 params.append(tag)
@@ -874,11 +869,11 @@ async def get_user_leaderboard(
     try:
         # Calculate date range
         if end_date:
-            # User provided specific end date - use it directly (inclusive upper bound)
+            # User provided specific end date - interpret as inclusive calendar day
+            # We add 1 day and use the resulting date as the (exclusive) upper bound in the SQL query
             end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(
                 hour=0, minute=0, second=0, microsecond=0
-            )
-            # Note: we use <= in SQL, so this date is included
+            ) + timedelta(days=1)
         else:
             # Default: use today + 1 day for inclusive query
             end_dt = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
@@ -895,7 +890,7 @@ async def get_user_leaderboard(
         start_date_str = start_dt.strftime("%Y-%m-%d")
 
         # Build SQL query with proper pagination using OFFSET/LIMIT for better performance
-        where_clause = "WHERE dts.date >= $1 AND dts.date <= $2"
+        where_clause = "WHERE dts.date >= $1 AND dts.date < $2"
         params = [start_date_str, end_date_str]
 
         # Add custom_llm_provider filter if provided
@@ -910,8 +905,8 @@ async def get_user_leaderboard(
             SUM(dts.api_requests) as request_count
         FROM "LiteLLM_DailyTagSpend" dts
         {where_clause}
+        AND dts.api_key IS NOT NULL
         GROUP BY dts.api_key
-        HAVING dts.api_key IS NOT NULL
         """
 
         db_response = await prisma_client.db.query_raw(sql_query, *params)
@@ -925,8 +920,7 @@ async def get_user_leaderboard(
         # Aggregate request count by api_key
         api_key_counts: Dict[str, int] = {}
         for row in db_response:
-            if row["api_key"]:
-                api_key_counts[row["api_key"]] = row["request_count"]
+            api_key_counts[row["api_key"]] = row["request_count"]
 
         # Get unique api_keys
         api_keys = list(api_key_counts.keys())
