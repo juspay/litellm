@@ -24,10 +24,10 @@ class ProductionGCSLogger(CustomLogger):
         self.success_bucket_name = os.getenv("GCS_SUCCESS_BUCKET_NAME")
         self.error_bucket_name = os.getenv("GCS_ERROR_BUCKET_NAME")
         self.service_account_path = os.getenv("GCS_PATH_SERVICE_ACCOUNT")
-        
+
         # Initialize GCS base for async operations
         self.gcs_base = GCSBucketBase(bucket_name=self.success_bucket_name)
-        
+
         if not self.success_bucket_name or not self.error_bucket_name:
             verbose_logger.warning("⚠️  GCS bucket names not set. GCS logging disabled.")
         else:
@@ -60,7 +60,7 @@ class ProductionGCSLogger(CustomLogger):
                 service_account_json=self.service_account_path,
                 vertex_instance=None
             )
-            
+
             # Upload using the GCS REST API
             # Note: No indent - BigQuery requires single-line JSON (NEWLINE_DELIMITED_JSON format)
             json_data = json.dumps(data, default=str)
@@ -225,6 +225,16 @@ class ProductionGCSLogger(CustomLogger):
                     "department": (metadata.get("user_api_key_metadata") or {}).get(
                         "department"
                     ),
+                },
+                "input": {
+                    "messages": kwargs.get("input", kwargs.get("messages", [])),
+                    "temperature": kwargs.get("temperature"),
+                    "max_tokens": kwargs.get("max_tokens"),
+                    "top_p": kwargs.get("top_p"),
+                    "frequency_penalty": kwargs.get("frequency_penalty"),
+                    "presence_penalty": kwargs.get("presence_penalty"),
+                    "tools": kwargs.get("tools"),
+                    "tool_choice": kwargs.get("tool_choice"),
                 },
                 "model": {
                     "requested": kwargs.get("model"),
