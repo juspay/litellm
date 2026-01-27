@@ -773,16 +773,12 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                 {/* Left: Today's Active Users Card */}
                 <Card className="w-64 flex-shrink-0">
                   <Title className="text-base">Today&apos;s Active Users</Title>
+                  <Subtitle className="text-xs text-gray-500">Independent of date range</Subtitle>
                   {userDauLoading ? (
                     <ChartLoader isDateChanging={false} />
                   ) : (
                     <>
                       {(() => {
-                        const today = new Date();
-
-                        // Today's active users should always be shown, regardless of date range selection
-                        // This metric represents today's unique users, not affected by the date picker
-
                         return (
                           <>
                             <Metric className="text-4xl mt-2">
