@@ -610,7 +610,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
 
       for (let i = 0; i <= dayDiff; i++) {
         const date = new Date(startDate);
-        date.setDate(date.getDate() + i);
+        date.setUTCDate(date.getUTCDate() + i);
         const dateStr = date.toISOString().split("T")[0];
         chartData.push({ date: dateStr, "Active Users": 0 });
       }
@@ -624,7 +624,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     // Generate all days in the range with 0 initialization
     for (let i = 0; i <= dayDiff; i++) {
       const date = new Date(startDate);
-      date.setDate(date.getDate() + i);
+      date.setUTCDate(date.getUTCDate() + i);
       const dateStr = date.toISOString().split("T")[0];
       chartData.push({ date: dateStr, "Active Users": 0 });
     }
@@ -643,34 +643,13 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
   const generateUserWauChartData = () => {
     const chartData: any[] = [];
 
-    // Generate all 7 week labels (most recent first) - same pattern as existing WAU chart
-    const allWeekLabels: string[] = [];
-    for (let i = 0; i < 7; i++) {
-      const now = new Date();
-      const endDate = new Date(now);
-      endDate.setDate(now.getDate() - (i * 7) + 1);
-      const startDate = new Date(endDate);
-      startDate.setDate(endDate.getDate() - 6);
-
-      const startMonth = startDate.toLocaleDateString('en-US', { month: 'short' });
-      const startDay = startDate.getDate();
-      const weekNum = 7 - i;
-
-      allWeekLabels.push(`Week ${weekNum} (${startMonth} ${startDay})`);
-    }
-
-    // Generate entries for each week with 0 initialization
-    allWeekLabels.forEach((weekLabel) => {
-      chartData.push({ week: weekLabel, "Active Users": 0 });
-    });
-
-    // Fill in actual data from API response
+    // Build chart data directly from API response dates to avoid timezone/format mismatches
     if (userWauData.results && userWauData.results.length > 0) {
       userWauData.results.forEach((item) => {
-        const weekEntry = chartData.find((d) => d.week === item.date);
-        if (weekEntry) {
-          weekEntry["Active Users"] = item.active_users;
-        }
+        chartData.push({
+          week: item.date,
+          "Active Users": item.active_users,
+        });
       });
     }
 
@@ -679,28 +658,14 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
 
   const generateUserMauChartData = () => {
     const chartData: any[] = [];
-    const now = new Date();
 
-    // Generate all month labels based on mauMonths selection
-    const allMonthLabels: string[] = [];
-    for (let i = 0; i < mauMonths; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthName = d.toLocaleString('default', { month: 'short', year: 'numeric' });
-      allMonthLabels.push(monthName);
-    }
-
-    // Generate entries for each month with 0 initialization
-    allMonthLabels.forEach((monthLabel) => {
-      chartData.push({ month: monthLabel, "Active Users": 0 });
-    });
-
-    // Fill in actual data from API response
+    // Build chart data directly from API response dates to avoid timezone/format mismatches
     if (userMauData.results && userMauData.results.length > 0) {
       userMauData.results.forEach((item) => {
-        const monthEntry = chartData.find((d) => d.month === item.date);
-        if (monthEntry) {
-          monthEntry["Active Users"] = item.active_users;
-        }
+        chartData.push({
+          month: item.date,
+          "Active Users": item.active_users,
+        });
       });
     }
 
@@ -778,16 +743,10 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                     <ChartLoader isDateChanging={false} />
                   ) : (
                     <>
-                      {(() => {
-                        return (
-                          <>
-                            <Metric className="text-4xl mt-2">
-                              {formatAbbreviatedNumber(todayLeaderboardData.total_count || 0)}
-                            </Metric>
-                            <Text className="mt-1">users today</Text>
-                          </>
-                        );
-                      })()}
+                      <Metric className="text-4xl mt-2">
+                        {formatAbbreviatedNumber(todayLeaderboardData.total_count || 0)}
+                      </Metric>
+                      <Text className="mt-1">users today</Text>
                     </>
                   )}
                 </Card>
