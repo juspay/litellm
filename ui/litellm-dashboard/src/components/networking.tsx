@@ -7481,6 +7481,7 @@ export const tagDauCall = async (
   tagFilter?: string,
   tagFilters?: string[],
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get Daily Active Users (DAU) for a customizable date range
@@ -7503,9 +7504,9 @@ export const tagDauCall = async (
       queryParams.append("custom_llm_provider", custom_llm_provider);
     }
 
-    // Add custom_llm_provider filter if provided
-    if (custom_llm_provider) {
-      queryParams.append("custom_llm_provider", custom_llm_provider);
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
@@ -7550,6 +7551,7 @@ export const tagWauCall = async (
   tagFilter?: string,
   tagFilters?: string[],
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get Weekly Active Users (WAU) for the last 7 weeks
@@ -7564,9 +7566,9 @@ export const tagWauCall = async (
       queryParams.append("custom_llm_provider", custom_llm_provider);
     }
 
-    // Add custom_llm_provider filter if provided
-    if (custom_llm_provider) {
-      queryParams.append("custom_llm_provider", custom_llm_provider);
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
@@ -7612,6 +7614,7 @@ export const tagMauCall = async (
   tagFilter?: string,
   tagFilters?: string[],
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get Monthly Active Users (MAU) for the last N months
@@ -7628,9 +7631,9 @@ export const tagMauCall = async (
       queryParams.append("custom_llm_provider", custom_llm_provider);
     }
 
-    // Add custom_llm_provider filter if provided
-    if (custom_llm_provider) {
-      queryParams.append("custom_llm_provider", custom_llm_provider);
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
@@ -7706,6 +7709,7 @@ export const userAgentSummaryCall = async (
   endTime: Date,
   tagFilters?: string[],
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get user agent summary statistics
@@ -7729,6 +7733,11 @@ export const userAgentSummaryCall = async (
     // Add custom_llm_provider filter if provided
     if (custom_llm_provider) {
       queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     // Handle multiple tag filters
@@ -7823,6 +7832,7 @@ export const leaderboardCall = async (
   start_date?: string,
   end_date?: string,
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get all active users by request count with customizable date range
@@ -7844,6 +7854,11 @@ export const leaderboardCall = async (
     // Add custom_llm_provider filter if provided
     if (custom_llm_provider) {
       queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     const queryString = queryParams.toString();
@@ -7880,6 +7895,7 @@ export const userDauCall = async (
   startDate?: string,
   endDate?: string,
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get daily unique user count (not broken down by user-agent)
@@ -7899,6 +7915,11 @@ export const userDauCall = async (
 
     if (custom_llm_provider) {
       queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     const queryString = queryParams.toString();
@@ -7932,6 +7953,7 @@ export const userDauCall = async (
 export const userWauCall = async (
   accessToken: string,
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get weekly unique user count for the last 7 weeks (not broken down by user-agent)
@@ -7943,6 +7965,11 @@ export const userWauCall = async (
 
     if (custom_llm_provider) {
       queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     const queryString = queryParams.toString();
@@ -7977,6 +8004,7 @@ export const userMauCall = async (
   accessToken: string,
   months: number = 7,
   custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get monthly unique user count for the last N months (not broken down by user-agent)
@@ -7990,6 +8018,11 @@ export const userMauCall = async (
 
     if (custom_llm_provider) {
       queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
     }
 
     const queryString = queryParams.toString();

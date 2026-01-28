@@ -48,6 +48,8 @@ import { getProviderLogoAndName } from "./provider_info_helpers";
 import EntityUsageExportModal from "./EntityUsageExport";
 import AdvancedDatePicker from "./shared/advanced_date_picker";
 import { Button } from "@tremor/react";
+import { Select } from "antd";
+const { Option } = Select;
 
 interface NewUsagePageProps {
   accessToken: string | null;
@@ -81,6 +83,12 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
   const [modelViewType, setModelViewType] = useState<"groups" | "individual">("groups");
   const [isCloudZeroModalOpen, setIsCloudZeroModalOpen] = useState(false);
   const [isGlobalExportModalOpen, setIsGlobalExportModalOpen] = useState(false);
+
+  // State for tracking active tab (to conditionally show team selector)
+  const [activeTab, setActiveTab] = useState(0);
+
+  // State for selected team in User Agent Activity tab
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
 
   const getAllTags = async () => {
     if (!accessToken) {
@@ -411,7 +419,7 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
       {/* Global Date Picker and Tabs - Single Row */}
       <div className="flex items-end justify-between gap-6 mb-6">
         <div className="flex-1">
-          <TabGroup>
+          <TabGroup onIndexChange={setActiveTab}>
             <div className="flex items-end justify-start gap-6 mb-6">
               <TabList variant="solid">
                 {all_admin_roles.includes(userRole || "") ? <Tab>Global Usage</Tab> : <Tab>Your Usage</Tab>}
@@ -420,6 +428,23 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
                 {all_admin_roles.includes(userRole || "") ? <Tab>User Agent Activity</Tab> : <></>}
               </TabList>
               <AdvancedDatePicker value={dateValue} onValueChange={handleDateChange} />
+              {/* Team selector - only show on User Agent Activity tab */}
+              {all_admin_roles.includes(userRole || "") && activeTab === 3 && (
+                <Select
+                  placeholder="Select team"
+                  value={selectedTeamId}
+                  onChange={setSelectedTeamId}
+                  style={{ width: 180 }}
+                  className="mr-2"
+                >
+                  <Option key="all" value={null}>All Teams</Option>
+                  {teams.map((team) => (
+                    <Option key={team.team_id} value={team.team_id}>
+                      {team.team_alias || team.team_id}
+                    </Option>
+                  ))}
+                </Select>
+              )}
             </div>
             <TabPanels>
               {/* Your Usage Panel */}
@@ -769,7 +794,12 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
               </TabPanel>
               {/* User Agent Activity Panel */}
               <TabPanel>
-                <UserAgentActivity accessToken={accessToken} userRole={userRole} dateValue={dateValue} />
+                <UserAgentActivity
+                  accessToken={accessToken}
+                  userRole={userRole}
+                  dateValue={dateValue}
+                  teamId={selectedTeamId}
+                />
               </TabPanel>
             </TabPanels>
           </TabGroup>
