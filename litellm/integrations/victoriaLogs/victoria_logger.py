@@ -75,9 +75,14 @@ class VictoriaLogsLogger(CustomLogger):
                     "prompt_tokens": getattr(response_obj.usage, "prompt_tokens", 0) if hasattr(response_obj, "usage") else 0,
                     "completion_tokens": getattr(response_obj.usage, "completion_tokens", 0) if hasattr(response_obj, "usage") else 0,
                 },
-                "cost": litellm.completion_cost(completion_response=response_obj) or 0,
-                "timing_ms": (end_time - start_time).total_seconds() * 1000 if start_time and end_time else 0,
             }
+
+            try:
+                success_log["cost"] = litellm.completion_cost(completion_response=response_obj) or 0
+            except Exception:
+                success_log["cost"] = 0
+
+            success_log["timing_ms"] = (end_time - start_time).total_seconds() * 1000 if start_time and end_time else 0
             
             await self._upload_to_victoria_async(success_log)
         except Exception as e:
