@@ -226,7 +226,7 @@ class ProductionGCSLogger(CustomLogger):
                         "department"
                     ),
                 },
-                "input": {
+                "conversation": {
                     "messages": kwargs.get("input", kwargs.get("messages", [])),
                     "temperature": kwargs.get("temperature"),
                     "max_tokens": kwargs.get("max_tokens"),
