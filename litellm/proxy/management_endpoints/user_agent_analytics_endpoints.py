@@ -633,7 +633,6 @@ async def get_tag_summary(
             where_clause += f" AND vt.team_id = ${len(params) + 1}"
             params.append(team_id)
 
-
         # Handle multiple tag filters (takes precedence over single tag filter)
         if tag_filters and len(tag_filters) > 0:
             tag_conditions = []
@@ -656,7 +655,7 @@ async def get_tag_summary(
             SUM(dts.prompt_tokens + dts.completion_tokens) as total_tokens,
             SUM(dts.spend) as total_spend
         FROM "LiteLLM_DailyTagSpend" dts
-        LEFT JOIN "LiteLLM_VerificationToken" vt ON dts.api_key = vt.token
+        INNER JOIN "LiteLLM_VerificationToken" vt ON dts.api_key = vt.token
         {where_clause}
         GROUP BY dts.tag
         ORDER BY total_requests DESC

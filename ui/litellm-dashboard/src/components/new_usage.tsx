@@ -88,7 +88,7 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
   const [activeTab, setActiveTab] = useState(0);
 
   // State for selected team in User Agent Activity tab
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const [selectedTeamId, setSelectedTeamId] = useState<string>("all");
 
   const getAllTags = async () => {
     if (!accessToken) {
@@ -437,7 +437,7 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
                   style={{ width: 180 }}
                   className="mr-2"
                 >
-                  <Option key="all" value={null}>All Teams</Option>
+                  <Option key="all" value="all">All Teams</Option>
                   {teams.map((team) => (
                     <Option key={team.team_id} value={team.team_id}>
                       {team.team_alias || team.team_id}

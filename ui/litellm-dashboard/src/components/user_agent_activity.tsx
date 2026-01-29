@@ -83,7 +83,7 @@ interface UserAgentActivityProps {
   userRole: string | null;
   dateValue: DateRangePickerValue;
   onDateChange?: (value: DateRangePickerValue) => void; // Optional - not used anymore
-  teamId?: string | null; // Team ID filter
+  teamId?: string; // Team ID filter ("all" for no filter)
 }
 
 const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, userRole, dateValue, onDateChange, teamId }) => {
@@ -150,8 +150,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
   // Toggle state for filtering by hosted_vllm provider
   const [showHostedVllmOnly, setShowHostedVllmOnly] = useState(true);
   // Use teamId from props instead of internal state
-  const selectedTeamId = teamId || null;
-  console.log('UserAgentActivity: Component mounted', { showHostedVllmOnly, selectedTeamId, CUSTOM_LLM_PROVIDER: 'hosted_vllm' });
+  const selectedTeamId = teamId === "all" ? undefined : teamId;
   const CUSTOM_LLM_PROVIDER = "hosted_vllm"; // Provider name to filter by
 
   const fetchAvailableTags = async () => {
@@ -729,7 +728,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
           {/* Left side: Titles */}
           <div>
             <Title>User Trends</Title>
-            <Subtitle>Unique user activity over time (not broken down by user-agent)</Subtitle>
+            <Subtitle>Unique user activity over time</Subtitle>
           </div>
 
           {/* Right side: Toggle */}
@@ -897,9 +896,9 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                     dataIndex: "rank",
                     key: "rank",
                     width: 60,
-                    render: (rank: number) => (
-                      <span className={`font-bold ${rank <= 3 ? "text-yellow-600" : ""}`}>
-                        {rank <= 3 ? ["🥇", "🥈", "🥉"][rank - 1] : `#${rank}`}
+                    render: (rank: number | string) => (
+                      <span className={`font-bold ${typeof rank === "number" && rank <= 3 ? "text-yellow-600" : ""}`}>
+                        {typeof rank === "number" && rank <= 3 ? ["🥇", "🥈", "🥉"][rank - 1] : `#${rank}`}
                       </span>
                     ),
                   },
