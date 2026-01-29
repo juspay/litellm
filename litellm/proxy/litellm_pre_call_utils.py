@@ -1490,8 +1490,15 @@ def add_provider_specific_headers_to_request(
     for header in ANTHROPIC_API_HEADERS:
         if header in headers:
             header_value = headers[header]
-            anthropic_headers[header] = header_value
-            added_header = True
+            # Filter blocked values from anthropic-beta header
+            if header.lower() == "anthropic-beta":
+                filtered_value = LiteLLMProxyRequestSetup._filter_blocked_anthropic_beta_values(header_value)
+                if filtered_value:
+                    anthropic_headers[header] = filtered_value
+                    added_header = True
+            else:
+                anthropic_headers[header] = header_value
+                added_header = True
 
     if added_header is True:
         # Anthropic headers work across multiple providers
