@@ -565,3 +565,10 @@ class ANTHROPIC_BETA_HEADER_VALUES(str, Enum):
     WEB_FETCH_2025_09_10 = "web-fetch-2025-09-10"
     CONTEXT_MANAGEMENT_2025_06_27 = "context-management-2025-06-27"
     STRUCTURED_OUTPUT_2025_09_25 = "structured-outputs-2025-11-13"
+
+
+# Patterns for anthropic-beta headers that should be blocked/dropped
+# These are headers that cause API errors when forwarded
+BLOCKED_ANTHROPIC_BETA_HEADER_PATTERNS = [
+    "prompt-caching-scope-",  # Claude Code sends this but Anthropic API doesn't recognize it
+]
