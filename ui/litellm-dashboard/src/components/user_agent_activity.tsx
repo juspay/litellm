@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Card,
   Title,
@@ -83,9 +83,10 @@ interface UserAgentActivityProps {
   userRole: string | null;
   dateValue: DateRangePickerValue;
   onDateChange?: (value: DateRangePickerValue) => void; // Optional - not used anymore
+  teamId?: string; // Team ID filter ("all" for no filter)
 }
 
-const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, userRole, dateValue, onDateChange }) => {
+const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, userRole, dateValue, onDateChange, teamId }) => {
   // Maximum number of categories to show in charts to prevent color palette overflow
   const MAX_CATEGORIES = 10;
 
@@ -147,8 +148,9 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
   ];
 
   // Toggle state for filtering by hosted_vllm provider
-  const [showHostedVllmOnly, setShowHostedVllmOnly] = useState(false);
-  console.log('UserAgentActivity: Component mounted', { showHostedVllmOnly, CUSTOM_LLM_PROVIDER: 'hosted_vllm' });
+  const [showHostedVllmOnly, setShowHostedVllmOnly] = useState(true);
+  // Use teamId from props instead of internal state
+  const selectedTeamId = teamId === "all" ? undefined : teamId;
   const CUSTOM_LLM_PROVIDER = "hosted_vllm"; // Provider name to filter by
 
   const fetchAvailableTags = async () => {
@@ -177,6 +179,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         userAgentFilter || undefined,
         selectedTags.length > 0 ? selectedTags : undefined,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setDauData(data);
     } catch (error) {
@@ -196,6 +199,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         userAgentFilter || undefined,
         selectedTags.length > 0 ? selectedTags : undefined,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setWauData(data);
     } catch (error) {
@@ -216,6 +220,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         userAgentFilter || undefined,
         selectedTags.length > 0 ? selectedTags : undefined,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setMauData(data);
     } catch (error) {
@@ -236,6 +241,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         dateValue.to,
         selectedTags.length > 0 ? selectedTags : undefined,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setSummaryData(summary);
     } catch (error) {
@@ -255,6 +261,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         dateValue.from ? formatDate(dateValue.from) : undefined,
         dateValue.to ? formatDate(dateValue.to) : undefined,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setLeaderboardData(data);
       // Reset to first page when data changes
@@ -277,6 +284,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         todayStr,
         todayStr,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setTodayLeaderboardData(data);
     } catch (error) {
@@ -294,6 +302,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         dateValue.from ? formatDate(dateValue.from) : undefined,
         dateValue.to ? formatDate(dateValue.to) : undefined,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setUserDauData(data);
     } catch (error) {
@@ -311,6 +320,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
       const data = await userWauCall(
         accessToken,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setUserWauData(data);
     } catch (error) {
@@ -329,6 +339,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
         accessToken,
         mauMonths,
         showHostedVllmOnly ? CUSTOM_LLM_PROVIDER : undefined,
+        selectedTeamId || undefined,
       );
       setUserMauData(data);
     } catch (error) {
@@ -354,7 +365,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }, 50);
 
     return () => clearTimeout(timeoutId);
-  }, [accessToken, userAgentFilter, selectedTags, showHostedVllmOnly, dateValue, mauMonths]);
+  }, [accessToken, userAgentFilter, selectedTags, showHostedVllmOnly, dateValue, mauMonths, selectedTeamId]);
 
   // Effect for summary data (depends on date picker)
   useEffect(() => {
@@ -365,7 +376,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }, 50);
 
     return () => clearTimeout(timeoutId);
-  }, [accessToken, dateValue, selectedTags, showHostedVllmOnly]);
+  }, [accessToken, dateValue, selectedTags, showHostedVllmOnly, selectedTeamId]);
 
   // Effect for leaderboard data
   useEffect(() => {
@@ -376,7 +387,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }, 50);
 
     return () => clearTimeout(timeoutId);
-  }, [accessToken, showHostedVllmOnly, dateValue]);
+  }, [accessToken, showHostedVllmOnly, dateValue, selectedTeamId]);
 
   // Effect for today's leaderboard data (always fetches for today only)
   useEffect(() => {
@@ -387,7 +398,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }, 50);
 
     return () => clearTimeout(timeoutId);
-  }, [accessToken, showHostedVllmOnly]);
+  }, [accessToken, showHostedVllmOnly, selectedTeamId]);
 
   // Effect for user-count based analytics (User DAU/WAU/MAU)
   useEffect(() => {
@@ -400,7 +411,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     }, 50);
 
     return () => clearTimeout(timeoutId);
-  }, [accessToken, showHostedVllmOnly, dateValue, mauMonths]);
+  }, [accessToken, showHostedVllmOnly, dateValue, mauMonths, selectedTeamId]);
 
   // Reset to first page when search changes
   useEffect(() => {
@@ -416,6 +427,15 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
       user.user_id.toLowerCase().includes(searchLower)
     );
   });
+
+  // Memoize the rank map - only recalculate when leaderboardData.results changes
+  const userRankMap = useMemo(() => {
+    const map = new Map<string, number>();
+    leaderboardData.results.forEach((user, index) => {
+      map.set(user.user_id, index + 1);
+    });
+    return map;
+  }, [leaderboardData.results]);
 
   // Get paginated results
   const paginatedLeaderboardResults = filteredLeaderboardResults.slice(
@@ -511,12 +531,13 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
     // Backend format: "Week X (Mon DD)" where X = 1 (earliest) to 7 (most recent)
     const allWeekLabels: string[] = [];
     for (let i = 0; i < 7; i++) {
+      // Match backend: end_dt = datetime.now(timezone.utc) + timedelta(days=1)
       const now = new Date();
-      // Add 1 day like backend does
-      const endDate = new Date(now);
-      endDate.setDate(now.getDate() - (i * 7) + 1);
-      const startDate = new Date(endDate);
-      startDate.setDate(endDate.getDate() - 6);
+      now.setHours(0, 0, 0, 0);
+      const endDate = new Date(now.getTime() + (24 * 60 * 60 * 1000)); // +1 day
+
+      // Calculate period_start = end_date - (i * 7) - 6 days (backend formula)
+      const startDate = new Date(endDate.getTime() - ((i * 7 + 6) * 24 * 60 * 60 * 1000));
 
       // Backend format: "Week {7-i} ({startMonth} {startDay})"
       // Week 1 = earliest (7 weeks ago), Week 7 = most recent
@@ -707,7 +728,7 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
           {/* Left side: Titles */}
           <div>
             <Title>User Trends</Title>
-            <Subtitle>Unique user activity over time (not broken down by user-agent)</Subtitle>
+            <Subtitle>Unique user activity over time</Subtitle>
           </div>
 
           {/* Right side: Toggle */}
@@ -862,9 +883,9 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
           ) : (
             <>
               <Table
-                dataSource={paginatedLeaderboardResults.map((user, index) => ({
+                dataSource={paginatedLeaderboardResults.map((user) => ({
                   key: user.user_id,
-                  rank: (leaderboardPage - 1) * LEADERBOARD_PAGE_SIZE + index + 1,
+                  rank: userRankMap.get(user.user_id) || "-",
                   user_id: user.user_id,
                   user_email: user.user_email || "-",
                   request_count: user.request_count,
@@ -875,9 +896,9 @@ const UserAgentActivity: React.FC<UserAgentActivityProps> = ({ accessToken, user
                     dataIndex: "rank",
                     key: "rank",
                     width: 60,
-                    render: (rank: number) => (
-                      <span className={`font-bold ${rank <= 3 ? "text-yellow-600" : ""}`}>
-                        {rank <= 3 ? ["🥇", "🥈", "🥉"][rank - 1] : `#${rank}`}
+                    render: (rank: number | string) => (
+                      <span className={`font-bold ${typeof rank === "number" && rank <= 3 ? "text-yellow-600" : ""}`}>
+                        {typeof rank === "number" && rank <= 3 ? ["🥇", "🥈", "🥉"][rank - 1] : `#${rank}`}
                       </span>
                     ),
                   },
