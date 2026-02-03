@@ -257,6 +257,7 @@ class ProductionGCSLogger(CustomLogger):
                     ),
                     "llm_api_duration_ms": metadata.get("llm_api_duration_ms"),
                 },
+                "headers": metadata.get("headers"),
             }
 
             if self.error_bucket_name:
