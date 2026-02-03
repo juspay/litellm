@@ -3,13 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { uiSpendLogsCall, keyInfoV1Call, sessionSpendLogsCall, keyListCall, allEndUsersCall } from "../networking";
+import { uiSpendLogsCall, keyInfoV1Call, sessionSpendLogsCall, keyListCall, allEndUsersCall, errorStatsCall } from "../networking";
 import { DataTable } from "./table";
 import { columns, LogEntry } from "./columns";
 import { Row } from "@tanstack/react-table";
 import { prefetchLogDetails } from "./prefetch";
 import { RequestResponsePanel } from "./RequestResponsePanel";
 import { ErrorViewer } from "./ErrorViewer";
+import { ErrorStatsTable } from "./ErrorStatsTable";
 import { internalUserRoles } from "../../utils/roles";
 import { ConfigInfoMessage } from "./ConfigInfoMessage";
 import { Tooltip } from "antd";
@@ -234,6 +235,49 @@ export default function SpendLogsTable({
     total_pages: 1,
   };
 
+  const errorStats = useQuery({
+    queryKey: [
+      "errorStats",
+      startTime,
+      endTime,
+      selectedTeamId,
+      selectedKeyHash,
+      filterByCurrentUser ? userID : null,
+      selectedStatus,
+      selectedModel,
+      selectedEndUser,
+    ],
+    queryFn: async () => {
+      if (!accessToken || !token || !userRole || !userID) {
+        return { time_bucket_size: '', data: [] };
+      }
+
+      const formattedStartTime = moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss");
+      const formattedEndTime = isCustomDate
+        ? moment(endTime).utc().format("YYYY-MM-DD HH:mm:ss")
+        : moment().utc().format("YYYY-MM-DD HH:mm:ss");
+
+      const response = await errorStatsCall(
+        accessToken,
+        selectedKeyHash || undefined,
+        selectedTeamId || undefined,
+        undefined,
+        formattedStartTime,
+        formattedEndTime,
+        filterByCurrentUser ? userID : undefined,
+        selectedEndUser,
+        selectedStatus,
+        selectedModel,
+        undefined,
+      );
+
+      return response || { time_bucket_size: '', data: [] };
+    },
+    enabled: !!accessToken && !!token && !!userRole && !!userID && activeTab === "request logs",
+    refetchInterval: isLiveTail && currentPage === 1 ? 15000 : false,
+    refetchIntervalInBackground: true,
+  });
+
   const {
     filters,
     filteredLogs,
@@ -361,6 +405,7 @@ export default function SpendLogsTable({
   // Add this function to handle manual refresh
   const handleRefresh = () => {
     logs.refetch();
+    errorStats.refetch();
   };
 
   const handleRowExpand = (requestId: string | null) => {
@@ -712,6 +757,7 @@ export default function SpendLogsTable({
                     renderSubComponent={RequestViewer}
                     getRowCanExpand={() => true}
                   />
+                  <ErrorStatsTable data={errorStats.data?.data || []} timeBucketSize={errorStats.data?.time_bucket_size} />
                 </div>
               </>
             )}
