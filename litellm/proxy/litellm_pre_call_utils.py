@@ -161,7 +161,6 @@ class KeyAndTeamLoggingSettings:
 
     @staticmethod
     def get_team_dynamic_logging_settings(user_api_key_dict: UserAPIKeyAuth):
-
         if (
             user_api_key_dict.team_metadata is not None
             and "logging" in user_api_key_dict.team_metadata
@@ -174,12 +173,12 @@ def _get_dynamic_logging_metadata(
     user_api_key_dict: UserAPIKeyAuth, proxy_config: ProxyConfig
 ) -> Optional[TeamCallbackMetadata]:
     callback_settings_obj: Optional[TeamCallbackMetadata] = None
-    key_dynamic_logging_settings: Optional[dict] = (
-        KeyAndTeamLoggingSettings.get_key_dynamic_logging_settings(user_api_key_dict)
-    )
-    team_dynamic_logging_settings: Optional[dict] = (
-        KeyAndTeamLoggingSettings.get_team_dynamic_logging_settings(user_api_key_dict)
-    )
+    key_dynamic_logging_settings: Optional[
+        dict
+    ] = KeyAndTeamLoggingSettings.get_key_dynamic_logging_settings(user_api_key_dict)
+    team_dynamic_logging_settings: Optional[
+        dict
+    ] = KeyAndTeamLoggingSettings.get_team_dynamic_logging_settings(user_api_key_dict)
     #########################################################################################
     # Key-based callbacks
     #########################################################################################
@@ -462,7 +461,6 @@ class LiteLLMProxyRequestSetup:
                 team_id=user_api_key_dict.team_id,
             )  # handles aliases, wildcards, etc.
         ):
-
             _headers = LiteLLMProxyRequestSetup.add_headers_to_llm_call(
                 headers, user_api_key_dict
             )
@@ -585,7 +583,6 @@ class LiteLLMProxyRequestSetup:
                 if user_api_key_dict.budget_reset_at
                 else None
             ),
-            
             user_api_key_auth_metadata=user_api_key_dict.metadata,
         )
         return user_api_key_logged_metadata
@@ -612,6 +609,8 @@ class LiteLLMProxyRequestSetup:
         data[_metadata_variable_name]["user_api_end_user_max_budget"] = getattr(
             user_api_key_dict, "end_user_max_budget", None
         )
+        # Add the full UserAPIKeyAuth object for MCP server access control
+        data[_metadata_variable_name]["user_api_key_auth"] = user_api_key_dict
         return data
 
     @staticmethod
@@ -662,12 +661,18 @@ class LiteLLMProxyRequestSetup:
 
         ## KEY-LEVEL SPEND LOGS / TAGS
         if "tags" in key_metadata and key_metadata["tags"] is not None:
-            data[_metadata_variable_name]["tags"] = (
-                LiteLLMProxyRequestSetup._merge_tags(
-                    request_tags=data[_metadata_variable_name].get("tags"),
-                    tags_to_add=key_metadata["tags"],
-                )
+            data[_metadata_variable_name][
+                "tags"
+            ] = LiteLLMProxyRequestSetup._merge_tags(
+                request_tags=data[_metadata_variable_name].get("tags"),
+                tags_to_add=key_metadata["tags"],
             )
+        if "disable_global_guardrails" in key_metadata and isinstance(
+            key_metadata["disable_global_guardrails"], bool
+        ):
+            data[_metadata_variable_name]["disable_global_guardrails"] = key_metadata[
+                "disable_global_guardrails"
+            ]
         if "spend_logs_metadata" in key_metadata and isinstance(
             key_metadata["spend_logs_metadata"], dict
         ):
@@ -808,11 +813,14 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     # Init - Proxy Server Request
     # we do this as soon as entering so we track the original request
     ##########################################################
+    # Track arrival time for queue time metric
+    arrival_time = time.time()
     data["proxy_server_request"] = {
         "url": str(request.url),
         "method": request.method,
         "headers": _headers,
         "body": copy.copy(data),  # use copy instead of deepcopy
+        "arrival_time": arrival_time,  # Track when request arrived at proxy
     }
 
     safe_add_api_version_from_query_params(data, request)
@@ -835,6 +843,11 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
             _metadata_variable_name=_metadata_variable_name,
         )
     )
+
+    # Add headers to metadata for guardrails to access (fixes #17477)
+    # Guardrails use metadata["headers"] to access request headers (e.g., User-Agent)
+    if _metadata_variable_name in data and isinstance(data[_metadata_variable_name], dict):
+        data[_metadata_variable_name]["headers"] = _headers
 
     # check for forwardable headers
     data = LiteLLMProxyRequestSetup.add_headers_to_llm_call_by_model_group(
@@ -918,9 +931,9 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     data[_metadata_variable_name]["litellm_api_version"] = version
 
     if general_settings is not None:
-        data[_metadata_variable_name]["global_max_parallel_requests"] = (
-            general_settings.get("global_max_parallel_requests", None)
-        )
+        data[_metadata_variable_name][
+            "global_max_parallel_requests"
+        ] = general_settings.get("global_max_parallel_requests", None)
 
     ### KEY-LEVEL Controls
     key_metadata = user_api_key_dict.metadata
@@ -936,6 +949,12 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
             request_tags=data[_metadata_variable_name].get("tags"),
             tags_to_add=team_metadata["tags"],
         )
+    if "disable_global_guardrails" in team_metadata and isinstance(
+        team_metadata["disable_global_guardrails"], bool
+    ):
+        data[_metadata_variable_name]["disable_global_guardrails"] = team_metadata[
+            "disable_global_guardrails"
+        ]
     if "spend_logs_metadata" in team_metadata and isinstance(
         team_metadata["spend_logs_metadata"], dict
     ):
@@ -980,6 +999,13 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
     data[_metadata_variable_name][
         "user_api_key_model_max_budget"
     ] = user_api_key_dict.model_max_budget
+
+    # User spend, budget - used by prometheus.py
+    # Follow same pattern as team and API key budgets
+    data[_metadata_variable_name]["user_api_key_user_spend"] = user_api_key_dict.user_spend
+    data[_metadata_variable_name][
+        "user_api_key_user_max_budget"
+    ] = user_api_key_dict.user_max_budget
 
     data[_metadata_variable_name]["user_api_key_metadata"] = user_api_key_dict.metadata
     _headers = dict(request.headers)
@@ -1384,7 +1410,7 @@ def _add_guardrails_from_key_or_team_metadata(
 ) -> None:
     """
     Helper add guardrails from key or team metadata to request data
-    
+
     Key guardrails are set first, then team guardrails are appended (without duplicates).
 
     Args:
@@ -1398,19 +1424,25 @@ def _add_guardrails_from_key_or_team_metadata(
 
     # Initialize guardrails set (avoiding duplicates)
     combined_guardrails = set()
-    
+
     # Add key-level guardrails first
     if key_metadata and "guardrails" in key_metadata:
-        if isinstance(key_metadata["guardrails"], list) and len(key_metadata["guardrails"]) > 0:
+        if (
+            isinstance(key_metadata["guardrails"], list)
+            and len(key_metadata["guardrails"]) > 0
+        ):
             _premium_user_check()
             combined_guardrails.update(key_metadata["guardrails"])
-    
+
     # Add team-level guardrails (set automatically handles duplicates)
     if team_metadata and "guardrails" in team_metadata:
-        if isinstance(team_metadata["guardrails"], list) and len(team_metadata["guardrails"]) > 0:
+        if (
+            isinstance(team_metadata["guardrails"], list)
+            and len(team_metadata["guardrails"]) > 0
+        ):
             _premium_user_check()
             combined_guardrails.update(team_metadata["guardrails"])
-    
+
     # Set combined guardrails in metadata as list
     if combined_guardrails:
         data[metadata_variable_name]["guardrails"] = list(combined_guardrails)
@@ -1436,23 +1468,32 @@ def move_guardrails_to_metadata(
     )
 
     #########################################################################################
-    # User's might send "guardrails" in the request body, we need to add them to the request metadata. 
+    # User's might send "guardrails" in the request body, we need to add them to the request metadata.
     # Since downstream logic requires "guardrails" to be in the request metadata
     #########################################################################################
     if "guardrails" in data:
         request_body_guardrails = data.pop("guardrails")
-        if "guardrails" in data[_metadata_variable_name] and isinstance(data[_metadata_variable_name]["guardrails"], list):
+        if "guardrails" in data[_metadata_variable_name] and isinstance(
+            data[_metadata_variable_name]["guardrails"], list
+        ):
             data[_metadata_variable_name]["guardrails"].extend(request_body_guardrails)
         else:
             data[_metadata_variable_name]["guardrails"] = request_body_guardrails
-    
+
     #########################################################################################
     if "guardrail_config" in data:
         request_body_guardrail_config = data.pop("guardrail_config")
-        if "guardrail_config" in data[_metadata_variable_name] and isinstance(data[_metadata_variable_name]["guardrail_config"], dict):
-            data[_metadata_variable_name]["guardrail_config"].update(request_body_guardrail_config)
+        if "guardrail_config" in data[_metadata_variable_name] and isinstance(
+            data[_metadata_variable_name]["guardrail_config"], dict
+        ):
+            data[_metadata_variable_name]["guardrail_config"].update(
+                request_body_guardrail_config
+            )
         else:
-            data[_metadata_variable_name]["guardrail_config"] = request_body_guardrail_config
+            data[_metadata_variable_name][
+                "guardrail_config"
+            ] = request_body_guardrail_config
+
 
 def add_provider_specific_headers_to_request(
     data: dict,

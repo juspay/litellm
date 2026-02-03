@@ -1,6 +1,6 @@
 # What is this?
 ## Handler file for calling claude-3 on vertex ai
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 import httpx
 
@@ -23,28 +23,6 @@ class VertexAIError(Exception):
         super().__init__(
             self.message
         )  # Call the base class constructor with the parameters it needs
-
-
-def get_anthropic_beta_from_headers(headers: Dict) -> List[str]:
-    """
-    Extract anthropic-beta header values and convert them to a list.
-    Supports comma-separated values from user headers.
-
-    Used by Vertex AI Anthropic transformation for consistent handling
-    of anthropic-beta headers that should be passed to Vertex AI.
-
-    Args:
-        headers (dict): Request headers dictionary
-
-    Returns:
-        List[str]: List of anthropic beta feature strings, empty list if no header
-    """
-    anthropic_beta_header = headers.get("anthropic-beta")
-    if not anthropic_beta_header:
-        return []
-
-    # Split comma-separated values and strip whitespace
-    return [beta.strip() for beta in anthropic_beta_header.split(",")]
 
 
 class VertexAIAnthropicConfig(AnthropicConfig):
@@ -91,31 +69,59 @@ class VertexAIAnthropicConfig(AnthropicConfig):
 
         data.pop("model", None)  # vertex anthropic doesn't accept 'model' parameter
         
-        # Handle anthropic_beta from user headers
-        anthropic_beta_list = get_anthropic_beta_from_headers(headers)
+        # VertexAI doesn't support output_format parameter, remove it if present
+        data.pop("output_format", None)
         
-        # Auto-add computer-use beta if computer use tools are present
-        tools = data.get("tools", [])
-        if tools:
-            for tool in tools:
-                tool_type = tool.get("type", "")
-                if tool_type.startswith("computer_"):
-                    # Auto-add the computer-use beta header
-                    if "computer-use-2024-10-22" not in anthropic_beta_list:
-                        anthropic_beta_list.append("computer-use-2024-10-22")
-                    break
-        
-        # Remove duplicates while preserving order
-        if anthropic_beta_list:
-            unique_betas = []
-            seen = set()
-            for beta in anthropic_beta_list:
-                if beta not in seen:
-                    unique_betas.append(beta)
-                    seen.add(beta)
-            data["anthropic_beta"] = unique_betas
+        tools = optional_params.get("tools")
+        tool_search_used = self.is_tool_search_used(tools)
+        auto_betas = self.get_anthropic_beta_list(
+            model=model,
+            optional_params=optional_params,
+            computer_tool_used=self.is_computer_tool_used(tools),
+            prompt_caching_set=self.is_cache_control_set(messages),
+            file_id_used=self.is_file_id_used(messages),
+            mcp_server_used=self.is_mcp_server_used(optional_params.get("mcp_servers")),
+        )
+
+        beta_set = set(auto_betas)
+        if tool_search_used:
+            beta_set.add("tool-search-tool-2025-10-19")  # Vertex requires this header for tool search
+
+        if beta_set:
+            data["anthropic_beta"] = list(beta_set)
         
         return data
+
+    def map_openai_params(
+        self,
+        non_default_params: dict,
+        optional_params: dict,
+        model: str,
+        drop_params: bool,
+    ) -> dict:
+        """
+        Override parent method to ensure VertexAI always uses tool-based structured outputs.
+        VertexAI doesn't support the output_format parameter, so we force all models
+        to use the tool-based approach for structured outputs.
+        """
+        # Temporarily override model name to force tool-based approach
+        # This ensures Claude Sonnet 4.5 uses tools instead of output_format
+        original_model = model
+        if "response_format" in non_default_params:
+            model = "claude-3-sonnet-20240229"  # Use a model that will use tool-based approach
+        
+        # Call parent method with potentially modified model name
+        optional_params = super().map_openai_params(
+            non_default_params=non_default_params,
+            optional_params=optional_params,
+            model=model,
+            drop_params=drop_params,
+        )
+        
+        # Restore original model name for any other processing
+        model = original_model
+        
+        return optional_params
 
     def transform_response(
         self,
