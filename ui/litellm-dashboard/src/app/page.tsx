@@ -18,7 +18,7 @@ import { MCPServers } from "@/components/mcp_tools";
 import ModelHubTable from "@/components/AIHub/ModelHubTable";
 import Navbar from "@/components/navbar";
 import { getUiConfig, Organization, proxyBaseUrl, setGlobalLitellmHeaderName } from "@/components/networking";
-import NewUsagePage from "@/components/UsagePage/components/UsagePageView";
+import NewUsagePage from "@/components/new_usage";
 import OldTeams from "@/components/OldTeams";
 import { fetchUserModels } from "@/components/organisms/create_key_button";
 import Organizations, { fetchOrganizations } from "@/components/organizations";
@@ -477,9 +477,11 @@ export default function CreateKeyPage() {
                   <VectorStoreManagement accessToken={accessToken} userRole={userRole} userID={userID} />
                 ) : page == "new_usage" ? (
                   <NewUsagePage
+                    accessToken={accessToken}
+                    userRole={userRole}
+                    userID={userID}
                     teams={(teams as Team[]) ?? []}
                     premiumUser={premiumUser}
-                    organizations={(organizations as Organization[]) ?? []}
                   />
                 ) : (
                   <Usage

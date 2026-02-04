@@ -32,16 +32,16 @@ import {
 import { userDailyActivityCall, userDailyActivityAggregatedCall, tagListCall } from "./networking";
 import { Tag } from "./tag_management/types";
 import ViewUserSpend from "./view_user_spend";
-import TopKeyView from "./top_key_view";
+import TopKeyView from "./UsagePage/components/EntityUsage/TopKeyView";
 import { ActivityMetrics, processActivityData } from "./activity_metrics";
 import UserAgentActivity from "./user_agent_activity";
-import { DailyData, MetricWithMetadata, KeyMetricWithMetadata } from "./usage/types";
-import EntityUsage from "./entity_usage";
+import { DailyData, MetricWithMetadata, KeyMetricWithMetadata } from "./UsagePage/types";
+import EntityUsage from "./UsagePage/components/EntityUsage/EntityUsage";
 import { all_admin_roles } from "../utils/roles";
 import { Team } from "./key_team_helpers/key_list";
-import { EntityList } from "./entity_usage";
+import { EntityList } from "./UsagePage/components/EntityUsage/EntityUsage";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
-import { valueFormatterSpend } from "./usage/utils/value_formatters";
+import { valueFormatterSpend } from "./UsagePage/utils/value_formatters";
 import CloudZeroExportModal from "./cloudzero_export_modal";
 import { ChartLoader } from "./shared/chart_loader";
 import { getProviderLogoAndName } from "./provider_info_helpers";
@@ -89,6 +89,9 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
 
   // State for selected team in User Agent Activity tab
   const [selectedTeamId, setSelectedTeamId] = useState<string>("all");
+
+  // State for top keys and models limits
+  const [topKeysLimit, setTopKeysLimit] = useState<number>(5);
 
   const getAllTags = async () => {
     if (!accessToken) {
@@ -500,9 +503,6 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
                           </Text>
 
                           <ViewUserSpend
-                            userID={userID}
-                            userRole={userRole}
-                            accessToken={accessToken}
                             userSpend={totalSpend}
                             selectedTeam={null}
                             userMaxBudget={null}
@@ -594,11 +594,9 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
                             <Title>Top API Keys</Title>
                             <TopKeyView
                               topKeys={getTopKeys()}
-                              accessToken={accessToken}
-                              userID={userID}
-                              userRole={userRole}
                               teams={null}
-                              premiumUser={premiumUser}
+                              topKeysLimit={topKeysLimit}
+                              setTopKeysLimit={setTopKeysLimit}
                             />
                           </Card>
                         </Col>

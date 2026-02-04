@@ -1775,6 +1775,48 @@ export const teamDailyActivityCall = async (
   }
 };
 
+export const organizationDailyActivityCall = async (
+  accessToken: string,
+  startTime: Date,
+  endTime: Date,
+  page: number = 1,
+  organizationIds: string[] | null = null,
+) => {
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/organization/daily/activity` : `/organization/daily/activity`;
+    const queryParams = new URLSearchParams();
+    queryParams.append("start_date", formatDate(startTime));
+    queryParams.append("end_date", formatDate(endTime));
+    queryParams.append("page_size", "1000");
+    queryParams.append("page", page.toString());
+    if (organizationIds) {
+      queryParams.append("organization_ids", organizationIds.join(","));
+    }
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch organization daily activity:", error);
+    throw error;
+  }
+};
+
 export const customerDailyActivityCall = async (
   accessToken: string,
   startTime: Date,
@@ -1782,16 +1824,39 @@ export const customerDailyActivityCall = async (
   page: number = 1,
   customerIds: string[] | null = null,
 ) => {
-  return fetchDailyActivity({
-    accessToken,
-    endpoint: "/customer/daily/activity",
-    startTime,
-    endTime,
-    page,
-    extraQueryParams: {
-      end_user_ids: customerIds,
-    },
-  });
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/customer/daily/activity` : `/customer/daily/activity`;
+    const queryParams = new URLSearchParams();
+    queryParams.append("start_date", formatDate(startTime));
+    queryParams.append("end_date", formatDate(endTime));
+    queryParams.append("page_size", "1000");
+    queryParams.append("page", page.toString());
+    if (customerIds) {
+      queryParams.append("end_user_ids", customerIds.join(","));
+    }
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch customer daily activity:", error);
+    throw error;
+  }
 };
 
 export const agentDailyActivityCall = async (
@@ -1801,16 +1866,39 @@ export const agentDailyActivityCall = async (
   page: number = 1,
   agentIds: string[] | null = null,
 ) => {
-  return fetchDailyActivity({
-    accessToken,
-    endpoint: "/agent/daily/activity",
-    startTime,
-    endTime,
-    page,
-    extraQueryParams: {
-      agent_ids: agentIds,
-    },
-  });
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/agent/daily/activity` : `/agent/daily/activity`;
+    const queryParams = new URLSearchParams();
+    queryParams.append("start_date", formatDate(startTime));
+    queryParams.append("end_date", formatDate(endTime));
+    queryParams.append("page_size", "1000");
+    queryParams.append("page", page.toString());
+    if (agentIds) {
+      queryParams.append("agent_ids", agentIds.join(","));
+    }
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch agent daily activity:", error);
+    throw error;
+  }
 };
 
 export const getTotalSpendCall = async (accessToken: string) => {

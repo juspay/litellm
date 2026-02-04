@@ -72,7 +72,7 @@ interface EntitySpendData {
 
 export interface EntityList {
   label: string;
-  value: string;
+  value: string | null;
 }
 
 interface EntityUsageProps {
@@ -380,7 +380,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
         filterPlaceholder={`Select ${entityType === "tag" ? "tags" : "teams"} to filter...`}
         selectedFilters={selectedTags}
         onFiltersChange={setSelectedTags}
-        filterOptions={getAllTags() || undefined}
+        filterOptions={getAllTags()?.filter(item => item.value !== null).map(item => ({ ...item, value: item.value as string })) || undefined}
         teams={teams || []}
       />
       <TabGroup>
