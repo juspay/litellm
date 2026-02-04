@@ -59,6 +59,37 @@ from litellm.utils import get_utc_datetime
 from .auth_checks_organization import organization_role_based_access_check
 from .auth_utils import get_model_from_request
 
+
+def _get_free_models_from_router(llm_router: Optional[Router]) -> List[str]:
+    """
+    Get list of free internal models from the router.
+
+    Returns models with custom_llm_provider='hosted_vllm' from the router's model list.
+
+    Args:
+        llm_router: The LiteLLM router instance
+
+    Returns:
+        List of model names (model_name field) that are hosted_vllm models
+    """
+    if llm_router is None:
+        return []
+
+    free_models = []
+    try:
+        all_models = llm_router.model_list or []
+        for model in all_models:
+            litellm_params = model.get("litellm_params", {})
+            custom_llm_provider = litellm_params.get("custom_llm_provider", "")
+            if custom_llm_provider == "hosted_vllm" or custom_llm_provider == "openai":
+                model_name = model.get("model_name", "")
+                if model_name:
+                    free_models.append(model_name)
+    except Exception as e:
+        verbose_proxy_logger.debug(f"Error fetching free models from router: {e}")
+
+    return free_models
+
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
 
@@ -213,13 +244,12 @@ async def common_checks(
                 else:
                     period_text = "budget"
 
-                # Get FREE_MODELS list for the error message
-                import os
-                FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
-                FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
-                free_models_list = ", ".join(FREE_MODELS[:5]) if FREE_MODELS else "internal models"
-                if len(FREE_MODELS) > 5:
-                    free_models_list += f" and {len(FREE_MODELS) - 5} more"
+                # Get free models list from router for the error message
+
+                free_models_list_from_router = _get_free_models_from_router(llm_router=llm_router)
+                free_models_list = ", ".join(free_models_list_from_router[:5]) if free_models_list_from_router else "internal models"
+                if len(free_models_list_from_router) > 5:
+                    free_models_list += f" and {len(free_models_list_from_router) - 5} more"
 
                 print(f"[BUDGET_EXCEEDED] Route: {route}, User: {user_email}, Model: {_model}, Spend: ${user_object.spend:.4f}, Budget: ${user_budget:.4f}")
 
