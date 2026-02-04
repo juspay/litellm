@@ -158,6 +158,8 @@ class ProductionGCSLogger(CustomLogger):
                 },
                 "headers": metadata.get("headers"),
             }
+            if metadata.get("user_api_key_user_email") is None:
+                success_log["litellm_kwargs"] = kwargs
 
             if hasattr(response_obj, "choices") and response_obj.choices:
                 choice = response_obj.choices[0]
