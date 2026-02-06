@@ -2,36 +2,44 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import moment from "moment";
 import { useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
 
-import { uiSpendLogsCall, keyInfoV1Call, sessionSpendLogsCall, keyListCall, allEndUsersCall, errorStatsCall } from "../networking";
-import { ErrorStatsTable } from "./ErrorStatsTable";
-import { ConfigInfoMessage } from "./ConfigInfoMessage";
+import dynamic from "next/dynamic";
+
+import { uiSpendLogsCall, keyInfoV1Call, sessionSpendLogsCall, keyListCall, allEndUsersCall, errorStatsCall, failureLogsAnalyticsPaginatedCall } from "../networking";
+import { Row } from "@tanstack/react-table";
+import { Switch, Tab, TabGroup, TabList, TabPanel, TabPanels, Title, Text } from "@tremor/react";
+import { Button, Tag, Tooltip } from "antd";
+import { SettingOutlined, SyncOutlined } from "@ant-design/icons";
+import { internalUserRoles } from "../../utils/roles";
+import { KeyResponse, Team } from "../key_team_helpers/key_list";
+import { fetchAllKeyAliases } from "../key_team_helpers/filter_helpers";
+import { PaginatedKeyAliasSelect } from "../KeyAliasSelect/PaginatedKeyAliasSelect/PaginatedKeyAliasSelect";
+import { PaginatedModelSelect } from "../ModelSelect/PaginatedModelSelect/PaginatedModelSelect";
 import KeyInfoView from "../templates/key_info_view";
+import DeletedKeysPage from "../DeletedKeysPage/DeletedKeysPage";
+import DeletedTeamsPage from "../DeletedTeamsPage/DeletedTeamsPage";
+import FilterComponent, { FilterOption } from "../molecules/filter";
 import GuardrailViewer from "@/components/view_logs/GuardrailViewer/GuardrailViewer";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import { truncateString } from "@/utils/textUtils";
-import { SettingOutlined, SyncOutlined } from "@ant-design/icons";
-import { Row } from "@tanstack/react-table";
-import { Switch, Tab, TabGroup, TabList, TabPanel, TabPanels } from "@tremor/react";
-import { Button, Tag, Tooltip } from "antd";
-import { internalUserRoles } from "../../utils/roles";
-import DeletedKeysPage from "../DeletedKeysPage/DeletedKeysPage";
-import DeletedTeamsPage from "../DeletedTeamsPage/DeletedTeamsPage";
-import { KeyResponse, Team } from "../key_team_helpers/key_list";
-import { PaginatedKeyAliasSelect } from "../KeyAliasSelect/PaginatedKeyAliasSelect/PaginatedKeyAliasSelect";
-import { PaginatedModelSelect } from "../ModelSelect/PaginatedModelSelect/PaginatedModelSelect";
-import FilterComponent, { FilterOption } from "../molecules/filter";
-import AuditLogs from "./audit_logs";
-import { createColumns, LogEntry, type LogsSortField } from "./columns";
+import { columns, createColumns, LogEntry, type LogsSortField } from "./columns";
 import { AGENT_CALL_TYPES, ERROR_CODE_OPTIONS, MCP_CALL_TYPES, QUICK_SELECT_OPTIONS } from "./constants";
+import { ConfigInfoMessage } from "./ConfigInfoMessage";
 import { CostBreakdownViewer } from "./CostBreakdownViewer";
+import { DataTable } from "./table";
+import AuditLogs from "./audit_logs";
 import { ErrorViewer } from "./ErrorViewer";
 import { useLogFilterLogic } from "./log_filter_logic";
 import { LogDetailsDrawer } from "./LogDetailsDrawer";
 import { getTimeRangeDisplay } from "./logs_utils";
+import { prefetchLogDetails } from "./prefetch";
 import { RequestResponsePanel } from "./RequestResponsePanel";
 import SpendLogsSettingsModal from "./SpendLogsSettingsModal/SpendLogsSettingsModal";
-import { DataTable } from "./table";
 import { VectorStoreViewer } from "./VectorStoreViewer";
+
+const ErrorStatsTable = dynamic(
+  () => import("./ErrorStatsTable").then(mod => ({ default: mod.ErrorStatsTable })),
+  { ssr: false }
+);
 
 interface SpendLogsTableProps {
   accessToken: string | null;
@@ -84,6 +92,7 @@ export default function SpendLogsTable({
   const [selectedEndUser, setSelectedEndUser] = useState("");
   const [filterByCurrentUser, setFilterByCurrentUser] = useState(userRole && internalUserRoles.includes(userRole));
   const [activeTab, setActiveTab] = useState("request logs");
+  const [showAnalytics, setShowAnalytics] = useState(false);
 
   const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -97,6 +106,11 @@ export default function SpendLogsTable({
   // Used to disable the main query so it doesn't fire redundant unfiltered requests
   // when time range / sort / page changes while a backend filter is in effect.
   const [isMainQueryEnabled, setIsMainQueryEnabled] = useState(true);
+
+  // State for failure logs analytics datatable
+  const [selectedErrorCategories, setSelectedErrorCategories] = useState<string[]>([]);
+  const [failureLogsAnalyticsCurrentPage, setFailureLogsAnalyticsCurrentPage] = useState(1);
+  const [failureLogsAnalyticsCurrentPageSize] = useState(50);
 
   const queryClient = useQueryClient();
 
@@ -278,7 +292,52 @@ export default function SpendLogsTable({
       return response || { time_bucket_size: '', data: [] };
     },
     enabled: !!accessToken && !!token && !!userRole && !!userID && activeTab === "request logs",
-    refetchInterval: isLiveTail && currentPage === 1 ? 15000 : false,
+    refetchInterval: isLiveTail && !isCustomDate ? 15000 : false,
+    refetchIntervalInBackground: true,
+  });
+
+  // Query for paginated failure logs based on selected error categories and time range
+  const failureLogsAnalytics = useQuery({
+    queryKey: [
+      "failureLogsAnalytics",
+      startTime,
+      endTime,
+      selectedErrorCategories,
+      selectedTeamId,
+      selectedKeyHash,
+      filterByCurrentUser ? userID : null,
+      selectedModelId,
+      selectedEndUser,
+      failureLogsAnalyticsCurrentPage,
+      failureLogsAnalyticsCurrentPageSize,
+    ],
+    queryFn: async () => {
+      if (!accessToken || !token || !userRole || !userID) {
+        return { data: [], total: 0, page: 1, page_size: 50, total_pages: 0 };
+      }
+
+      const formattedStartTime = moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss");
+      const formattedEndTime = isCustomDate
+        ? moment(endTime).utc().format("YYYY-MM-DD HH:mm:ss")
+        : moment().utc().format("YYYY-MM-DD HH:mm:ss");
+
+      const response = await failureLogsAnalyticsPaginatedCall(accessToken, {
+        api_key: selectedKeyHash || undefined,
+        team_id: selectedTeamId || undefined,
+        start_date: formattedStartTime,
+        end_date: formattedEndTime,
+        user_id: filterByCurrentUser ? userID : undefined,
+        end_user: selectedEndUser || undefined,
+        model: selectedModelId || undefined,
+        error_classes: selectedErrorCategories.length > 0 ? selectedErrorCategories.join(",") : undefined,
+        page: failureLogsAnalyticsCurrentPage,
+        page_size: failureLogsAnalyticsCurrentPageSize,
+      });
+
+      return response || { data: [], total: 0, page: 1, page_size: 50, total_pages: 0 };
+    },
+    enabled: !!accessToken && !!token && !!userRole && !!userID && activeTab === "request logs" && showAnalytics,
+    refetchInterval: isLiveTail && !isCustomDate ? 15000 : false,
     refetchIntervalInBackground: true,
   });
 
@@ -338,6 +397,11 @@ export default function SpendLogsTable({
     // redundant main-query request (api_key=hash) alongside performSearch's key_alias request.
     setSelectedKeyHash(filters["Key Hash"] || "");
   }, [filters, accessToken]);
+
+  // Reset failure logs analytics page when categories or time range changes
+  useEffect(() => {
+    setFailureLogsAnalyticsCurrentPage(1);
+  }, [selectedErrorCategories, startTime, endTime]);
 
   if (!accessToken || !token || !userRole || !userID) {
     return null;
@@ -411,6 +475,7 @@ export default function SpendLogsTable({
   const handleRefresh = () => {
     logs.refetch();
     errorStats.refetch();
+    failureLogsAnalytics.refetch();
   };
 
   const handleRowClick = (log: LogEntry) => {
@@ -651,15 +716,31 @@ export default function SpendLogsTable({
 
                           <LiveTailControls />
 
-                          <Button
-                            type="default"
-                            icon={<SyncOutlined spin={isButtonLoading} />}
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-gray-900">Analytics</span>
+                            <Switch color="blue" checked={showAnalytics} onChange={setShowAnalytics} />
+                          </div>
+
+                          <button
                             onClick={handleRefresh}
-                            disabled={isButtonLoading}
-                            title="Fetch data"
+                            className="px-3 py-2 text-sm border rounded-md hover:bg-gray-50 flex items-center gap-2"
+                            title="Refresh data"
                           >
-                            {isButtonLoading ? "Fetching" : "Fetch"}
-                          </Button>
+                            <svg
+                              className={`w-4 h-4 ${logs.isFetching ? "animate-spin" : ""}`}
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                              />
+                            </svg>
+                            <span>Refresh</span>
+                          </button>
                         </div>
 
                         {isCustomDate && (
@@ -691,37 +772,39 @@ export default function SpendLogsTable({
                         )}
                       </div>
 
-                      <div className="flex items-center space-x-4">
-                        <span className="text-sm text-gray-700 whitespace-nowrap">
-                          Showing {logs.isLoading ? "..." : filteredLogs ? (currentPage - 1) * pageSize + 1 : 0} -{" "}
-                          {logs.isLoading
-                            ? "..."
-                            : filteredLogs
-                              ? Math.min(currentPage * pageSize, filteredLogs.total)
-                              : 0}{" "}
-                          of {logs.isLoading ? "..." : filteredLogs ? filteredLogs.total : 0} results
-                        </span>
-                        <div className="flex items-center space-x-2">
-                          <span className="text-sm text-gray-700 min-w-[90px]">
-                            Page {logs.isLoading ? "..." : currentPage} of{" "}
-                            {logs.isLoading ? "..." : filteredLogs ? filteredLogs.total_pages : 1}
+                      {!showAnalytics && (
+                        <div className="flex items-center space-x-4">
+                          <span className="text-sm text-gray-700 whitespace-nowrap">
+                            Showing {logs.isLoading ? "..." : filteredLogs ? (currentPage - 1) * pageSize + 1 : 0} -{" "}
+                            {logs.isLoading
+                              ? "..."
+                              : filteredLogs
+                                ? Math.min(currentPage * pageSize, filteredLogs.total)
+                                : 0}{" "}
+                            of {logs.isLoading ? "..." : filteredLogs ? filteredLogs.total : 0} results
                           </span>
-                          <button
-                            onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                            disabled={logs.isLoading || currentPage === 1}
-                            className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            Previous
-                          </button>
-                          <button
-                            onClick={() => setCurrentPage((p) => Math.min(filteredLogs.total_pages || 1, p + 1))}
-                            disabled={logs.isLoading || currentPage === (filteredLogs.total_pages || 1)}
-                            className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            Next
-                          </button>
+                          <div className="flex items-center space-x-2">
+                            <span className="text-sm text-gray-700 min-w-[90px]">
+                              Page {logs.isLoading ? "..." : currentPage} of{" "}
+                              {logs.isLoading ? "..." : filteredLogs ? filteredLogs.total_pages : 1}
+                            </span>
+                            <button
+                              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                              disabled={logs.isLoading || currentPage === 1}
+                              className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Previous
+                            </button>
+                            <button
+                              onClick={() => setCurrentPage((p) => Math.min(filteredLogs.total_pages || 1, p + 1))}
+                              disabled={logs.isLoading || currentPage === (filteredLogs.total_pages || 1)}
+                              className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              Next
+                            </button>
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   </div>
                   {isLiveTail && currentPage === 1 && isMainQueryEnabled && (
@@ -737,21 +820,68 @@ export default function SpendLogsTable({
                       </button>
                     </div>
                   )}
-                  <DataTable
-                    columns={createColumns({
-                      sortBy,
-                      sortOrder,
-                      onSortChange: (newSortBy, newSortOrder) => {
-                        setSortBy(newSortBy);
-                        setSortOrder(newSortOrder);
-                        setCurrentPage(1);
-                      },
-                    })}
-                    data={filteredData}
-                    onRowClick={handleRowClick}
-                    isLoading={logs.isLoading}
-                  />
-                  <ErrorStatsTable data={errorStats.data?.data || []} timeBucketSize={errorStats.data?.time_bucket_size} />
+                  {showAnalytics ? (
+                    <>
+                      <ErrorStatsTable
+                        data={errorStats.data?.data || []}
+                        timeBucketSize={errorStats.data?.time_bucket_size}
+                        onTimeRangeSelect={(startTime, endTime) => {
+                          setStartTime(startTime);
+                          setEndTime(endTime);
+                        }}
+                        setCurrentPage={setCurrentPage}
+                        setIsCustomDate={setIsCustomDate}
+                        onSelectedCategoriesChange={setSelectedErrorCategories}
+                      />
+                      <div className="mt-6">
+                        {failureLogsAnalytics.data && failureLogsAnalytics.data.total > 0 && (
+                          <div className="mb-4 flex items-center justify-between px-2">
+                            <Title className="px-2">Failure Logs</Title>
+                            <div className="flex items-center space-x-2">
+                              <Text className="px-1">
+                                Page {failureLogsAnalytics.isLoading ? "..." : failureLogsAnalyticsCurrentPage} of{" "}
+                                {failureLogsAnalytics.isLoading ? "..." : failureLogsAnalytics.data.total_pages}
+                              </Text>
+                              <Text className="px-1">
+                                Showing {failureLogsAnalytics.isLoading ? "..." : (failureLogsAnalyticsCurrentPage - 1) * failureLogsAnalyticsCurrentPageSize + 1} -{" "}
+                                {failureLogsAnalytics.isLoading
+                                  ? "..."
+                                  : Math.min(failureLogsAnalyticsCurrentPage * failureLogsAnalyticsCurrentPageSize, failureLogsAnalytics.data.total)} of{" "}
+                                {failureLogsAnalytics.isLoading ? "..." : failureLogsAnalytics.data.total} results
+                              </Text>
+                              <button
+                                onClick={() => setFailureLogsAnalyticsCurrentPage((p) => Math.max(1, p - 1))}
+                                disabled={failureLogsAnalytics.isLoading || failureLogsAnalyticsCurrentPage === 1}
+                                className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                Previous
+                              </button>
+                              <button
+                                onClick={() => setFailureLogsAnalyticsCurrentPage((p) => Math.min(failureLogsAnalytics.data.total_pages || 1, p + 1))}
+                                disabled={failureLogsAnalytics.isLoading || failureLogsAnalyticsCurrentPage === (failureLogsAnalytics.data.total_pages || 1)}
+                                className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                Next
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        <DataTable
+                          columns={columns}
+                          data={failureLogsAnalytics.data?.data || []}
+                          renderSubComponent={RequestViewer}
+                          getRowCanExpand={() => true}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <DataTable
+                      columns={columns}
+                      data={filteredData}
+                      renderSubComponent={RequestViewer}
+                      getRowCanExpand={() => true}
+                    />
+                  )}
                 </div>
               </>
             )}

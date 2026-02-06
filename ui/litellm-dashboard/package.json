@@ -47,7 +47,13 @@
     "react-syntax-highlighter": "15.6.6",
     "remark-gfm": "4.0.1",
     "tailwind-merge": "3.4.0",
-    "uuid": "11.1.0"
+    "uuid": "11.1.0",
+    "@docusaurus/theme-mermaid": "^3.8.1",
+    "@headlessui/react": "^1.7.18",
+    "apexcharts": "^5.3.6",
+    "fs": "^0.0.1-security",
+    "jsonwebtoken": "^9.0.2",
+    "react-apexcharts": "^1.9.0"
   },
   "devDependencies": {
     "@playwright/test": "1.58.1",
