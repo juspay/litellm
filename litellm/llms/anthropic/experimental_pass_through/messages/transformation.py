@@ -9,6 +9,7 @@ from litellm.llms.base_llm.anthropic_messages.transformation import (
 )
 from litellm.types.llms.anthropic import (
     ANTHROPIC_BETA_HEADER_VALUES,
+    BLOCKED_ANTHROPIC_BETA_HEADER_PATTERNS,
     AnthropicMessagesRequest,
 )
 from litellm.types.llms.anthropic_messages.anthropic_response import (
@@ -155,6 +156,47 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
         )
 
     @staticmethod
+    def _is_blocked_anthropic_beta_header(header: str) -> bool:
+        """Check if a header matches any blocked pattern."""
+        for pattern in BLOCKED_ANTHROPIC_BETA_HEADER_PATTERNS:
+            if header.startswith(pattern):
+                return True
+        return False
+
+    @staticmethod
+    def _filter_blocked_anthropic_beta_headers(headers: dict) -> dict:
+        """
+        Filter out blocked anthropic-beta headers to prevent API errors.
+
+        Removes headers like 'prompt-caching-scope-2026-01-05' that cause
+        Anthropic API to reject requests.
+        """
+        existing_beta = headers.get("anthropic-beta")
+        if existing_beta is None:
+            return headers
+
+        # Split, filter, and rejoin
+        raw_headers = [h.strip() for h in existing_beta.split(",")]
+        valid_headers = [
+            h for h in raw_headers
+            if not AnthropicMessagesConfig._is_blocked_anthropic_beta_header(h)
+        ]
+
+        # Log dropped headers for debugging
+        dropped_headers = set(raw_headers) - set(valid_headers)
+        if dropped_headers:
+            verbose_logger.debug(
+                f"Dropping blocked anthropic-beta headers: {dropped_headers}"
+            )
+
+        if valid_headers:
+            headers["anthropic-beta"] = ", ".join(valid_headers)
+        else:
+            del headers["anthropic-beta"]
+
+        return headers
+
+    @staticmethod
     def _update_headers_with_anthropic_beta(
         headers: dict,
         optional_params: dict,
@@ -162,27 +204,31 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
     ) -> dict:
         """
         Auto-inject anthropic-beta headers based on features used.
-        
+
         Handles:
+        - Filters blocked headers from client requests
         - context_management: adds 'context-management-2025-06-27'
         - tool_search: adds provider-specific tool search header
-        
+
         Args:
             headers: Request headers dict
             optional_params: Optional parameters including tools, context_management
             custom_llm_provider: Provider name for looking up correct tool search header
         """
+        # First filter out any blocked headers from client
+        headers = AnthropicMessagesConfig._filter_blocked_anthropic_beta_headers(headers)
+
         beta_values: set = set()
-        
+
         # Get existing beta headers if any
         existing_beta = headers.get("anthropic-beta")
         if existing_beta:
             beta_values.update(b.strip() for b in existing_beta.split(","))
-        
+
         # Check for context management
         if optional_params.get("context_management") is not None:
             beta_values.add(ANTHROPIC_BETA_HEADER_VALUES.CONTEXT_MANAGEMENT_2025_06_27.value)
-        
+
         # Check for tool search tools
         tools = optional_params.get("tools")
         if tools:
@@ -191,8 +237,8 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
                 # Use provider-specific tool search header
                 tool_search_header = get_tool_search_beta_header(custom_llm_provider)
                 beta_values.add(tool_search_header)
-        
+
         if beta_values:
             headers["anthropic-beta"] = ",".join(sorted(beta_values))
-        
+
         return headers
