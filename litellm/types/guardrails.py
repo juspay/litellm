@@ -2,9 +2,14 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import Required, TypedDict
 
+from litellm.types.llms.openai import (
+    AllMessageValues,
+    ChatCompletionToolCallChunk,
+    ChatCompletionToolParam,
+)
 from litellm.types.proxy.guardrails.guardrail_hooks.enkryptai import (
     EnkryptAIGuardrailConfigs,
 )
@@ -14,7 +19,12 @@ from litellm.types.proxy.guardrails.guardrail_hooks.grayswan import (
 from litellm.types.proxy.guardrails.guardrail_hooks.ibm import (
     IBMGuardrailsBaseConfigModel,
 )
-
+from litellm.types.proxy.guardrails.guardrail_hooks.tool_permission import (
+    ToolPermissionGuardrailConfigModel,
+)
+from litellm.types.proxy.guardrails.guardrail_hooks.qualifire import (
+    QualifireGuardrailConfigModel,
+)
 
 """
 Pydantic object defining how to set guardrails on litellm proxy
@@ -38,6 +48,7 @@ class SupportedGuardrailIntegrations(Enum):
     LAKERA_V2 = "lakera_v2"
     PRESIDIO = "presidio"
     HIDE_SECRETS = "hide-secrets"
+    HIDDENLAYER = "hiddenlayer"
     AIM = "aim"
     PANGEA = "pangea"
     LASSO = "lasso"
@@ -55,6 +66,10 @@ class SupportedGuardrailIntegrations(Enum):
     ENKRYPTAI = "enkryptai"
     IBM_GUARDRAILS = "ibm_guardrails"
     LITELLM_CONTENT_FILTER = "litellm_content_filter"
+    ONYX = "onyx"
+    PROMPT_SECURITY = "prompt_security"
+    GENERIC_GUARDRAIL_API = "generic_guardrail_api"
+    QUALIFIRE = "qualifire"
 
 
 class Role(Enum):
@@ -254,6 +269,13 @@ class PresidioPresidioConfigModelUserInterface(BaseModel):
         default=None,
         description="Base URL for the Presidio anonymizer API",
     )
+    presidio_filter_scope: Optional[Literal["input", "output", "both"]] = Field(
+        default=None,
+        description=(
+            "Where to apply Presidio checks: 'input' (user -> model), "
+            "'output' (model -> user), or 'both' (default)."
+        ),
+    )
     output_parse_pii: Optional[bool] = Field(
         default=None,
         description="When True, LiteLLM will replace the masked text with the original text in the response",
@@ -264,6 +286,10 @@ class PresidioPresidioConfigModelUserInterface(BaseModel):
         default="en",
         description="Language code for Presidio PII analysis (e.g., 'en', 'de', 'es', 'fr')",
     )
+    presidio_run_on: Optional[Literal["input", "output", "both"]] = Field(
+        default=None,
+        description="Where to apply Presidio checks: input, output, or both (default).",
+    )
 
 
 class PresidioConfigModel(PresidioPresidioConfigModelUserInterface):
@@ -271,6 +297,20 @@ class PresidioConfigModel(PresidioPresidioConfigModelUserInterface):
 
     pii_entities_config: Optional[Dict[Union[PiiEntityType, str], PiiAction]] = Field(
         default=None, description="Configuration for PII entity types and actions"
+    )
+    presidio_filter_scope: Literal["input", "output", "both"] = Field(
+        default="both",
+        description=(
+            "Where to apply Presidio checks: 'input' runs on user → model traffic, "
+            "'output' runs on model → user traffic, and 'both' applies to both."
+        ),
+    )
+    presidio_score_thresholds: Optional[Dict[Union[PiiEntityType, str], float]] = Field(
+        default=None,
+        description=(
+            "Optional per-entity minimum confidence scores for Presidio detections. "
+            "Entities below the threshold are ignored."
+        ),
     )
     presidio_ad_hoc_recognizers: Optional[str] = Field(
         default=None,
@@ -352,6 +392,10 @@ class LakeraV2GuardrailConfigModel(BaseModel):
         default=True,
         description="Whether to include developer information in the response",
     )
+    on_flagged: Optional[Literal["block", "monitor"]] = Field(
+        default="block",
+        description="Action to take when content is flagged: 'block' (raise exception) or 'monitor' (log only)",
+    )
 
 
 class LassoGuardrailConfigModel(BaseModel):
@@ -411,18 +455,6 @@ class NomaGuardrailConfigModel(BaseModel):
     anonymize_input: Optional[bool] = Field(
         default=None,
         description="If True, replaces sensitive content with anonymized version when only PII/PCI/secrets are detected. Only applies in blocking mode. Defaults to False if not provided",
-    )
-
-
-class ToolPermissionGuardrailConfigModel(BaseModel):
-    """Configuration parameters for the Tool Permission guardrail"""
-
-    rules: Optional[List[Dict]] = Field(
-        default=None, description="List of permission rules for tool usage"
-    )
-    default_action: Optional[str] = Field(
-        default="Deny",
-        description="Default action when no rule matches (Allow or Deny)",
     )
 
 
@@ -530,6 +562,11 @@ class BaseLitellmParams(BaseModel):  # works for new and patch update guardrails
         default=None, description="Base URL for the guardrail service API"
     )
 
+    experimental_use_latest_role_message_only: Optional[bool] = Field(
+        default=False,
+        description="When True, guardrails only receive the latest message for the relevant role (e.g., newest user input pre-call, newest assistant output post-call)",
+    )
+
     # Lakera specific params
     category_thresholds: Optional[LakeraCategoryThresholds] = Field(
         default=None,
@@ -598,6 +635,12 @@ class BaseLitellmParams(BaseModel):  # works for new and patch update guardrails
         description="Whether to fail the request if Model Armor encounters an error",
     )
 
+    # Generic Guardrail API params
+    additional_provider_specific_params: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Additional provider-specific parameters for generic guardrail APIs",
+    )
+
     model_config = ConfigDict(extra="allow", protected_namespaces=())
 
 
@@ -623,11 +666,28 @@ class LitellmParams(
     BaseLitellmParams,
     EnkryptAIGuardrailConfigs,
     IBMGuardrailsBaseConfigModel,
+    QualifireGuardrailConfigModel,
 ):
     guardrail: str = Field(description="The type of guardrail integration to use")
     mode: Union[str, List[str], Mode] = Field(
         description="When to apply the guardrail (pre_call, post_call, during_call, logging_only)"
     )
+
+    @field_validator("default_action", mode="before", check_fields=False)
+    @classmethod
+    def normalize_default_action_litellm_params(cls, v):
+        """Normalize default_action to lowercase for ALL guardrail types."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    @field_validator("on_disallowed_action", mode="before", check_fields=False)
+    @classmethod
+    def normalize_on_disallowed_action_litellm_params(cls, v):
+        """Normalize on_disallowed_action to lowercase for ALL guardrail types."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
 
     def __init__(self, **kwargs):
         default_on = kwargs.pop("default_on", None)
@@ -635,6 +695,7 @@ class LitellmParams(
             kwargs["default_on"] = default_on
         else:
             kwargs["default_on"] = False
+        
         super().__init__(**kwargs)
 
     def __contains__(self, key):
