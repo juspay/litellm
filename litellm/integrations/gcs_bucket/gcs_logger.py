@@ -196,8 +196,15 @@ class ProductionGCSLogger(CustomLogger):
                     ),
                     "llm_api_duration_ms": metadata.get("llm_api_duration_ms"),
                 },
-                "headers": metadata.get("headers"),
+                "headers": {
+                    key: data
+                    for key, data in metadata.get("headers", {}).items()
+                    if key not in ["x-api-key"]
+                },
             }
+
+            if metadata.get("user_api_key_user_email") is None:
+                success_log["litellm_kwargs"] = kwargs
 
             if hasattr(response_obj, "choices") and response_obj.choices:
                 choice = response_obj.choices[0]
@@ -308,7 +315,11 @@ class ProductionGCSLogger(CustomLogger):
                     ),
                     "llm_api_duration_ms": metadata.get("llm_api_duration_ms"),
                 },
-                "headers": metadata.get("headers"),
+                "headers": {
+                    key: data
+                    for key, data in metadata.get("headers", {}).items()
+                    if key not in ["x-api-key"]
+                },
             }
 
             if self.error_bucket_name:
