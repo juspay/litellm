@@ -85,6 +85,15 @@ def build_code_interpreter_log_outputs(
     return [OutputCodeInterpreterCallLog(type="logs", logs=logs)] if logs else None
 
 
+class OutputImageGenerationCall(BaseLiteLLMOpenAIResponseObject):
+    """An image generation call output"""
+
+    type: Literal["image_generation_call"]
+    id: str
+    status: Literal["in_progress", "completed", "incomplete", "failed"]
+    result: Optional[str]  # Base64 encoded image data (without data:image prefix)
+
+
 class GenericResponseOutputItem(BaseLiteLLMOpenAIResponseObject):
     """
     Generic response API output item

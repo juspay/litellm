@@ -341,6 +341,27 @@ def image_generation(  # noqa: PLR0915
             azure_ad_token = optional_params.pop(
                 "azure_ad_token", None
             ) or get_secret_str("AZURE_AD_TOKEN")
+            
+            # Create azure_ad_token_provider from tenant_id, client_id, client_secret if not already provided
+            if azure_ad_token_provider is None:
+                from litellm.llms.azure.common_utils import (
+                    get_azure_ad_token_from_entra_id,
+                )
+
+                # Extract Azure AD credentials from litellm_params
+                tenant_id = litellm_params_dict.get("tenant_id")
+                client_id = litellm_params_dict.get("client_id")
+                client_secret = litellm_params_dict.get("client_secret")
+                azure_scope = litellm_params_dict.get("azure_scope") or "https://cognitiveservices.azure.com/.default"
+                
+                # Create token provider if credentials are available
+                if tenant_id and client_id and client_secret:
+                    azure_ad_token_provider = get_azure_ad_token_from_entra_id(
+                        tenant_id=tenant_id,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        scope=azure_scope,
+                    )
 
             # Create azure_ad_token_provider from tenant_id, client_id, client_secret if not already provided
             if azure_ad_token_provider is None:

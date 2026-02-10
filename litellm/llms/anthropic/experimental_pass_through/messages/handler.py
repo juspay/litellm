@@ -344,6 +344,19 @@ def anthropic_messages_handler(
         api_base=litellm_params.api_base,
         api_key=litellm_params.api_key,
     )
+    
+    # Store agentic loop params in logging object for agentic hooks
+    # This provides original request context needed for follow-up calls
+    if litellm_logging_obj is not None:
+        litellm_logging_obj.model_call_details["agentic_loop_params"] = {
+            "model": original_model,
+            "custom_llm_provider": custom_llm_provider,
+        }
+        
+        # Check if stream was converted for WebSearch interception
+        # This is set in the async wrapper above when stream=True is converted to stream=False
+        if kwargs.get("_websearch_interception_converted_stream", False):
+            litellm_logging_obj.model_call_details["websearch_interception_converted_stream"] = True
 
     # Store agentic loop params in logging object for agentic hooks
     # This provides original request context needed for follow-up calls

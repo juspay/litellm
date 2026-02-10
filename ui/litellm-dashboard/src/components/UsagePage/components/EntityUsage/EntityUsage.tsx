@@ -77,7 +77,7 @@ interface EntitySpendData {
 
 export interface EntityList {
   label: string;
-  value: string;
+  value: string | null;
 }
 
 interface EntityUsageProps {
@@ -129,6 +129,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
     args: [accessToken, startTime, endTime, entityFilterArg],
     enabled,
   });
+  const { teams } = useTeams();
 
   const spendData = spendDataRaw as unknown as EntitySpendData;
 

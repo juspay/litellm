@@ -38,6 +38,17 @@ class AzureFoundryModelInfo(BaseLLMModelInfo):
         return "default"
 
     @staticmethod
+    def get_azure_ai_route(model: str) -> Literal["agents", "default"]:
+        """
+        Get the Azure AI route for the given model.
+        
+        Similar to BedrockModelInfo.get_bedrock_route().
+        """
+        if "agents/" in model:
+            return "agents"
+        return "default"
+
+    @staticmethod
     def get_api_base(api_base: Optional[str] = None) -> Optional[str]:
         return api_base or litellm.api_base or get_secret_str("AZURE_AI_API_BASE")
 

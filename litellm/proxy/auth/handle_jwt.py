@@ -1140,7 +1140,7 @@ class JWTAuthManager:
     ) -> Tuple[
         Optional[LiteLLM_UserTable],
         Optional[LiteLLM_OrganizationTable],
-        Optional[LiteLLM_EndUserTable],
+        Optional[LiteLLM_EndUserTable], 
         Optional[LiteLLM_TeamMembership],
     ]:
         """Get user, org, and end user objects. Also resolves org aliases to IDs if configured."""

@@ -45,6 +45,10 @@ from litellm.proxy._types import (
 )
 from litellm.secret_managers.main import get_secret_bool
 from litellm.types.integrations.slack_alerting import LITELLM_LOGO_URL
+from litellm.constants import (
+    EMAIL_BUDGET_ALERT_MAX_SPEND_ALERT_PERCENTAGE,
+    EMAIL_BUDGET_ALERT_TTL,
+)
 
 
 class BaseEmailLogger(CustomLogger):

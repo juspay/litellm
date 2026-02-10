@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import traceback
+import yaml
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
@@ -3233,6 +3234,15 @@ async def can_modify_verification_token(
 
         # Not team admin and doesn't own the key
         return False
+    
+    # 3. For personal keys: only key owner can modify
+    if key_info.user_id is not None and key_info.user_id == user_api_key_dict.user_id:
+        return True
+    
+    # Default: deny
+    return False
+
+
 
     # 4. For personal keys: only key owner can modify
     if key_info.user_id is not None and key_info.user_id == user_api_key_dict.user_id:
@@ -3431,6 +3441,75 @@ async def _persist_deleted_verification_tokens(
     )
 
 
+def _transform_verification_tokens_to_deleted_records(
+    keys: List[LiteLLM_VerificationToken],
+    user_api_key_dict: UserAPIKeyAuth,
+    litellm_changed_by: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Transform verification tokens into deleted token records ready for persistence."""
+    if not keys:
+        return []
+
+    deleted_at = datetime.now(timezone.utc)
+    records = []
+    for key in keys:
+        key_payload = key.model_dump()
+        deleted_record = LiteLLM_DeletedVerificationToken(
+            **key_payload,
+            deleted_at=deleted_at,
+            deleted_by=user_api_key_dict.user_id,
+            deleted_by_api_key=user_api_key_dict.api_key,
+            litellm_changed_by=litellm_changed_by,
+        )
+        record = deleted_record.model_dump()
+
+        # Map org_id to organization_id (model uses org_id, but schema expects organization_id)
+        org_id_value = record.pop("org_id", None)
+        if org_id_value is not None:
+            record["organization_id"] = org_id_value
+
+        for json_field in ["aliases", "config", "permissions", "metadata", "model_spend", "model_max_budget", "router_settings"]:
+            if json_field in record and record[json_field] is not None:
+                record[json_field] = json.dumps(record[json_field])
+
+        for rel_key in ("litellm_budget_table", "litellm_organization_table", "object_permission", "id"):
+            record.pop(rel_key, None)
+
+        records.append(record)
+
+    return records
+
+
+async def _save_deleted_verification_token_records(
+    records: List[Dict[str, Any]],
+    prisma_client: PrismaClient,
+) -> None:
+    """Save deleted verification token records to the database."""
+    if not records:
+        return
+    await prisma_client.db.litellm_deletedverificationtoken.create_many(
+        data=records
+    )
+
+
+async def _persist_deleted_verification_tokens(
+    keys: List[LiteLLM_VerificationToken],
+    prisma_client: PrismaClient,
+    user_api_key_dict: UserAPIKeyAuth,
+    litellm_changed_by: Optional[str] = None,
+) -> None:
+    """Persist deleted verification token records by transforming and saving them."""
+    records = _transform_verification_tokens_to_deleted_records(
+        keys=keys,
+        user_api_key_dict=user_api_key_dict,
+        litellm_changed_by=litellm_changed_by,
+    )
+    await _save_deleted_verification_token_records(
+        records=records,
+        prisma_client=prisma_client,
+    )
+
+
 async def delete_key_aliases(
     key_aliases: List[str],
     user_api_key_cache: DualCache,
@@ -3576,6 +3655,40 @@ async def _rotate_master_key(  # noqa: PLR0915
                     where={"credential_name": cred.credential_name},
                     data={
                         **_cred_data,
+                        "updated_by": user_api_key_dict.user_id,
+                    },
+                )
+            except Exception as e:
+                verbose_proxy_logger.error(
+                    f"Failed to re-encrypt credential {cred.credential_name}: {str(e)}"
+                )
+                # Continue with next credential instead of failing entire rotation
+                continue
+        verbose_proxy_logger.debug(
+            f"Successfully re-encrypted {len(credentials)} credentials with new master key"
+        )
+
+    # 5. process credentials table
+    try:
+        credentials = await prisma_client.db.litellm_credentialstable.find_many()
+    except Exception:
+        credentials = None
+    if credentials:
+        from litellm.proxy.credential_endpoints.endpoints import update_db_credential
+
+        for cred in credentials:
+            try:
+                decrypted_cred = proxy_config.decrypt_credentials(cred)
+                encrypted_cred = update_db_credential(
+                    db_credential=cred,
+                    updated_patch=decrypted_cred,
+                    new_encryption_key=new_master_key,
+                )
+                credential_object_jsonified = jsonify_object(encrypted_cred.model_dump())
+                await prisma_client.db.litellm_credentialstable.update(
+                    where={"credential_name": cred.credential_name},
+                    data={
+                        **credential_object_jsonified,
                         "updated_by": user_api_key_dict.user_id,
                     },
                 )

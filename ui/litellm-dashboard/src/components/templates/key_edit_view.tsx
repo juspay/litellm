@@ -280,6 +280,15 @@ export function KeyEditView({
     }
   };
 
+  const handleSubmit = async (values: any) => {
+    try {
+      setIsKeySaving(true);
+      await onSubmit(values);
+    } finally {
+      setIsKeySaving(false);
+    }
+  };
+
   return (
     <Form form={form} onFinish={handleSubmit} initialValues={initialValues} layout="vertical">
       <Form.Item label="Key Alias" name="key_alias">
@@ -494,6 +503,21 @@ export function KeyEditView({
             disabled={!premiumUser}
           />
         )}
+      </Form.Item>
+
+      <Form.Item
+        label={
+          <span>
+            Disable Global Guardrails{" "}
+            <Tooltip title="When enabled, this key will bypass any guardrails configured to run on every request (global guardrails)">
+              <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+            </Tooltip>
+          </span>
+        }
+        name="disable_global_guardrails"
+        valuePropName="checked"
+      >
+        <Switch disabled={!premiumUser} checkedChildren="Yes" unCheckedChildren="No" />
       </Form.Item>
 
       <Form.Item label="Tags" name="tags">

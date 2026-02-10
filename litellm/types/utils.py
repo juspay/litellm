@@ -444,6 +444,17 @@ class CallTypes(str, Enum):
     #########################################################
     acreate_skill = "acreate_skill"
 
+    #########################################################
+    # A2A Call Types
+    #########################################################
+    asend_message = "asend_message"
+    send_message = "send_message"
+
+    #########################################################
+    # Claude Code Call Types
+    #########################################################
+    acreate_skill = "acreate_skill"
+
 
 CallTypesLiteral = Literal[
     "embedding",

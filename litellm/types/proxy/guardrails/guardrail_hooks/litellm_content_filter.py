@@ -117,6 +117,68 @@ class ContentFilterCategoryConfig(BaseLiteLLMOpenAIResponseObject):
     )
 
 
+# Detection type enum
+class DetectionType(str, Enum):
+    PATTERN = "pattern"
+    BLOCKED_WORD = "blocked_word"
+    CATEGORY_KEYWORD = "category_keyword"
+
+
+# Typed detection dictionaries
+class PatternDetection(TypedDict):
+    type: Literal["pattern"]
+    pattern_name: str
+    # Note: matched_text is intentionally excluded to avoid logging sensitive content
+    action: str  # ContentFilterAction.value
+
+
+class BlockedWordDetection(TypedDict):
+    type: Literal["blocked_word"]
+    keyword: str
+    action: str  # ContentFilterAction.value
+    description: Optional[str]
+
+
+class CategoryKeywordDetection(TypedDict):
+    type: Literal["category_keyword"]
+    category: str
+    keyword: str
+    severity: str
+    action: str  # ContentFilterAction.value
+
+
+ContentFilterDetection = Union[PatternDetection, BlockedWordDetection, CategoryKeywordDetection]
+
+
+class ContentFilterCategoryConfig(BaseLiteLLMOpenAIResponseObject):
+    """
+    category: "harmful_self_harm"
+                  enabled: true
+                  action: "BLOCK"
+                  severity_threshold: "medium"
+                  category_file: "/path/to/custom_file.yaml"  # optional override
+    """
+
+    category: str = Field(
+        description="The category to detect",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether the category is enabled",
+    )
+    action: Literal["BLOCK", "MASK"] = Field(
+        description="The action to take when the category is detected",
+    )
+    severity_threshold: Literal["high", "medium", "low"] = Field(
+        default="medium",
+        description="The severity threshold to detect the category",
+    )
+    category_file: Optional[str] = Field(
+        default=None,
+        description="Optional override. Use your own category file instead of the default one.",
+    )
+
+
 class LitellmContentFilterGuardrailConfigModel(GuardrailConfigModel):
     """
     Configuration model for LiteLLM Content Filter guardrail.

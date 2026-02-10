@@ -25,6 +25,10 @@ from litellm.types.guardrails import (
     LitellmParams,
     SupportedGuardrailIntegrations,
 )
+from litellm.proxy.guardrails.guardrail_hooks.grayswan import (
+    GraySwanGuardrail,
+    initialize_guardrail as initialize_grayswan,
+)
 
 from .guardrail_initializers import (
     initialize_bedrock,

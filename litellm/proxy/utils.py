@@ -142,6 +142,7 @@ else:
 
 unified_guardrail = UnifiedLLMGuardrails()
 
+_anthropic_async_clients = {}
 
 def print_verbose(print_statement):
     """
@@ -1038,6 +1039,7 @@ class ProxyLogging:
         """
         from litellm.integrations.prometheus import PrometheusLogger
         from litellm.types.guardrails import GuardrailEventHooks
+        from litellm.integrations.prometheus import PrometheusLogger
 
         # Determine the event type based on call type
         if (
@@ -1309,6 +1311,108 @@ class ProxyLogging:
             )
 
         return data
+
+    async def _process_prompt_template(
+        self,
+        data: dict,
+        litellm_logging_obj: Any,
+        prompt_id: Any,
+        prompt_version: Any,
+        call_type: CallTypesLiteral,
+    ) -> None:
+        """Process prompt template if applicable."""
+
+        from litellm.proxy.prompts.prompt_endpoints import (
+            construct_versioned_prompt_id,
+            get_latest_version_prompt_id,
+        )
+        from litellm.proxy.prompts.prompt_registry import IN_MEMORY_PROMPT_REGISTRY
+        from litellm.utils import get_non_default_completion_params
+
+        if prompt_version is None:
+            lookup_prompt_id = get_latest_version_prompt_id(
+                prompt_id=prompt_id,
+                all_prompt_ids=IN_MEMORY_PROMPT_REGISTRY.IN_MEMORY_PROMPTS,
+            )
+        else:
+            lookup_prompt_id = construct_versioned_prompt_id(
+                prompt_id=prompt_id, version=prompt_version
+            )
+
+        custom_logger = IN_MEMORY_PROMPT_REGISTRY.get_prompt_callback_by_id(
+            lookup_prompt_id
+        )
+        prompt_spec = IN_MEMORY_PROMPT_REGISTRY.get_prompt_by_id(lookup_prompt_id)
+        litellm_prompt_id: Optional[str] = None
+        if prompt_spec is not None:
+            litellm_prompt_id = prompt_spec.litellm_params.prompt_id
+            data.pop("prompt_id", None)
+
+        if custom_logger and prompt_spec is not None:
+            (
+                model,
+                messages,
+                optional_params,
+            ) = await litellm_logging_obj.async_get_chat_completion_prompt(
+                model=data.get("model", ""),
+                messages=data.get("messages", []),
+                non_default_params=get_non_default_completion_params(kwargs=data) or {},
+                prompt_id=litellm_prompt_id,
+                prompt_spec=prompt_spec,
+                prompt_management_logger=custom_logger,
+                prompt_variables=data.pop("prompt_variables", None) or {},
+                prompt_label=data.pop("prompt_label", None) or {},
+                prompt_version=data.pop("prompt_version", None) or {},
+            )
+
+            data.update(optional_params)
+            data["model"] = model
+            data["messages"] = messages
+            # prevent re-processing the prompt template
+            data.pop("prompt_id", None)
+            data.pop("prompt_variables", None)
+            data.pop("prompt_label", None)
+            data.pop("prompt_version", None)
+
+    def _process_guardrail_metadata(self, data: dict) -> None:
+        """Process guardrails from metadata and add to applied_guardrails."""
+        from litellm.proxy.common_utils.callback_utils import (
+            add_guardrail_to_applied_guardrails_header,
+        )
+
+        metadata_standard = data.get("metadata") or {}
+        metadata_litellm = data.get("litellm_metadata") or {}
+
+        guardrails_in_metadata = []
+        if isinstance(metadata_standard, dict) and "guardrails" in metadata_standard:
+            guardrails_in_metadata = metadata_standard.get("guardrails", [])
+        elif isinstance(metadata_litellm, dict) and "guardrails" in metadata_litellm:
+            guardrails_in_metadata = metadata_litellm.get("guardrails", [])
+
+        if guardrails_in_metadata and isinstance(guardrails_in_metadata, list):
+            applied_guardrails = []
+            if (
+                isinstance(metadata_standard, dict)
+                and "applied_guardrails" in metadata_standard
+            ):
+                applied_guardrails = metadata_standard.get("applied_guardrails", [])
+            elif (
+                isinstance(metadata_litellm, dict)
+                and "applied_guardrails" in metadata_litellm
+            ):
+                applied_guardrails = metadata_litellm.get("applied_guardrails", [])
+
+            if not isinstance(applied_guardrails, list):
+                applied_guardrails = []
+
+            for guardrail_name in guardrails_in_metadata:
+                if (
+                    isinstance(guardrail_name, str)
+                    and guardrail_name not in applied_guardrails
+                ):
+                    add_guardrail_to_applied_guardrails_header(
+                        request_data=data, guardrail_name=guardrail_name
+                    )
 
     # The actual implementation of the function
     @overload
@@ -2073,6 +2177,9 @@ class ProxyLogging:
                     except Exception as e:
                         _enrich_http_exception_with_guardrail_context(e, callback)
                         raise
+
+                if guardrail_response is not None:
+                    response = guardrail_response
 
                 if guardrail_response is not None:
                     response = guardrail_response

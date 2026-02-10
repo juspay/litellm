@@ -5,6 +5,7 @@ from litellm._logging import verbose_logger
 from litellm.integrations.arize import _utils
 from litellm.integrations.arize._utils import ArizeOTELAttributes
 from litellm.types.integrations.arize_phoenix import ArizePhoenixConfig
+from litellm.integrations.opentelemetry import OpenTelemetry
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider

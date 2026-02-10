@@ -258,6 +258,9 @@ const ChatUI: React.FC<ChatUIProps> = ({
   // Code Interpreter state (using custom hook)
   const codeInterpreter = useCodeInterpreter();
 
+  // Code Interpreter state (using custom hook)
+  const codeInterpreter = useCodeInterpreter();
+
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Fetch MCP servers and toolsets
@@ -448,6 +451,29 @@ const ChatUI: React.FC<ChatUIProps> = ({
       }
     }
   }, [endpointType, selectedMCPServers, serverToolsMap, mcpToolsets]);
+
+  // Fetch agents when A2A endpoint is selected
+  useEffect(() => {
+    const userApiKey = apiKeySource === "session" ? accessToken : apiKey;
+    if (!userApiKey || endpointType !== EndpointType.A2A_AGENTS) {
+      return;
+    }
+
+    const loadAgents = async () => {
+      try {
+        const agents = await fetchAvailableAgents(userApiKey, customProxyBaseUrl || undefined);
+        setAgentInfo(agents);
+        // Clear selection if current agent not in list
+        if (selectedAgent && !agents.some((a) => a.agent_name === selectedAgent)) {
+          setSelectedAgent(undefined);
+        }
+      } catch (error) {
+        console.error("Error fetching agents:", error);
+      }
+    };
+
+    loadAgents();
+  }, [accessToken, apiKeySource, apiKey, endpointType, customProxyBaseUrl, selectedAgent]);
 
   // Fetch agents when A2A endpoint is selected
   useEffect(() => {
@@ -1989,6 +2015,70 @@ const ChatUI: React.FC<ChatUIProps> = ({
                       type="button"
                       className="shrink-0 rounded-full border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 cursor-pointer"
                       onClick={() => setInputMessage(prompt)} // lgtm[js/xss-through-dom]
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Code Interpreter indicator and sample prompts when enabled */}
+              {endpointType === EndpointType.RESPONSES && codeInterpreter.enabled && (
+                <div className="mb-2 space-y-2">
+                  <div className="px-3 py-2 bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg border border-blue-200 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {isLoading ? (
+                        <>
+                          <LoadingOutlined className="text-blue-500" spin />
+                          <span className="text-sm text-blue-700 font-medium">Running Python code...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CodeOutlined className="text-blue-500" />
+                          <span className="text-sm text-blue-700 font-medium">Code Interpreter Active</span>
+                        </>
+                      )}
+                    </div>
+                    <button
+                      className="text-xs text-blue-500 hover:text-blue-700"
+                      onClick={() => codeInterpreter.setEnabled(false)}
+                    >
+                      Disable
+                    </button>
+                  </div>
+                  {/* Sample prompts - only show when not loading */}
+                  {!isLoading && (
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        "Generate sample sales data CSV and create a chart",
+                        "Create a PNG bar chart comparing AI gateway providers including LiteLLM",
+                        "Generate a CSV of LLM pricing data and visualize it as a line chart",
+                      ].map((prompt, idx) => (
+                        <button
+                          key={idx}
+                          className="text-xs px-3 py-1.5 bg-white border border-gray-200 rounded-full hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 transition-colors"
+                          onClick={() => setInputMessage(prompt)}
+                        >
+                          {prompt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Suggested prompts - show when chat is empty and not loading */}
+              {chatHistory.length === 0 && !isLoading && (
+                <div className="flex items-center gap-2 mb-3 overflow-x-auto">
+                  {(endpointType === EndpointType.A2A_AGENTS
+                    ? ["What can you help me with?", "Tell me about yourself", "What tasks can you perform?"]
+                    : ["Write me a poem", "Explain quantum computing", "Draft a polite email requesting a meeting"]
+                  ).map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      className="shrink-0 rounded-full border border-gray-200 px-3 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-blue-50 hover:border-blue-300 hover:text-blue-600 cursor-pointer"
+                      onClick={() => setInputMessage(prompt)}
                     >
                       {prompt}
                     </button>

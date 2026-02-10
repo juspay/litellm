@@ -1587,6 +1587,17 @@ def completion_cost(  # noqa: PLR0915
                     margin_fixed_amount = 0.0
                     margin_total_amount = 0.0
 
+                # Apply margin from module-level config if configured
+                (
+                    _final_cost,
+                    margin_percent,
+                    margin_fixed_amount,
+                    margin_total_amount,
+                ) = _apply_cost_margin(
+                    base_cost=_final_cost,
+                    custom_llm_provider=custom_llm_provider,
+                )
+
                 # Store cost breakdown in logging object if available
                 if litellm_logging_obj is not None:
                     _store_cost_breakdown_in_logging_obj(

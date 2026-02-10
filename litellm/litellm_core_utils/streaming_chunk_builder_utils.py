@@ -316,6 +316,7 @@ class ChunkProcessor:
 
         return tool_calls_list
 
+
     def get_combined_function_call_content(
         self, function_call_chunks: List[Dict[str, Any]]
     ) -> FunctionCall:
@@ -583,6 +584,8 @@ class ChunkProcessor:
                     completion_tokens_details = usage_chunk_dict[
                         "completion_tokens_details"
                     ]
+                if hasattr(usage_chunk, 'server_tool_use') and usage_chunk.server_tool_use is not None:
+                    server_tool_use = usage_chunk.server_tool_use
                 if (
                     hasattr(usage_chunk, "server_tool_use")
                     and usage_chunk.server_tool_use is not None

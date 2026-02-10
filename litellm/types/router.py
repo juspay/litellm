@@ -596,6 +596,29 @@ class GuardrailTypedDict(TypedDict, total=False):
     id: Optional[str]  # Unique identifier for the guardrail deployment
 
 
+class GuardrailLiteLLMParams(TypedDict, total=False):
+    """
+    LiteLLM params for guardrails.
+    """
+
+    guardrail: Required[str]
+    mode: Required[str]
+    api_key: Optional[str]
+    api_base: Optional[str]
+    weight: Optional[int]  # For load balancing
+
+
+class GuardrailTypedDict(TypedDict, total=False):
+    """
+    Configuration for a guardrail in the router.
+    """
+
+    guardrail_name: Required[str]
+    litellm_params: Required[GuardrailLiteLLMParams]
+    callback: Any  # The CustomGuardrail instance
+    id: Optional[str]  # Unique identifier for the guardrail deployment
+
+
 class FineTuningConfig(BaseModel):
     custom_llm_provider: Literal["azure", "openai"]
 

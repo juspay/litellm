@@ -263,6 +263,12 @@ def test_watsonx_gpt_oss_prompt_transformation(monkeypatch):
 
     with patch.object(client, "post") as mock_post, patch.object(
         litellm.module_level_client, "post", return_value=mock_token_response
+    ), patch(
+        "litellm.litellm_core_utils.prompt_templates.huggingface_template_handler._aget_tokenizer_config",
+        side_effect=mock_aget_tokenizer_config,
+    ), patch(
+        "litellm.litellm_core_utils.prompt_templates.huggingface_template_handler._aget_chat_template_file",
+        side_effect=mock_aget_chat_template_file,
     ):
         try:
             completion(

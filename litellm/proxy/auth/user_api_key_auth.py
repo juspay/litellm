@@ -32,6 +32,7 @@ from litellm.proxy.auth.auth_checks import (
     _is_user_proxy_admin,
     _virtual_key_max_budget_alert_check,
     _virtual_key_max_budget_check,
+    _virtual_key_max_budget_alert_check,
     _virtual_key_soft_budget_check,
     can_key_call_model,
     common_checks,

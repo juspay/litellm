@@ -219,6 +219,14 @@ class VertexAITextEmbeddingConfig(BaseModel):
             return self._transform_vertex_response_to_openai_for_fine_tuned_models(
                 response, model, model_response
             )
+        
+        # Import here to avoid circular import issues with litellm.__init__
+        from litellm.llms.vertex_ai.vertex_embeddings.bge import VertexBGEConfig
+        
+        if VertexBGEConfig.is_bge_model(model):
+            return VertexBGEConfig.transform_response(
+                response=response, model=model, model_response=model_response
+            )
 
         # Import here to avoid circular import issues with litellm.__init__
         from litellm.llms.vertex_ai.vertex_embeddings.bge import VertexBGEConfig

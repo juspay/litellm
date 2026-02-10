@@ -600,6 +600,37 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
 
         return filtered_results
 
+    def filter_analyze_results_by_score(
+        self, analyze_results: Union[List[PresidioAnalyzeResponseItem], Dict]
+    ) -> Union[List[PresidioAnalyzeResponseItem], Dict]:
+        """
+        Drop detections that fall below configured per-entity score thresholds.
+        """
+        if not self.presidio_score_thresholds:
+            return analyze_results
+
+        if not isinstance(analyze_results, list):
+            return analyze_results
+
+        filtered_results: List[PresidioAnalyzeResponseItem] = []
+        for item in analyze_results:
+            entity_type = item.get("entity_type")
+            score = item.get("score")
+
+            threshold = None
+            if entity_type is not None:
+                threshold = self.presidio_score_thresholds.get(entity_type)
+            if threshold is None:
+                threshold = self.presidio_score_thresholds.get("ALL")
+
+            if threshold is not None:
+                if score is None or score < threshold:
+                    continue
+
+            filtered_results.append(item)
+
+        return filtered_results
+
     def raise_exception_if_blocked_entities_detected(
         self, analyze_results: Union[List[PresidioAnalyzeResponseItem], Dict]
     ):

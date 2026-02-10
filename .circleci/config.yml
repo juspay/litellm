@@ -1609,6 +1609,8 @@ jobs:
             pip install "pytest-asyncio==0.21.1"
             pip install aiohttp
             pip install apscheduler
+      - attach_workspace:
+          at: ~/project
       - run:
           name: Install dockerize
           command: |
@@ -3125,6 +3127,37 @@ jobs:
             CI=true npm run test -- --run \
               --pool forks --poolOptions.forks.maxForks=8
 
+  build_docker_database_image:
+    machine:
+      image: ubuntu-2204:2023.10.1
+    resource_class: xlarge
+    working_directory: ~/project
+    steps:
+      - checkout
+
+      - run:
+          name: Upgrade Docker
+          command: |
+            curl -fsSL https://get.docker.com | sh
+            docker version
+
+      - run:
+          name: Build Docker image
+          command: |
+            docker build \
+              -t litellm-docker-database:ci \
+              -f docker/Dockerfile.database .
+
+      - run:
+          name: Save Docker image to workspace root
+          command: |
+            docker save litellm-docker-database:ci | gzip > litellm-docker-database.tar.gz
+
+      - persist_to_workspace:
+          root: .
+          paths:
+            - litellm-docker-database.tar.gz
+
   e2e_ui_testing:
     docker:
       - image: cimg/python:3.12-browsers
@@ -3645,6 +3678,18 @@ workflows:
                 - /litellm_.*/
                 - main
                 - /litellm_.*/
+                - main
+                - /litellm_.*/
+      - litellm_mapped_tests_integrations:
+          filters:
+            branches:
+              only:
+                - main
+                - /litellm_.*/
+      - litellm_mapped_tests_litellm_core_utils:
+          filters:
+            branches:
+              only:
                 - main
                 - /litellm_.*/
       - batches_testing:

@@ -641,6 +641,13 @@ class BedrockEmbedding(BaseAWSLLM):
             data=None,  # GET request, no body
             headers=headers,
         )
+        
+        # Sign the request - SigV4Auth will create canonical string from request URL
+        sigv4 = SigV4Auth(credentials, "bedrock", aws_region_name)
+        sigv4.add_auth(request)
+        
+        # Prepare the request
+        prepped = request.prepare()
 
         # Sign the request - SigV4Auth will create canonical string from request URL
         sigv4 = SigV4Auth(credentials, "bedrock", aws_region_name)

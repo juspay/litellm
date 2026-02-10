@@ -110,6 +110,8 @@ export default function ModelInfoView({
   const isAdmin = userRole === "Admin";
   const isAutoRouter = modelData?.litellm_params?.auto_router_config != null;
 
+  const { data: modelsInfoData } = useModelsInfo();
+  console.log("modelsInfoData, ", modelsInfoData);
   const usingExistingCredential =
     modelData?.litellm_params?.litellm_credential_name != null &&
     modelData?.litellm_params?.litellm_credential_name != undefined;
@@ -1076,6 +1078,49 @@ export default function ModelInfoView({
                                       value: model.model_group,
                                       label: model.model_group,
                                     })) || [];
+                                })()}
+                              />
+                            </Form.Item>
+                          ) : (
+                            <div className="mt-1 p-2 bg-gray-50 rounded">
+                              {localModelData.model_info?.health_check_model || "Not Set"}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {isWildcardModel && (
+                        <div>
+                          <Text className="font-medium">Health Check Model</Text>
+                          {isEditing ? (
+                            <Form.Item name="health_check_model" className="mb-0">
+                              <Select
+                                showSearch
+                                placeholder="Select existing health check model"
+                                optionFilterProp="children"
+                                allowClear
+                                options={(() => {
+                                  const seen = new Set();
+                                  return modelsInfoData?.data
+                                    ?.filter((model: any) => {
+                                      const modelProvider = model.provider;
+                                      const wildcardProvider = modelData.litellm_model_name.split("/")[0];
+                                      return (
+                                        modelProvider === wildcardProvider &&
+                                        model.model_name !== modelData.litellm_model_name
+                                      );
+                                    })
+                                    .filter((model: any) => {
+                                      if (seen.has(model.model_name)) {
+                                        return false;
+                                      }
+                                      seen.add(model.model_name);
+                                      return true;
+                                    })
+                                    .map((model: any) => ({
+                                      value: model.model_name,
+                                      label: model.model_name,
+                                    }));
                                 })()}
                               />
                             </Form.Item>

@@ -214,9 +214,7 @@ const MCPToolPermissions: React.FC<MCPToolPermissionsProps> = ({
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
                             <Text className="font-medium text-gray-900">{tool.name}</Text>
-                            <Text className="text-sm text-gray-500">
-                              - {tool.description || "No description"}
-                            </Text>
+                            <Text className="text-sm text-gray-500">- {tool.description || "No description"}</Text>
                           </div>
                         </div>
                       </div>

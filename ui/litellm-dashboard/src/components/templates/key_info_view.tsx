@@ -23,6 +23,7 @@ import ObjectPermissionsView from "../object_permissions_view";
 import { RegenerateKeyModal } from "../organisms/regenerate_key_modal";
 import { parseErrorMessage } from "../shared/errorUtils";
 import { KeyEditView } from "./key_edit_view";
+import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 
 interface KeyInfoViewProps {
   keyId: string;
@@ -332,6 +333,16 @@ export default function KeyInfoView({
     });
     return `${dateStr} at ${timeStr}`;
   };
+  console.log("userRole", userRole);
+
+  const canModifyKey =
+    isProxyAdminRole(userRole || "") ||
+    (teamsData &&
+      isUserTeamAdminForSingleTeam(
+        teamsData?.filter((team) => team.team_id === currentKeyData.team_id)[0]?.members_with_roles,
+        userID || "",
+      )) ||
+    (userID === currentKeyData.user_id && userRole !== "Internal Viewer");
 
   const canModifyKey =
     isProxyAdminRole(userRole || "") ||

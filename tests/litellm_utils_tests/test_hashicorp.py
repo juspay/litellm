@@ -314,7 +314,7 @@ def test_hashicorp_secret_manager_tls_cert_auth(monkeypatch):
         assert test_manager.cache.get_cache("hcp_vault_token") == "test-client-token-12345"
 
 
-def test_hashicorp_secret_manager_approle_auth(monkeypatch):
+def test_hashicorp_secret_manager_approle_auth(monkeypatch, hashicorp_secret_manager):
     """
     Test AppRole authentication makes the expected POST request to the correct URL.
     """

@@ -31,6 +31,8 @@ def clear_client_cache():
     if cache is not None:
         cache.flush_cache()
 
+from litellm import main as litellm_main
+
 
 @pytest.fixture(autouse=True)
 def add_api_keys_to_env(monkeypatch):

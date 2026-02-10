@@ -549,6 +549,11 @@ class OpenAIPassthroughLoggingHandler(BasePassthroughLoggingHandler):
                 litellm_logging_obj.model_call_details.get("litellm_params", {}) or {}
             )
 
+            # Preserve existing litellm_params to maintain metadata tags
+            existing_litellm_params = litellm_logging_obj.model_call_details.get(
+                "litellm_params", {}
+            ) or {}
+            
             # Prepare kwargs for logging
             kwargs = {
                 "response_cost": response_cost,

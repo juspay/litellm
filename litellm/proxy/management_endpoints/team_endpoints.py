@@ -36,6 +36,7 @@ from litellm.proxy._types import (
     LiteLLM_OrganizationTableWithMembers,
     LiteLLM_TeamMembership,
     LiteLLM_TeamTable,
+    LiteLLM_DeletedTeamTable,
     LiteLLM_TeamTableCachedObj,
     LiteLLM_UserTable,
     LiteLLM_VerificationToken,
@@ -108,7 +109,7 @@ from litellm.types.proxy.management_endpoints.team_endpoints import (
     TeamMemberAddResult,
     UpdateTeamMemberPermissionsRequest,
 )
-
+from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 router = APIRouter()
 
 
@@ -3622,6 +3623,16 @@ async def list_team_v2(
         user_api_key_cache=user_api_key_cache,
         proxy_logging_obj=proxy_logging_obj,
     )
+
+    if status is not None and status != "deleted":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Invalid status value. Currently only 'deleted' is supported."
+            },
+        )
+
+    use_deleted_table = status == "deleted"
 
     if status is not None and status != "deleted":
         raise HTTPException(

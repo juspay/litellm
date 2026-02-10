@@ -13,6 +13,12 @@ Supported Providers:
 - Vertex AI
 - Bedrock
 
+Supported Providers:
+- OpenAI
+- Azure
+- Google AI Studio (Gemini)
+- Vertex AI
+
 ## Proxy Usage
 
 ### Add model to config 

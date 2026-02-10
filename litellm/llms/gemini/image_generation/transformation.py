@@ -74,6 +74,33 @@ class GoogleImageGenConfig(BaseImageGenerationConfig):
             "896x1280": "3:4",
         }
         return aspect_ratio_map.get(size, "1:1")
+    
+    def _transform_image_usage(self, usage_metadata: dict) -> ImageUsage:
+        """
+        Transform Gemini usageMetadata to ImageUsage format
+        """
+        input_tokens_details = ImageUsageInputTokensDetails(
+            image_tokens=0,
+            text_tokens=0,
+        )
+        
+        # Extract detailed token counts from promptTokensDetails
+        tokens_details = usage_metadata.get("promptTokensDetails", [])
+        for details in tokens_details:
+            if isinstance(details, dict):
+                modality = details.get("modality")
+                token_count = details.get("tokenCount", 0)
+                if modality == "TEXT":
+                    input_tokens_details.text_tokens = token_count
+                elif modality == "IMAGE":
+                    input_tokens_details.image_tokens = token_count
+        
+        return ImageUsage(
+            input_tokens=usage_metadata.get("promptTokenCount", 0),
+            input_tokens_details=input_tokens_details,
+            output_tokens=usage_metadata.get("candidatesTokenCount", 0),
+            total_tokens=usage_metadata.get("totalTokenCount", 0),
+        )
 
     def _transform_image_usage(self, usage_metadata: dict) -> ImageUsage:
         """

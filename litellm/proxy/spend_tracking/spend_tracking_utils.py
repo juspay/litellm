@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import os
@@ -851,6 +852,26 @@ def _get_response_for_spend_logs_payload(
         response_obj: Any = payload.get("response")
         if response_obj is None:
             return "{}"
+        
+        # Apply message redaction if turn_off_message_logging is enabled
+        if kwargs is not None:
+            from litellm.litellm_core_utils.redact_messages import (
+                perform_redaction,
+                should_redact_message_logging,
+            )
+            
+            litellm_params = kwargs.get("litellm_params", {})
+            model_call_details = {
+                "litellm_params": litellm_params,
+                "standard_callback_dynamic_params": kwargs.get(
+                    "standard_callback_dynamic_params"
+                ),
+            }
+            
+            # If redaction is enabled, deep copy response before redacting
+            if should_redact_message_logging(model_call_details=model_call_details):
+                response_obj = copy.deepcopy(response_obj)
+                response_obj = perform_redaction(model_call_details={}, result=response_obj)
 
         if kwargs is not None:
             realtime_tool_calls = kwargs.get("realtime_tool_calls")

@@ -660,7 +660,6 @@ class ANTHROPIC_BETA_HEADER_VALUES(str, Enum):
     """
     Known beta header values for Anthropic.
     """
-
     WEB_FETCH_2025_09_10 = "web-fetch-2025-09-10"
     WEB_SEARCH_2025_03_05 = "web-search-2025-03-05"
     CONTEXT_MANAGEMENT_2025_06_27 = "context-management-2025-06-27"
@@ -684,8 +683,15 @@ ANTHROPIC_OAUTH_BETA_HEADER = "oauth-2025-04-20"
 ANTHROPIC_PROMPT_CACHING_SCOPE_BETA_HEADER = "prompt-caching-scope-2026-01-05"
 
 
+# Tool search beta header constant (for Anthropic direct API and Microsoft Foundry)
+ANTHROPIC_TOOL_SEARCH_BETA_HEADER = "advanced-tool-use-2025-11-20"
+
+# Effort beta header constant
+ANTHROPIC_EFFORT_BETA_HEADER = "effort-2025-11-24"
+
 # Patterns for anthropic-beta headers that should be blocked/dropped
 # These are headers that cause API errors when forwarded
 BLOCKED_ANTHROPIC_BETA_HEADER_PATTERNS = [
     "prompt-caching-scope-",  # Claude Code sends this but Anthropic API doesn't recognize it
 ]
+

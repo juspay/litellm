@@ -292,6 +292,10 @@ const MCPServerEdit: React.FC<MCPServerEditProps> = ({
       return;
     }
 
+    if (mcpServer.auth_type === AUTH_TYPE.OAUTH2 && !oauthAccessToken) {
+      return;
+    }
+
     setIsLoadingTools(true);
 
     try {

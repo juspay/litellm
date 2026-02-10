@@ -54,6 +54,7 @@ from litellm.proxy.openai_files_endpoints.common_utils import (
     handle_model_based_routing,
     prepare_data_with_credentials,
 )
+from .storage_backend_service import StorageBackendFileService
 
 router = APIRouter()
 
@@ -426,6 +427,68 @@ async def create_file(  # noqa: PLR0915
                     },
                 )
 
+            # Use literal "created_at" (not variable) for TypedDict to satisfy Literal type
+            expires_after = FileExpiresAfter(
+                anchor="created_at",  # Literal, not expires_after_anchor variable
+                seconds=expires_after_seconds,
+            )
+
+        # Parse expires_after if provided
+        expires_after = None
+        form_data = await request.form()
+        expires_after_anchor = form_data.get("expires_after[anchor]")
+        expires_after_seconds_str = form_data.get("expires_after[seconds]")
+        
+        if expires_after_anchor is not None or expires_after_seconds_str is not None:
+            if expires_after_anchor is None or expires_after_seconds_str is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "Both expires_after[anchor] and expires_after[seconds] must be provided if expires_after is specified",
+                    },
+                )
+            
+            # Validate expires_after[anchor] is a string (not UploadFile)
+            if isinstance(expires_after_anchor, UploadFile):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "expires_after[anchor] must be a string, not a file upload",
+                    },
+                )
+            
+            # Validate expires_after[seconds] is a string (not UploadFile)
+            # Use positive isinstance check for proper type narrowing (matches codebase pattern)
+            if not isinstance(expires_after_seconds_str, str):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "expires_after[seconds] must be a string, not a file upload",
+                    },
+                )
+            # After this check, mypy knows expires_after_seconds_str is str
+            expires_after_seconds_str_validated: str = expires_after_seconds_str
+            
+            # Validate anchor is "created_at"
+            if expires_after_anchor != "created_at":
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": f"expires_after[anchor] must be 'created_at', got '{expires_after_anchor}'",
+                    },
+                )
+            
+            # Convert seconds to int
+            try:
+                expires_after_seconds = int(expires_after_seconds_str_validated)
+            except (ValueError, TypeError) as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": f"expires_after[seconds] must be a valid integer, got '{expires_after_seconds_str}': {e}",
+                    },
+                )
+            
             # Use literal "created_at" (not variable) for TypedDict to satisfy Literal type
             expires_after = FileExpiresAfter(
                 anchor="created_at",  # Literal, not expires_after_anchor variable

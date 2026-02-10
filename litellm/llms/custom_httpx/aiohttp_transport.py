@@ -83,9 +83,7 @@ class AiohttpResponseStream(httpx.AsyncByteStream):
 
     async def __aiter__(self) -> typing.AsyncIterator[bytes]:
         try:
-            async for chunk in self._aiohttp_response.content.iter_chunked(
-                self.CHUNK_SIZE
-            ):
+            async for chunk in self._aiohttp_response.content.iter_chunked(self.CHUNK_SIZE):
                 yield chunk
         except (
             aiohttp.ClientPayloadError,
@@ -195,11 +193,7 @@ class LiteLLMAiohttpTransport(AiohttpTransport):
             current_loop = asyncio.get_running_loop()
 
             # If session is from a different or closed loop, recreate it
-            if (
-                session_loop is None
-                or session_loop != current_loop
-                or session_loop.is_closed()
-            ):
+            if session_loop is None or session_loop != current_loop or session_loop.is_closed():
                 # Close old session to prevent leaks
                 old_session = self.client
                 try:
@@ -348,10 +342,7 @@ class LiteLLMAiohttpTransport(AiohttpTransport):
 
     async def _get_proxy_settings(self, request: httpx.Request):
         proxy = None
-        if not (
-            litellm.disable_aiohttp_trust_env
-            or str_to_bool(os.getenv("DISABLE_AIOHTTP_TRUST_ENV", "False"))
-        ):
+        if not (litellm.disable_aiohttp_trust_env or str_to_bool(os.getenv("DISABLE_AIOHTTP_TRUST_ENV", "False"))):
             try:
                 proxy = self._proxy_from_env(request.url)
             except Exception as e:  # pragma: no cover - best effort

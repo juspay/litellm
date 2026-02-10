@@ -50,6 +50,7 @@ def test_reconstruct_model_name_returns_original_for_other_providers():
 
     assert result == "claude-3-sonnet"
 
+    metadata = {}
 
 # ---------------------------------------------------------------------------
 # map_finish_reason tests

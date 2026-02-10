@@ -18,6 +18,9 @@ from litellm.constants import (
     REDIS_DAILY_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_TAG_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_TEAM_SPEND_UPDATE_BUFFER_KEY,
+    REDIS_DAILY_ORG_SPEND_UPDATE_BUFFER_KEY,
+    REDIS_DAILY_END_USER_SPEND_UPDATE_BUFFER_KEY,
+    REDIS_DAILY_AGENT_SPEND_UPDATE_BUFFER_KEY,
     REDIS_UPDATE_BUFFER_KEY,
 )
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
@@ -28,7 +31,10 @@ from litellm.proxy._types import (
     DailyTagSpendTransaction,
     DailyTeamSpendTransaction,
     DailyUserSpendTransaction,
+    DailyOrganizationSpendTransaction,
+    DailyEndUserSpendTransaction,
     DBSpendUpdateTransactions,
+    DailyAgentSpendTransaction,
 )
 from litellm.proxy.db.db_transaction_queue.base_update_queue import service_logger_obj
 from litellm.proxy.db.db_transaction_queue.daily_spend_update_queue import (

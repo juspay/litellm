@@ -884,6 +884,21 @@ def log_guardrail_information(func):
             return GuardrailEventHooks.post_call
         return None
 
+    def _infer_event_type_from_function_name(
+        func_name: str,
+    ) -> Optional[GuardrailEventHooks]:
+        """Infer the actual event type from the function name"""
+        if func_name == "async_pre_call_hook":
+            return GuardrailEventHooks.pre_call
+        elif func_name == "async_moderation_hook":
+            return GuardrailEventHooks.during_call
+        elif func_name in (
+            "async_post_call_success_hook",
+            "async_post_call_streaming_hook",
+        ):
+            return GuardrailEventHooks.post_call
+        return None
+
     @functools.wraps(func)
     async def async_wrapper(*args, **kwargs):
         start_time = datetime.now()  # Move start_time inside the wrapper

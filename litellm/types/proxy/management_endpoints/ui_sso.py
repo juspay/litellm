@@ -6,6 +6,8 @@ from typing_extensions import TypedDict
 from litellm.proxy._types import KeyManagementRoutes, LitellmUserRoles
 from litellm.types.utils import LiteLLMPydanticObjectBase
 
+from litellm.proxy._types import LitellmUserRoles
+
 
 class LiteLLM_UpperboundKeyGenerateParams(LiteLLMPydanticObjectBase):
     """

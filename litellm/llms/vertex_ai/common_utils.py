@@ -42,6 +42,7 @@ class VertexAIModelRoute(str, Enum):
 
 VERTEX_AI_MODEL_ROUTES = [f"{route.value}/" for route in VertexAIModelRoute]
 
+VERTEX_AI_MODEL_ROUTES = [f"{route.value}/" for route in VertexAIModelRoute]
 
 def get_vertex_ai_model_route(
     model: str, litellm_params: Optional[dict] = None

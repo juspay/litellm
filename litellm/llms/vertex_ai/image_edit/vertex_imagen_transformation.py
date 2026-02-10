@@ -168,6 +168,9 @@ class VertexAIImagenImageEditConfig(BaseImageEditConfig, VertexLLM):
         if prompt is None:
             raise ValueError("Vertex AI Imagen image edit requires a prompt.")
 
+        if prompt is None:
+            raise ValueError("Vertex AI Imagen image edit requires a prompt.")
+
         # Correct Imagen instances format
         instances = [{"prompt": prompt, "referenceImages": reference_images}]
 

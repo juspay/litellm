@@ -212,6 +212,13 @@ class LangsmithLogger(CustomBatchLogger):
             extra_metadata = self._build_extra_metadata(dict(metadata))
             outputs = self._build_outputs_with_usage(payload)
 
+            extra_metadata = dict(metadata)
+            requester_metadata = extra_metadata.get("requester_metadata")
+            if requester_metadata and isinstance(requester_metadata, dict):
+                for key in ("session_id", "thread_id", "conversation_id"):
+                    if key in requester_metadata and key not in extra_metadata:
+                        extra_metadata[key] = requester_metadata[key]
+
             data = {
                 "name": fields["run_name"],
                 "run_type": "llm",

@@ -1058,6 +1058,11 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
             elif param == "thinking":
                 optional_params["thinking"] = value
             elif param == "reasoning_effort" and isinstance(value, str):
+                # For Claude Opus 4.5, map reasoning_effort to output_config
+                if self._is_claude_opus_4_5(model):
+                    optional_params["output_config"] = {"effort": value}
+
+                # For other models, map to thinking parameter
                 optional_params["thinking"] = AnthropicConfig._map_reasoning_effort(
                     reasoning_effort=value, model=model
                 )
@@ -1300,6 +1305,12 @@ class AnthropicConfig(AnthropicModelInfo, BaseConfig):
         self, headers: dict, optional_params: dict
     ) -> dict:
         """Update headers with optional anthropic beta."""
+        
+        # Skip adding beta headers for Vertex requests
+        # Vertex AI handles these headers differently
+        is_vertex_request = optional_params.get("is_vertex_request", False)
+        if is_vertex_request:
+            return headers
 
         # Skip adding beta headers for Vertex requests
         # Vertex AI handles these headers differently

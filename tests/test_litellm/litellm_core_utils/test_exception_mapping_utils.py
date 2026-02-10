@@ -60,7 +60,25 @@ context_window_test_cases = [
     ),    
     # VLLM error pattern
     (
-        "Requested token count exceeds the model's maximum context length of 196608 tokens.",
+        "`inputs` tokens + `max_new_tokens` must be <= 4096",
+        True,
+    ),
+    # Gemini 2.5/3 format
+    (
+        "The input token count exceeds the maximum number of tokens allowed 1048576.",
+        True,
+    ),
+    (
+        "GeminiException BadRequestError - {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"The input token count exceeds the maximum number of tokens allowed 1048576.\",\n    \"status\": \"INVALID_ARGUMENT\"\n  }\n}\n",
+        True,
+    ),
+    # Gemini 2.0 Flash format (includes input token count in message)
+    (
+        "The input token count (2800010) exceeds the maximum number of tokens allowed (1048575).",
+        True,
+    ),
+    (
+        "GeminiException BadRequestError - {\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"The input token count (2800010) exceeds the maximum number of tokens allowed (1048575).\",\n    \"status\": \"INVALID_ARGUMENT\"\n  }\n}\n",
         True,
     ),
     # Test case insensitivity

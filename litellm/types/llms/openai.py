@@ -371,6 +371,20 @@ class FileExpiresAfter(TypedDict):
     seconds: Required[int]
 
 
+# File expiration policy
+class FileExpiresAfter(TypedDict):
+    """
+    File expiration policy
+
+    Properties:
+        anchor: Anchor timestamp after which the expiration policy applies. Supported anchors: created_at.
+        seconds: The number of seconds after the anchor time that the file will expire. Must be between 3600 (1 hour) and 2592000 (30 days).
+    """
+
+    anchor: Required[Literal["created_at"]]
+    seconds: Required[int]
+
+
 # OpenAI Files Types
 class CreateFileRequest(TypedDict, total=False):
     """
@@ -1091,6 +1105,19 @@ OpenAIImageEditOptionalParams = Literal[
     "user",
 ]
 
+OpenAIImageEditOptionalParams = Literal[
+    "background",
+    "n",
+    "mask"
+    "output_compression",
+    "output_format",
+    "quality",
+    "partial_images",
+    "response_format",
+    "size",
+    "style",
+    "user",
+]
 
 class ComputerToolParam(TypedDict, total=False):
     display_height: Required[float]

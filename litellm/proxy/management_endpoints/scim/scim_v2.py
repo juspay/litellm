@@ -250,6 +250,9 @@ async def _extract_group_member_ids(group: SCIMGroup) -> GroupMemberExtractionRe
     existing_member_ids = []
     created_users = []
     all_member_ids = []
+    
+    # Check the feature flag
+    scim_upsert_user = await _get_scim_upsert_user_setting()
 
     # Check the feature flag
     scim_upsert_user = await _get_scim_upsert_user_setting()

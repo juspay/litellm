@@ -51,6 +51,11 @@ export function ObjectPermissionsView({
         agentAccessGroups={agentAccessGroups}
         accessToken={accessToken}
       />
+      <AgentPermissions
+        agents={agents}
+        agentAccessGroups={agentAccessGroups}
+        accessToken={accessToken}
+      />
     </div>
   );
 

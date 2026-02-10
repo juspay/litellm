@@ -391,7 +391,7 @@ mcp_servers:
 
 [**See Claude Code Tutorial**](./tutorials/claude_responses_api#connecting-mcp-servers)
 
-### How It Works
+**How It Works**
 
 ```mermaid
 sequenceDiagram

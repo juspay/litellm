@@ -541,6 +541,27 @@ def _handle_retrieve_batch_providers_without_provider_config(
             timeout=timeout,
             max_retries=optional_params.max_retries,
         )
+    elif custom_llm_provider == "anthropic":
+        api_base = (
+            optional_params.api_base
+            or litellm.api_base
+            or get_secret_str("ANTHROPIC_API_BASE")
+        )
+        api_key = (
+            optional_params.api_key
+            or litellm.api_key
+            or litellm.azure_key
+            or get_secret_str("ANTHROPIC_API_KEY")
+        )
+
+        response = anthropic_batches_instance.retrieve_batch(
+            _is_async=_is_async,
+            batch_id=batch_id,
+            api_base=api_base,
+            api_key=api_key,
+            timeout=timeout,
+            max_retries=optional_params.max_retries,
+        )
     else:
         raise litellm.exceptions.BadRequestError(
             message="LiteLLM doesn't support {} for 'create_batch'. Only 'openai' is supported.".format(

@@ -37,8 +37,11 @@ from litellm.proxy._types import (
     DailyEndUserSpendTransaction,
     DailyOrganizationSpendTransaction,
     DailyTagSpendTransaction,
+    DailyOrganizationSpendTransaction,
     DailyTeamSpendTransaction,
+    DailyEndUserSpendTransaction,
     DailyUserSpendTransaction,
+    DailyAgentSpendTransaction,
     DBSpendUpdateTransactions,
     Litellm_EntityType,
     LiteLLM_UserTable,
@@ -139,6 +142,12 @@ class DBSpendUpdateWriter:
                 payload["startTime"] = payload["startTime"].isoformat()
             if isinstance(payload["endTime"], datetime):
                 payload["endTime"] = payload["endTime"].isoformat()
+            
+            if org_id is not None and org_id != "":
+                payload["organization_id"] = org_id
+
+            if team_id is not None and team_id != "":
+                payload["team_id"] = team_id
 
             if org_id is not None and org_id != "":
                 payload["organization_id"] = org_id
@@ -180,7 +189,7 @@ class DBSpendUpdateWriter:
                 except Exception:
                     user_email = user_id
 
-            
+
             # Only update spend counters (user, key, team, org, tag) if NOT a free model
             # Free models still log to analytics tables (litellm_spendlogs, daily spend tables)
             if not is_free_model:
@@ -219,7 +228,7 @@ class DBSpendUpdateWriter:
                 asyncio.create_task(
                     self._update_tag_db(
                         response_cost=response_cost,
-                        request_tags=payload.get("request_tags"),
+                        request_tags=copy.deepcopy(payload.get("request_tags")),
                         prisma_client=prisma_client,
                     )
                 )
@@ -985,6 +994,26 @@ class DBSpendUpdateWriter:
                         proxy_logging_obj=proxy_logging_obj,
                         daily_spend_transactions=daily_agent_spend_update_transactions,
                     )
+                daily_end_user_spend_update_transactions = (
+                    await self.redis_update_buffer.get_all_daily_end_user_spend_update_transactions_from_redis_buffer()
+                )
+                if daily_end_user_spend_update_transactions is not None:
+                    await DBSpendUpdateWriter.update_daily_end_user_spend(
+                        n_retry_times=n_retry_times,
+                        prisma_client=prisma_client,
+                        proxy_logging_obj=proxy_logging_obj,
+                        daily_spend_transactions=daily_end_user_spend_update_transactions,
+                    )
+                daily_agent_spend_update_transactions = (
+                    await self.redis_update_buffer.get_all_daily_agent_spend_update_transactions_from_redis_buffer()
+                )
+                if daily_agent_spend_update_transactions is not None:
+                    await DBSpendUpdateWriter.update_daily_agent_spend(
+                        n_retry_times=n_retry_times,
+                        prisma_client=prisma_client,
+                        proxy_logging_obj=proxy_logging_obj,
+                        daily_spend_transactions=daily_agent_spend_update_transactions,
+                    )
             except Exception as e:
                 verbose_proxy_logger.error(
                     "Spend tracking - failed to commit spend updates from Redis to DB. "
@@ -1397,6 +1426,18 @@ class DBSpendUpdateWriter:
                     _raise_failed_update_spend_exception(
                         e=e, start_time=start_time, proxy_logging_obj=proxy_logging_obj
                     )
+            
+            # Invalidate cache for updated team memberships
+            # This ensures budget checks read fresh spend data from the database
+            if team_memberships_to_invalidate and proxy_logging_obj is not None:
+                user_api_key_cache = proxy_logging_obj.call_details.get("user_api_key_cache")
+                if user_api_key_cache is not None:
+                    for user_id, team_id in team_memberships_to_invalidate:
+                        cache_key = "team_membership:{}:{}".format(user_id, team_id)
+                        await user_api_key_cache.async_delete_cache(key=cache_key)
+                        verbose_proxy_logger.debug(
+                            f"Invalidated team membership cache for user_id={user_id}, team_id={team_id}"
+                        )
 
             # Invalidate cache for updated team memberships
             # This ensures budget checks read fresh spend data from the database

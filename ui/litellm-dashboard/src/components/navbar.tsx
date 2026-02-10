@@ -44,7 +44,9 @@ const Navbar: React.FC<NavbarProps> = ({
   toggleDarkMode,
 }) => {
   const baseUrl = getProxyBaseUrl();
+  console.log("baseUrl", baseUrl);
   const [logoutUrl, setLogoutUrl] = useState("");
+  const [disableShowNewBadge, setDisableShowNewBadge] = useState(false);
   const { logoUrl } = useTheme();
   const { data: healthData } = useHealthReadiness();
   const version = healthData?.litellm_version;
@@ -66,6 +68,11 @@ const Navbar: React.FC<NavbarProps> = ({
 
     initializeProxySettings();
   }, [accessToken]);
+
+  useEffect(() => {
+    const storedValue = getLocalStorageItem("disableShowNewBadge");
+    setDisableShowNewBadge(storedValue === "true");
+  }, []);
 
   useEffect(() => {
     setLogoutUrl(proxySettings?.PROXY_LOGOUT_URL || "");

@@ -86,6 +86,9 @@ export default function DeleteResourceModal({
         <div>
           <Text>{message}</Text>
         </div>
+        <div>
+          <Text>{message}</Text>
+        </div>
         {requiredConfirmation && (
           <div className="mb-6 mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
             <Text className="block text-base font-medium text-gray-700 dark:text-gray-300 mb-2">

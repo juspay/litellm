@@ -1194,6 +1194,13 @@ async def add_litellm_data_to_request(  # noqa: PLR0915
         "user_api_key_user_max_budget"
     ] = user_api_key_dict.user_max_budget
 
+    # User spend, budget - used by prometheus.py
+    # Follow same pattern as team and API key budgets
+    data[_metadata_variable_name]["user_api_key_user_spend"] = user_api_key_dict.user_spend
+    data[_metadata_variable_name][
+        "user_api_key_user_max_budget"
+    ] = user_api_key_dict.user_max_budget
+
     data[_metadata_variable_name]["user_api_key_metadata"] = user_api_key_dict.metadata
     data[_metadata_variable_name][
         "user_api_key_team_metadata"

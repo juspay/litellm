@@ -450,6 +450,14 @@ class LiteLLMRoutes(enum.Enum):
         "/a2a/{agent_id}/.well-known/agent-card.json",
     ]
 
+    agent_routes = [
+        "/v1/agents",
+        "/agents",
+        "/a2a/{agent_id}",
+        "/a2a/{agent_id}/message/send",
+        "/a2a/{agent_id}/message/stream",
+    ]
+
     google_routes = [
         "/v1beta/models/{model_name:path}:countTokens",
         "/v1beta/models/{model_name:path}:generateContent",
@@ -2329,6 +2337,10 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
     vision_fallback_model: Optional[str] = Field(
         None,
         description="Fallback model to use when a request contains images but the requested model doesn't support vision. The fallback model must support vision and be available in model_list.",
+    )
+    user_mcp_management_mode: Optional[UserMCPManagementMode] = Field(
+        None,
+        description="Controls how non-admin users interact with MCP servers in the dashboard. 'restricted' shows only accessible servers, 'view_all' lists every server in read-only mode.",
     )
 
 

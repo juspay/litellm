@@ -510,6 +510,15 @@ async def common_checks(  # noqa: PLR0915
         valid_token=valid_token,
     )
 
+    # 3.1. If organization is in budget
+    await _organization_max_budget_check(
+        valid_token=valid_token,
+        team_object=team_object,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+        proxy_logging_obj=proxy_logging_obj,
+    )
+
     await _tag_max_budget_check(
         request_body=request_body,
         prisma_client=prisma_client,
@@ -3416,6 +3425,93 @@ async def get_project_object(
     )
 
     return project_obj
+
+
+async def _organization_max_budget_check(
+    valid_token: Optional[UserAPIKeyAuth],
+    team_object: Optional[LiteLLM_TeamTable],
+    prisma_client: Optional[PrismaClient],
+    user_api_key_cache: DualCache,
+    proxy_logging_obj: ProxyLogging,
+):
+    """
+    Check if the organization is over its max budget.
+
+    This function checks the organization budget using:
+    1. First, tries to use valid_token.org_id (if key has organization_id set)
+    2. Falls back to team_object.organization_id (if key doesn't have org_id but team does)
+
+    This ensures organization budget checks work even when keys don't have organization_id
+    set directly, as long as their team belongs to an organization.
+
+    Raises:
+        BudgetExceededError if the organization is over its max budget.
+        Triggers a budget alert if the organization is over its max budget.
+    """
+    if valid_token is None or prisma_client is None:
+        return
+
+    # Determine organization_id: first try from token, then fallback to team
+    org_id: Optional[str] = None
+    if valid_token.org_id is not None:
+        org_id = valid_token.org_id
+    elif team_object is not None and team_object.organization_id is not None:
+        org_id = team_object.organization_id
+
+    # If no organization_id found, skip the check
+    if org_id is None:
+        return
+
+    # Get organization object with budget table - use get_org_object so it can be mocked in tests
+    try:
+        org_table = await get_org_object(
+            org_id=org_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+            include_budget_table=True,
+        )
+    except Exception:
+        # If organization lookup fails, skip the check
+        return
+
+    if org_table is None:
+        return
+
+    # Get max_budget from organization's budget table
+    org_max_budget: Optional[float] = None
+    if org_table.litellm_budget_table is not None:
+        org_max_budget = org_table.litellm_budget_table.max_budget
+
+    # Only check if organization has a valid max_budget set
+    if org_max_budget is None or org_max_budget <= 0:
+        return
+
+    # Check if organization spend exceeds max budget
+    if org_table.spend >= org_max_budget:
+        # Trigger budget alert
+        call_info = CallInfo(
+            token=valid_token.token,
+            spend=org_table.spend,
+            max_budget=org_max_budget,
+            user_id=valid_token.user_id,
+            team_id=valid_token.team_id,
+            team_alias=valid_token.team_alias,
+            organization_id=org_id,
+            event_group=Litellm_EntityType.ORGANIZATION,
+        )
+        asyncio.create_task(
+            proxy_logging_obj.budget_alerts(
+                type="organization_budget",
+                user_info=call_info,
+            )
+        )
+
+        raise litellm.BudgetExceededError(
+            current_cost=org_table.spend,
+            max_budget=org_max_budget,
+            message=f"Budget has been exceeded! Organization={org_id} Current cost: {org_table.spend}, Max budget: {org_max_budget}",
+        )
 
 
 async def _organization_max_budget_check(

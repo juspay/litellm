@@ -173,6 +173,11 @@ const AgentFormFields: React.FC<AgentFormFieldsProps> = ({ showAgentName = true,
         </Panel>
         )}
 
+        {/* Cost Configuration */}
+        <Panel header={AGENT_FORM_CONFIG.cost.title} key={AGENT_FORM_CONFIG.cost.key}>
+          <CostConfigFields />
+        </Panel>
+
         {/* LiteLLM Parameters */}
         {shouldShow(AGENT_FORM_CONFIG.litellm.key) && (
         <Panel header={AGENT_FORM_CONFIG.litellm.title} key={AGENT_FORM_CONFIG.litellm.key}>

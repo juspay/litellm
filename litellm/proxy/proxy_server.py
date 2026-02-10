@@ -637,9 +637,9 @@ except ImportError:
 server_root_path = get_server_root_path()
 _license_check = LicenseCheck()
 premium_user: bool = _license_check.is_premium()
-premium_user_data: Optional["EnterpriseLicenseData"] = (
-    _license_check.airgapped_license_data
-)
+premium_user_data: Optional[
+    "EnterpriseLicenseData"
+] = _license_check.airgapped_license_data
 global_max_parallel_request_retries_env: Optional[str] = os.getenv(
     "LITELLM_GLOBAL_MAX_PARALLEL_REQUEST_RETRIES"
 )
@@ -1079,6 +1079,10 @@ def get_openapi_schema():
     from litellm.proxy.common_utils.custom_openapi_spec import CustomOpenAPISpec
 
     openapi_schema = CustomOpenAPISpec.add_llm_api_request_schema_body(openapi_schema)
+    
+    # Fix Swagger UI execute path error when server_root_path is set
+    if server_root_path:
+        openapi_schema["servers"] = [{"url": "/" + server_root_path.strip("/")}]
 
     # Fix Swagger UI execute path error when server_root_path is set
     if server_root_path:
@@ -1105,6 +1109,10 @@ def custom_openapi():
     from litellm.proxy.common_utils.custom_openapi_spec import CustomOpenAPISpec
 
     openapi_schema = CustomOpenAPISpec.add_llm_api_request_schema_body(openapi_schema)
+    
+    # Fix Swagger UI execute path error when server_root_path is set
+    if server_root_path:
+        openapi_schema["servers"] = [{"url": "/" + server_root_path.strip("/")}]
 
     # Fix Swagger UI execute path error when server_root_path is set
     if server_root_path:
@@ -1534,9 +1542,9 @@ master_key: Optional[str] = None
 config_agents: Optional[List[AgentConfig]] = None
 otel_logging = False
 prisma_client: Optional[PrismaClient] = None
-shared_aiohttp_session: Optional["ClientSession"] = (
-    None  # Global shared session for connection reuse
-)
+shared_aiohttp_session: Optional[
+    "ClientSession"
+] = None  # Global shared session for connection reuse
 user_api_key_cache = DualCache(
     default_in_memory_ttl=UserAPIKeyCacheTTLEnum.in_memory_cache_ttl.value
 )
@@ -2038,9 +2046,9 @@ async def update_cache(  # noqa: PLR0915
         _id = "team_id:{}".format(team_id)
         try:
             # Fetch the existing cost for the given user
-            existing_spend_obj: Optional[LiteLLM_TeamTable] = (
-                await user_api_key_cache.async_get_cache(key=_id)
-            )
+            existing_spend_obj: Optional[
+                LiteLLM_TeamTable
+            ] = await user_api_key_cache.async_get_cache(key=_id)
             if existing_spend_obj is None:
                 # do nothing if team not in api key cache
                 return
@@ -2517,6 +2525,34 @@ async def _run_background_health_check():
         _write_health_state_to_router_cache(
             healthy_endpoints, unhealthy_endpoints, _exceptions_by_model_id
         )
+
+        # Save background health checks to database (non-blocking)
+        if prisma_client is not None:
+            import time as time_module
+
+            from litellm.proxy.health_endpoints._health_endpoints import (
+                _save_background_health_checks_to_db,
+            )
+
+            # Use pod_id or a system identifier for checked_by if shared health check is enabled
+            checked_by = None
+            if shared_health_manager is not None:
+                checked_by = shared_health_manager.pod_id
+            else:
+                # Use a system identifier for background health checks
+                checked_by = "background_health_check"
+
+            start_time = time_module.time()
+            asyncio.create_task(
+                _save_background_health_checks_to_db(
+                    prisma_client,
+                    _llm_model_list,
+                    healthy_endpoints,
+                    unhealthy_endpoints,
+                    start_time,
+                    checked_by=checked_by,
+                )
+            )
 
         await asyncio.sleep(health_check_interval)
 
@@ -5290,10 +5326,10 @@ class ProxyConfig:
         )
 
         try:
-            guardrails_in_db: List[Guardrail] = (
-                await GuardrailRegistry.get_all_guardrails_from_db(
-                    prisma_client=prisma_client
-                )
+            guardrails_in_db: List[
+                Guardrail
+            ] = await GuardrailRegistry.get_all_guardrails_from_db(
+                prisma_client=prisma_client
             )
             verbose_proxy_logger.debug(
                 "guardrails from the DB %s", str(guardrails_in_db)
@@ -5675,9 +5711,9 @@ async def initialize(  # noqa: PLR0915
         user_api_base = api_base
         dynamic_config[user_model]["api_base"] = api_base
     if api_version:
-        os.environ["AZURE_API_VERSION"] = (
-            api_version  # set this for azure - litellm can read this from the env
-        )
+        os.environ[
+            "AZURE_API_VERSION"
+        ] = api_version  # set this for azure - litellm can read this from the env
     if max_tokens:  # model-specific param
         dynamic_config[user_model]["max_tokens"] = max_tokens
     if temperature:  # model-specific param
@@ -6721,6 +6757,14 @@ class ProxyStartupEvent:
                             "FIX: Run 'prisma migrate resolve --applied <migration_name>'"
                         )
                     raise e
+
+                ## Start RDS IAM token refresh background task if enabled ##
+                # This proactively refreshes IAM tokens before they expire,
+                # preventing the 15-minute connection failure bug (#16220)
+                if hasattr(prisma_client, "db") and hasattr(
+                    prisma_client.db, "start_token_refresh_task"
+                ):
+                    await prisma_client.db.start_token_refresh_task()
 
                 ## Start RDS IAM token refresh background task if enabled ##
                 # This proactively refreshes IAM tokens before they expire,
@@ -12745,9 +12789,9 @@ async def get_config_list(
                             hasattr(sub_field_info, "description")
                             and sub_field_info.description is not None
                         ):
-                            nested_fields[idx].field_description = (
-                                sub_field_info.description
-                            )
+                            nested_fields[
+                                idx
+                            ].field_description = sub_field_info.description
                         idx += 1
 
                     _stored_in_db = None

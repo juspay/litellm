@@ -634,6 +634,17 @@ const EvaluationCard = ({ entry }: { entry: GuardrailInformation }) => {
             guardrailResponse && <GenericGuardrailResponse response={guardrailResponse} />}
         </div>
       )}
+
+      {guardrailProvider === "litellm_content_filter" && guardrailResponse && (
+        <div className="mt-4">
+          <ContentFilterDetails response={guardrailResponse} />
+        </div>
+      )}
+
+      {/* Generic fallback for unknown guardrail providers */}
+      {guardrailProvider &&
+        !PROVIDERS_WITH_CUSTOM_RENDERERS.has(guardrailProvider) &&
+        guardrailResponse && <GenericGuardrailResponse response={guardrailResponse} />}
     </div>
   );
 };

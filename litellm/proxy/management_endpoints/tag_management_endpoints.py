@@ -21,6 +21,7 @@ from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.management_endpoints.common_daily_activity import (
     SpendAnalyticsPaginatedResponse,
+    compute_tag_metadata_totals,
     get_daily_activity,
 )
 from litellm.proxy.management_helpers.utils import handle_budget_for_entity

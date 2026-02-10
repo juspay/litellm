@@ -576,7 +576,7 @@ class PillarGuardrail(CustomGuardrail):
         headers: Dict[str, str] = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-        }
+        }    
 
         # Add Pillar-specific headers based on configuration
         self._set_bool_header(headers, "plr_scanners", self.include_scanners)

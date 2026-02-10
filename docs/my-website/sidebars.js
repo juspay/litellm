@@ -336,6 +336,16 @@ const sidebars = {
           ],
         },
         {
+          type: "link",
+          label: "A2A Agent Gateway",
+          href: "https://docs.litellm.ai/docs/a2a",
+        },
+        {
+          type: "link",
+          label: "MCP Gateway",
+          href: "https://docs.litellm.ai/docs/mcp",
+        },
+        {
           "type": "category",
           "label": "Config.yaml",
           "items": ["proxy/configs", "proxy/config_management", "proxy/config_settings"]

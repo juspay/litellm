@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from litellm._uuid import uuid
 
 from litellm._uuid import uuid
 from litellm.proxy.management_endpoints import (
@@ -821,6 +822,11 @@ class TestListMCPServers:
             url="https://serper.example.com/mcp",
             transport="http",
         )
+        existing_server = MagicMock()
+        existing_server.authentication_token = "token-abc"
+        existing_server.client_id = "client-123"
+        existing_server.client_secret = "secret-xyz"
+        existing_server.scopes = ["scope:a", "scope:b"]
 
         mock_health_result = generate_mock_mcp_server_db_record(
             server_id="serper_custom_dev", alias="Serper MCP"

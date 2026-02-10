@@ -1,6 +1,7 @@
 # Create server parameters for stdio connection
 import os
 import sys
+from litellm.proxy.proxy_server import LiteLLM_ObjectPermissionTable
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from contextlib import asynccontextmanager
@@ -1899,6 +1900,15 @@ async def test_list_tool_rest_api_with_server_specific_auth():
                     ),
                 )
 
+                mock_user_api_key_dict = UserAPIKeyAuth(
+                    api_key="test",
+                    user_id="test_user",
+                    object_permission=LiteLLM_ObjectPermissionTable(
+                        object_permission_id="dummy",
+                        mcp_servers=[mock_server.server_id],
+                    ),
+                )
+
                 # Mock the _get_tools_for_single_server function
                 with patch(
                     "litellm.proxy._experimental.mcp_server.rest_endpoints._get_tools_for_single_server"
@@ -1982,6 +1992,15 @@ async def test_list_tool_rest_api_with_default_auth():
                 # Mock filter_server_ids_by_ip_with_info to return input unchanged (no IP filtering in test)
                 mock_manager.filter_server_ids_by_ip_with_info = MagicMock(
                     side_effect=lambda server_ids, client_ip: (server_ids, 0)
+                )
+
+                mock_user_api_key_dict = UserAPIKeyAuth(
+                    api_key="test",
+                    user_id="test_user",
+                    object_permission=LiteLLM_ObjectPermissionTable(
+                        object_permission_id="dummy",
+                        mcp_servers=[mock_server.server_id],
+                    ),
                 )
 
                 mock_user_api_key_dict = UserAPIKeyAuth(

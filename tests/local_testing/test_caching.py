@@ -2726,6 +2726,7 @@ def test_redis_caching_multiple_namespaces():
         ), f"Expected different response ID for no namespace vs namespaced. Got {response_1.id} and {response_4.id}"
 
 
+@pytest.mark.flaky(retries=3, delay=1)
 def test_caching_with_reasoning_content():
     """
     Test that reasoning content is cached

@@ -75,6 +75,27 @@ class AnthropicStreamWrapper(AdapterCompletionStreamWrapper):
             cache_read_input_tokens=0,
         )
 
+    def _create_initial_usage_delta(self) -> UsageDelta:
+        """
+        Create the initial UsageDelta for the message_start event.
+
+        Initializes cache token fields (cache_creation_input_tokens, cache_read_input_tokens)
+        to 0 to indicate to clients (like Claude Code) that prompt caching is supported.
+
+        The actual cache token values will be provided in the message_delta event at the
+        end of the stream, since Bedrock Converse API only returns usage data in the final
+        response chunk.
+
+        Returns:
+            UsageDelta with all token counts initialized to 0.
+        """
+        return UsageDelta(
+            input_tokens=0,
+            output_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+
     def __next__(self):
         from .transformation import LiteLLMAnthropicMessagesAdapter
 

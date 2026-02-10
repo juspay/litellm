@@ -55,6 +55,44 @@ vi.mock("@/app/(dashboard)/hooks/uiConfig/useUIConfig", () => {
   };
 });
 
+const { mockUseAuthorized, mockUseOrganizations } = vi.hoisted(() => {
+  const mockUseAuthorized = vi.fn(() => ({
+    userId: "test-user-id",
+    accessToken: "test-access-token",
+    userRole: "admin",
+    token: "test-token",
+    userEmail: "test@example.com",
+    premiumUser: false,
+    disabledPersonalKeyCreation: false,
+    showSSOBanner: false,
+  }));
+
+  const mockUseOrganizations = vi.fn(() => ({
+    data: [],
+    isLoading: false,
+    error: null,
+  }));
+
+  return { mockUseAuthorized, mockUseOrganizations };
+});
+
+vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
+  default: mockUseAuthorized,
+}));
+
+vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  useOrganizations: mockUseOrganizations,
+}));
+
+vi.mock("@/app/(dashboard)/hooks/uiConfig/useUIConfig", () => {
+  return {
+    useUIConfig: () => ({
+      data: { admin_ui_disabled: false },
+      isLoading: false,
+    }),
+  };
+});
+
 describe("Sidebar (leftnav)", () => {
   const defaultProps = {
     setPage: vi.fn(),

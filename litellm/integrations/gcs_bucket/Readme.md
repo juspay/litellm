@@ -66,7 +66,7 @@ Path: `model/{date}_{correlation_id}.json`
 
 ## What's Logged
 
-**Success:** Full conversation, response, usage, cost, user info, timing  
+**Success:** Full conversation, response, usage, cost, user info, timing
 **Error:** Error details, user info, model info, request context
 
 Done! 🎉

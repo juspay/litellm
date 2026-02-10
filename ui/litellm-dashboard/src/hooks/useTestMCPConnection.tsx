@@ -84,6 +84,10 @@ export const useTestMCPConnection = ({
       return;
     }
 
+    if (requiresOAuthToken && !oauthAccessToken) {
+      return;
+    }
+
     setIsLoadingTools(true);
     setToolsError(null);
 

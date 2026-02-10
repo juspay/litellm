@@ -351,6 +351,36 @@ class PrometheusLogger(CustomLogger):
                 "Total number of guardrail invocations",
                 labelnames=["guardrail_name", "status", "hook_type"],
             )
+
+            # Request queue time metric
+            self.litellm_request_queue_time_metric = self._histogram_factory(
+                "litellm_request_queue_time_seconds",
+                "Time spent in request queue before processing starts (seconds)",
+                labelnames=self.get_labels_for_metric(
+                    "litellm_request_queue_time_seconds"
+                ),
+                buckets=LATENCY_BUCKETS,
+            )
+
+            # Guardrail metrics
+            self.litellm_guardrail_latency_metric = self._histogram_factory(
+                "litellm_guardrail_latency_seconds",
+                "Latency (seconds) for guardrail execution",
+                labelnames=["guardrail_name", "status", "error_type", "hook_type"],
+                buckets=LATENCY_BUCKETS,
+            )
+
+            self.litellm_guardrail_errors_total = self._counter_factory(
+                "litellm_guardrail_errors_total",
+                "Total number of errors encountered during guardrail execution",
+                labelnames=["guardrail_name", "error_type", "hook_type"],
+            )
+
+            self.litellm_guardrail_requests_total = self._counter_factory(
+                "litellm_guardrail_requests_total",
+                "Total number of guardrail invocations",
+                labelnames=["guardrail_name", "status", "hook_type"],
+            )
             # llm api provider budget metrics
             self.litellm_provider_remaining_budget_metric = self._gauge_factory(
                 "litellm_provider_remaining_budget_metric",
@@ -1350,6 +1380,13 @@ class PrometheusLogger(CustomLogger):
                     f"[Non-Blocking] Prometheus: Budget metric lookup {['key', 'team', 'user', 'org'][i]} failed: {r}"
                 )
 
+        await self._set_user_budget_metrics_after_api_request(
+            user_id=user_id,
+            user_spend=_user_spend,
+            user_max_budget=_user_max_budget,
+            response_cost=response_cost,
+        )
+
     def _increment_top_level_request_and_spend_metrics(
         self,
         end_user_id: Optional[str],
@@ -1947,6 +1984,15 @@ class PrometheusLogger(CustomLogger):
                 ) or (_litellm_params.get("metadata") or {}).get("model_group")
 
             llm_provider = _litellm_params.get("custom_llm_provider", None)
+            
+            if self._should_skip_metrics_for_invalid_key(
+                kwargs=request_kwargs,
+                standard_logging_payload=standard_logging_payload,
+            ):
+                return
+            hashed_api_key = standard_logging_payload.get("metadata", {}).get(
+                "user_api_key_hash"
+            )
 
             if self._should_skip_metrics_for_invalid_key(
                 kwargs=request_kwargs,

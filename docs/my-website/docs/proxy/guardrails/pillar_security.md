@@ -80,7 +80,7 @@ Before you begin, ensure you have:
 
 ## Guardrail Modes
 
-Pillar Security supports three execution modes for comprehensive protection:
+Pillar Security supports five execution modes for comprehensive protection:
 
 | Mode | When It Runs | What It Protects | Use Case |
 |------|-------------|------------------|----------|
@@ -261,6 +261,85 @@ general_settings:
 ```
 
 </TabItem>
+<TabItem value="masking" label="Masking Mode - Auto-Sanitize PII">
+
+**Best for:**
+- 🔒 **PII Protection**: Automatically sanitize sensitive data before sending to LLM
+- ✅ **Continue Workflows**: Allow requests to proceed with masked content
+- 🛡️ **Zero Trust**: Never expose sensitive data to LLM models
+- 📊 **Compliance**: Meet data privacy requirements without blocking legitimate requests
+
+```yaml
+model_list:
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+guardrails:
+  - guardrail_name: "pillar-masking"
+    litellm_params:
+      guardrail: pillar
+      mode: "pre_call"                       # Scan input before LLM call
+      api_key: os.environ/PILLAR_API_KEY     # Your Pillar API key
+      api_base: os.environ/PILLAR_API_BASE   # Pillar API endpoint
+      on_flagged_action: "mask"             # Mask sensitive content instead of blocking
+      persist_session: true                  # Keep records for investigation
+      include_scanners: true                 # Understand which scanners triggered
+      include_evidence: true                 # Capture evidence for analysis
+      default_on: true                       # Enable for all requests
+
+general_settings:
+  master_key: "YOUR_LITELLM_PROXY_MASTER_KEY"
+
+litellm_settings:
+  set_verbose: true
+```
+
+**How it works:**
+1. User sends request with sensitive data: `"My email is john@example.com"`
+2. Pillar detects PII and returns masked version: `"My email is [MASKED_EMAIL]"`
+3. LiteLLM replaces original messages with masked messages
+4. Request proceeds to LLM with sanitized content
+5. User receives response without exposing sensitive data
+
+</TabItem>
+<TabItem value="mcp" label="MCP Call Protection">
+
+**Best for:**
+- 🤖 **Agent Workflows**: Protect MCP (Model Context Protocol) tool calls
+- 🔒 **Tool Input Validation**: Scan arguments passed to MCP tools
+- 🛡️ **Comprehensive Coverage**: Extend security to all LLM endpoints
+
+```yaml
+model_list:
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+guardrails:
+  - guardrail_name: "pillar-mcp-guard"
+    litellm_params:
+      guardrail: pillar
+      mode: "pre_mcp_call"                   # Scan MCP tool call inputs
+      api_key: os.environ/PILLAR_API_KEY     # Your Pillar API key
+      api_base: os.environ/PILLAR_API_BASE   # Pillar API endpoint
+      on_flagged_action: "block"             # Block malicious MCP calls
+      default_on: true                       # Enable for all MCP calls
+
+general_settings:
+  master_key: "YOUR_LITELLM_PROXY_MASTER_KEY"
+
+litellm_settings:
+  set_verbose: true
+```
+
+**MCP Modes:**
+- `pre_mcp_call`: Scan MCP tool call inputs before execution
+- `during_mcp_call`: Monitor MCP tool calls in real-time
+
+</TabItem>
 </Tabs>
 
 ## Response Detail Levels
@@ -346,7 +425,7 @@ curl -X POST "http://localhost:4000/v1/chat/completions" \
   }'
 ```
 
-This provides clear, explicit conversation tracking that works seamlessly with LiteLLM's session management.
+This provides clear, explicit conversation tracking that works seamlessly with LiteLLM's session management. When using monitor mode, the session ID is returned in the `x-pillar-session-id` response header for easy correlation and tracking.
 
 ## Environment Variables
 

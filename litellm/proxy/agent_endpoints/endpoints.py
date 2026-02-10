@@ -34,6 +34,11 @@ from litellm.types.proxy.management_endpoints.common_daily_activity import (
     SpendAnalyticsPaginatedResponse,
 )
 
+from litellm.proxy.management_endpoints.common_daily_activity import get_daily_activity
+from litellm.types.proxy.management_endpoints.common_daily_activity import (
+    SpendAnalyticsPaginatedResponse,
+)
+
 router = APIRouter()
 
 
@@ -171,6 +176,17 @@ async def get_agents(
             allowed_agent_ids = await AgentRequestHandler.get_allowed_agents(
                 user_api_key_auth=user_api_key_dict
             )
+            
+            # If no restrictions (empty list), return all agents
+            if len(allowed_agent_ids) == 0:
+                returned_agents = global_agent_registry.get_agent_list()
+            else:
+                # Filter agents by allowed IDs
+                all_agents = global_agent_registry.get_agent_list()
+                returned_agents = [
+                    agent for agent in all_agents
+                    if agent.agent_id in allowed_agent_ids
+                ]
 
             # If no restrictions (empty list), return all agents
             if len(allowed_agent_ids) == 0:

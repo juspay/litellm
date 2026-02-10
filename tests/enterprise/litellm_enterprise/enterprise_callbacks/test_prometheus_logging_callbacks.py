@@ -1617,6 +1617,15 @@ async def test_initialize_remaining_budget_metrics_exception_handling(
         # Make get_paginated_teams raise an exception
         mock_get_teams.side_effect = Exception("Database error")
         mock_list_keys.side_effect = Exception("Key listing error")
+        
+        # Mock prisma_client structure to raise an exception for user budget metrics
+        # The code accesses prisma_client.db.litellm_usertable.find_many and count
+        mock_usertable = MagicMock()
+        mock_usertable.find_many = MagicMock(side_effect=Exception("User database error"))
+        mock_usertable.count = MagicMock(side_effect=Exception("User count error"))
+        mock_db = MagicMock()
+        mock_db.litellm_usertable = mock_usertable
+        mock_prisma.db = mock_db
 
         # Mock prisma_client structure to raise an exception for user budget metrics
         # The code accesses prisma_client.db.litellm_usertable.find_many and count

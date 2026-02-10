@@ -81,6 +81,11 @@ class TestLangfuseUsageDetails(unittest.TestCase):
 
         # Create a fresh logger instance for each test
         self.logger = LangFuseLogger()
+        
+        # Explicitly set the Langfuse client to our mock
+        self.logger.Langfuse = self.mock_langfuse_client
+        # Ensure langfuse_sdk_version is set correctly for _supports_* methods
+        self.logger.langfuse_sdk_version = "3.0.0"
 
         # Explicitly set the Langfuse client to our mock
         self.logger.Langfuse = self.mock_langfuse_client

@@ -178,6 +178,33 @@ class OpenAIModerationGuardrail(OpenAIGuardrailBase, CustomGuardrail):
                 },
             )
 
+    def _extract_user_content_from_data(self, data: Dict[str, Any]) -> Optional[str]:
+        """
+        Extract user content from request data, supporting both Chat Completions and Responses API.
+        
+        For Chat Completions: extracts from 'messages' field
+        For Responses API: extracts from 'input' field
+        
+        Returns:
+            The extracted user content string, or None if no content found
+        """
+        # Try to get messages first (Chat Completions API)
+        messages: Optional[List["AllMessageValues"]] = data.get("messages")
+        if messages is not None:
+            return self.get_user_prompt(messages)
+        
+        # Try to get input (Responses API)
+        input_data = data.get("input")
+        if input_data is not None:
+            # input can be a string or a list of message-like objects
+            if isinstance(input_data, str):
+                return input_data
+            elif isinstance(input_data, list):
+                # Treat input as messages and extract user content
+                return self.get_user_prompt(input_data)
+        
+        return None
+
     @log_guardrail_information
     async def apply_guardrail(
         self,

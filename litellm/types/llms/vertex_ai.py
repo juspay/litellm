@@ -195,6 +195,9 @@ GeminiImageAspectRatio = Literal[
 GeminiImageSize = Literal["1K", "2K", "4K"]
 
 
+GeminiImageSize = Literal["1K", "2K", "4K"]
+
+
 class GeminiImageConfig(TypedDict, total=False):
     aspectRatio: GeminiImageAspectRatio
     imageSize: GeminiImageSize

@@ -229,6 +229,36 @@ class PassThroughStreamingHandler:
         return None
 
     @staticmethod
+    def _extract_model_for_cost_injection(
+        request_body: Optional[dict],
+        url_route: str,
+        endpoint_type: EndpointType,
+        litellm_logging_obj: LiteLLMLoggingObj,
+    ) -> Optional[str]:
+        """
+        Extract model name for cost injection from various sources.
+        """
+        # Try to get model from request body
+        if request_body:
+            model = request_body.get("model")
+            if model:
+                return model
+
+        # Try to get model from logging object
+        if hasattr(litellm_logging_obj, "model_call_details"):
+            model = litellm_logging_obj.model_call_details.get("model")
+            if model:
+                return model
+
+        # For Vertex AI, try to extract from URL
+        if endpoint_type == EndpointType.VERTEX_AI:
+            model = VertexPassthroughLoggingHandler.extract_model_from_url(url_route)
+            if model and model != "unknown":
+                return model
+
+        return None
+
+    @staticmethod
     def _convert_raw_bytes_to_str_lines(raw_bytes: List[bytes]) -> List[str]:
         """
         Converts a list of raw bytes into a list of string lines, similar to aiter_lines()

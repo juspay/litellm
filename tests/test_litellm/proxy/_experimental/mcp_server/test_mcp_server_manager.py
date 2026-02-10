@@ -291,6 +291,53 @@ class TestMCPServerManager:
 
         _reload_mcp_manager_module()
 
+    def test_build_stdio_env_only_accepts_x_prefixed_placeholders(self):
+        """Ensure only ${X-*} placeholders are substituted from headers."""
+        manager = MCPServerManager()
+        server = MCPServer(
+            server_id="stdio-server-env",
+            name="stdio_env",
+            transport=MCPTransport.stdio,
+            command="node",
+            args=["server.js"],
+            env={
+                "PASSTHROUGH": "${X-Test-Header}",
+                "STATIC": "value",
+                "IGNORED": "${Not-Allowed}",
+            },
+        )
+
+        env = manager._build_stdio_env(
+            server,
+            raw_headers={
+                "x-test-header": "resolved-value",
+                "x-not-used": "other",
+            },
+        )
+
+        assert env == {
+            "PASSTHROUGH": "resolved-value",
+            "STATIC": "value",
+            "IGNORED": "${Not-Allowed}",
+        }
+
+    def test_build_stdio_env_missing_header_skips_entry(self):
+        """Ensure missing headers drop the placeholder from the resolved env."""
+        manager = MCPServerManager()
+        server = MCPServer(
+            server_id="stdio-server-env-miss",
+            name="stdio_env_miss",
+            transport=MCPTransport.stdio,
+            command="node",
+            args=["server.js"],
+            env={"EXPECTED": "${X-Missing}"},
+        )
+
+        env = manager._build_stdio_env(server, raw_headers={})
+
+        # When the header isn't provided, the key is omitted entirely
+        assert env == {}
+
     @pytest.mark.asyncio
     async def test_list_tools_with_server_specific_auth_headers(self):
         """Test list_tools method with server-specific auth headers"""

@@ -295,12 +295,20 @@ class RouteChecks:
 
         if route in LiteLLMRoutes.anthropic_routes.value:
             return True
+        
+        if route in LiteLLMRoutes.google_routes.value:
+            return True
 
         if route in LiteLLMRoutes.google_routes.value:
             return True
 
         if RouteChecks.check_route_access(
             route=route, allowed_routes=LiteLLMRoutes.mcp_routes.value
+        ):
+            return True
+        
+        if RouteChecks.check_route_access(
+            route=route, allowed_routes=LiteLLMRoutes.agent_routes.value
         ):
             return True
 

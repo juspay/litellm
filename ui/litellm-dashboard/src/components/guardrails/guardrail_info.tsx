@@ -364,6 +364,31 @@ const GuardrailInfoView: React.FC<GuardrailInfoProps> = ({ guardrailId, onClose,
         }
       }
 
+      if (guardrailData.litellm_params?.guardrail === "tool_permission") {
+        const originalRules = guardrailData.litellm_params?.rules || [];
+        const currentRules = toolPermissionConfig.rules || [];
+        const rulesChanged = JSON.stringify(originalRules) !== JSON.stringify(currentRules);
+
+        const originalDefault = (guardrailData.litellm_params?.default_action || "deny").toLowerCase();
+        const currentDefault = (toolPermissionConfig.default_action || "deny").toLowerCase();
+        const defaultChanged = originalDefault !== currentDefault;
+
+        const originalOnDisallowed = (guardrailData.litellm_params?.on_disallowed_action || "block").toLowerCase();
+        const currentOnDisallowed = (toolPermissionConfig.on_disallowed_action || "block").toLowerCase();
+        const onDisallowedChanged = originalOnDisallowed !== currentOnDisallowed;
+
+        const originalMessage = guardrailData.litellm_params?.violation_message_template || "";
+        const currentMessage = toolPermissionConfig.violation_message_template || "";
+        const messageChanged = originalMessage !== currentMessage;
+
+        if (toolPermissionDirty || rulesChanged || defaultChanged || onDisallowedChanged || messageChanged) {
+          updateData.litellm_params.rules = currentRules;
+          updateData.litellm_params.default_action = currentDefault;
+          updateData.litellm_params.on_disallowed_action = currentOnDisallowed;
+          updateData.litellm_params.violation_message_template = currentMessage || null;
+        }
+      }
+
       /******************************
        * Add provider-specific params (reusing logic from add_guardrail_form.tsx)
        * ----------------------------------
