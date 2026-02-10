@@ -78,6 +78,7 @@ _model_resolution_cache: Dict[str, str] = {}
 async def get_deployment_litellm_model_name(
     model: Optional[Union[str, List[str]]],
     prisma_client: Optional[Any] = None,
+    model_id: Optional[str] = None,
 ) -> Optional[Union[str, List[str]]]:
     """
     Get the actual model key (from model_info.key) from database for the given public model name.
@@ -85,9 +86,10 @@ async def get_deployment_litellm_model_name(
     but the actual model with the hosted_vllm/ prefix is stored in model_info.key
     of the deployment in the database.
     Args:
-        model: The public model name from the request (can be None)
-        llm_router: The LiteLLM router instance (deprecated, not used)
-        prisma_client: The Prisma client for database lookup
+        model: The public model name from the request (can be None or a list of names).
+        prisma_client: The Prisma client for database lookup. If None, the input model is
+            returned without modification.
+        model_id: Optional model_id for precise lookup (preferred over model_name).
     Returns:
         The model_info.key from the database if found, otherwise the original model.
         Returns None if model is None.
@@ -100,32 +102,43 @@ async def get_deployment_litellm_model_name(
         # Handle list of models
         actual_models = []
         for m in model:
-            resolved = await _resolve_single_model_from_db(model=m, prisma_client=prisma_client)
+            resolved = await _resolve_single_model_from_db(
+                model=m, prisma_client=prisma_client, model_id=model_id)
             actual_models.append(resolved)
         return actual_models
     else:
         # Handle single model
-        return await _resolve_single_model_from_db(model=model, prisma_client=prisma_client)
+        return await _resolve_single_model_from_db(
+            model=model, prisma_client=prisma_client, model_id=model_id)
 
 
 async def _resolve_single_model_from_db(
     model: str,
     prisma_client: Any,
+    model_id: Optional[str] = None,
 ) -> str:
     """
     Resolve a single model name from database litellm_proxymodeltable.
     Looks up model_info.key which contains the hosted_vllm/ prefix.
     Results are cached to avoid repeated DB calls.
     """
-    # Check cache first
-    if model in _model_resolution_cache:
-        verbose_proxy_logger.debug(f"[_resolve_single_model_from_db] cache hit for model={model}, resolved={_model_resolution_cache[model]}")
-        return _model_resolution_cache[model]
+    # Check cache first - use model_id in cache key if available
+    cache_key = f"{model}:{model_id}" if model_id else model
+    if cache_key in _model_resolution_cache:
+        verbose_proxy_logger.debug(f"[resolve_single_model_from_db] cache hit for model={model}, model_id={model_id}, resolved={_model_resolution_cache[cache_key]}")
+        return _model_resolution_cache[cache_key]
     try:
-        db_model = await prisma_client.db.litellm_proxymodeltable.find_first(
-            where={"model_name": model}
-        )
-        verbose_proxy_logger.debug(f"[_resolve_single_model_from_db] db_model={db_model}")
+        # Use model_id for precise lookup if available
+        if model_id:
+            db_model = await prisma_client.db.litellm_proxymodeltable.find_unique(
+                where={"id": model_id}
+            )
+        else:
+            # Fall back to find_first for model_name (non-deterministic if multiple matches)
+            db_model = await prisma_client.db.litellm_proxymodeltable.find_first(
+                where={"model_name": model}
+            )
+        verbose_proxy_logger.debug(f"[resolve_single_model_from_db] db_model={db_model}")
         resolved_model = model  # Default to original
         if db_model:
             # Try to get model_info which contains the key with hosted_vllm/ prefix
@@ -133,7 +146,7 @@ async def _resolve_single_model_from_db(
             if model_info and isinstance(model_info, dict):
                 model_key = model_info.get("key")
                 if model_key:
-                    verbose_proxy_logger.debug(f"[_resolve_single_model_from_db] resolved from model_info.key={model_key}")
+                    verbose_proxy_logger.debug(f"[resolve_single_model_from_db] resolved from model_info.key={model_key}")
                     resolved_model = model_key
             # Fallback to litellm_params.model if model_info.key not available
             litellm_params = getattr(db_model, "litellm_params", None)
@@ -155,7 +168,7 @@ async def _resolve_single_model_from_db(
         # Database query failed, continue with original model
         resolved_model = model
     # Cache the result before returning
-    _model_resolution_cache[model] = resolved_model
+    _model_resolution_cache[cache_key] = resolved_model
     return resolved_model
 
 
@@ -293,10 +306,19 @@ async def common_checks(
                 elif FREE_MODELS and actual_model.lower() in FREE_MODELS_LOWER:
                     is_free_model = True
             elif isinstance(actual_model, list) and actual_model:
-                # Check if first model starts with hosted_vllm/ or is in FREE_MODELS list
-                if actual_model[0].lower().startswith("hosted_vllm/"):
-                    is_free_model = True
-                elif FREE_MODELS and actual_model[0].lower() in FREE_MODELS_LOWER:
+                # Check if ALL models are free (hosted_vllm/ prefix or in FREE_MODELS)
+                # Budget check should only be bypassed if user is exclusively using free models
+                def _is_single_free_model(model_name: str) -> bool:
+                    name_lower = model_name.lower()
+                    if name_lower.startswith("hosted_vllm/"):
+                        return True
+                    if FREE_MODELS_LOWER and name_lower in FREE_MODELS_LOWER:
+                        return True
+                    return False
+
+                # All models in the list must be free to bypass budget check
+                model_names = [m for m in actual_model if isinstance(m, str)]
+                if model_names and all(_is_single_free_model(m) for m in model_names):
                     is_free_model = True
 
         if is_free_model:
@@ -2066,7 +2088,7 @@ async def _virtual_key_max_budget_check(
     if is_free_model:
         user_email = user_obj.user_email if user_obj and user_obj.user_email else (user_obj.user_id if user_obj else "unknown")
         key_preview = valid_token.token[:10] + "..." if valid_token and valid_token.token else "unknown"
-        verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {model}, Key: {key_preview}")
+        verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {model}")
         return  # Skip budget check for free models
 
     if valid_token.spend is not None and valid_token.max_budget is not None:

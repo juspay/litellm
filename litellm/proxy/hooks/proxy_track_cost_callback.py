@@ -152,16 +152,23 @@ class _ProxyDBLogger(CustomLogger):
                 if litellm_params and isinstance(litellm_params, dict):
                     _litellm_model = litellm_params.get("model")  # e.g., "MiniMaxAI/MiniMax-M2" (actual)
 
-                # Resolve actual model names using database to handle public aliases
-                # Pass all model candidates to get their resolved versions
+                # Get model_id for precise lookup (from router - uniquely identifies the deployment used)
+                # Try kwargs first, then litellm_params
+                _model_info = kwargs.get("model_info")
+                if not _model_info and litellm_params:
+                    _model_info = litellm_params.get("model_info")
+                _model_id = _model_info.get("id") if isinstance(_model_info, dict) else None
+
+                # Resolve model using deployment ID for deterministic lookup
+                # Falls back to name-based resolution only if ID unavailable
                 from litellm.proxy.proxy_server import prisma_client
                 from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
-                _model_candidates = [m for m in [_request_model, _litellm_model] if m is not None]
-                _resolved_models = await get_deployment_litellm_model_name(
-                    model=_model_candidates,
-                    prisma_client=prisma_client
+                _resolved_model = await get_deployment_litellm_model_name(
+                    model=_request_model,
+                    prisma_client=prisma_client,
+                    model_id=_model_id
                 )
-                verbose_proxy_logger.info(f"[Proxy Track Cost] Request: {_model_candidates}, Resolved: {_resolved_models}")
+                verbose_proxy_logger.info(f"[Proxy Track Cost] Request: {_request_model}, ID: {_model_id}, Resolved: {_resolved_model}")
 
                 FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
                 FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
@@ -171,12 +178,8 @@ class _ProxyDBLogger(CustomLogger):
                 is_free_model = False
                 matched_model = None
 
-                # Extract resolved models safely - handle None, str, or List[str]
-                _resolved_0 = _resolved_models[0] if isinstance(_resolved_models, list) and len(_resolved_models) > 0 else None
-                _resolved_1 = _resolved_models[1] if isinstance(_resolved_models, list) and len(_resolved_models) > 1 else None
-
                 # Check models in order of reliability: resolved (most) -> litellm -> request (least)
-                for model_name in [_resolved_0, _resolved_1, _litellm_model, _request_model]:
+                for model_name in [_resolved_model, _litellm_model, _request_model]:
                     if model_name:
                         # Check if model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
                         if model_name.lower().startswith("hosted_vllm/"):
@@ -190,7 +193,7 @@ class _ProxyDBLogger(CustomLogger):
 
                 
                 verbose_proxy_logger.debug(
-                    f"user_api_key {user_api_key}, user_id {user_id}, team_id {team_id}, end_user_id {end_user_id}"
+                    f"user_api_key {user_api_key}, user_id {user_id}, team_id {team_id}, end_user_id {end_user_id}, matched_model {matched_model}, is_free_model {is_free_model}"
                 )
                 if _should_track_cost_callback(
                     user_api_key=user_api_key,

@@ -129,32 +129,33 @@ class DBSpendUpdateWriter:
                 _litellm_model = litellm_params.get("model")
 
             # Check if ANY of the model identifiers match (models with hosted_vllm/* prefix OR in FREE_MODELS env are free)
-            import os
             FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
             FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
             FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
 
-            # Resolve actual model names using database to handle public aliases
-            # Pass all model candidates to get their resolved versions
+            # Get model_id for precise lookup (from router - uniquely identifies the deployment used)
+            # Try kwargs first, then litellm_params
+            _model_info = kwargs.get("model_info")
+            if not _model_info and litellm_params:
+                _model_info = litellm_params.get("model_info")
+            _model_id = _model_info.get("id") if isinstance(_model_info, dict) else None
+
+            # Resolve model using deployment ID for deterministic lookup
+            # Falls back to name-based resolution only if ID unavailable
             from litellm.proxy.auth.auth_checks import get_deployment_litellm_model_name
-            _model_candidates = [m for m in [_request_model, _litellm_model, _payload_model] if m is not None]
-            _resolved_models = await get_deployment_litellm_model_name(
-                model=_model_candidates,
-                prisma_client=prisma_client)
-            verbose_proxy_logger.info(f"[DB Spend Update] Request: {_model_candidates}, Resolved: {_resolved_models}")
+            _resolved_model = await get_deployment_litellm_model_name(
+                model=_request_model,
+                prisma_client=prisma_client,
+                model_id=_model_id)
+            verbose_proxy_logger.info(f"[DB Spend Update] Request: {_request_model}, ID: {_model_id}, Resolved: {_resolved_model}")
 
             # Check if ANY of the model identifiers match (case-insensitive)
             is_free_model = False
             _model_to_log = _payload_model or _request_model or _litellm_model
             matched_free_model = None
 
-            # Extract resolved models safely - handle None, str, or List[str]
-            _resolved_0 = _resolved_models[0] if isinstance(_resolved_models, list) and len(_resolved_models) > 0 else None
-            _resolved_1 = _resolved_models[1] if isinstance(_resolved_models, list) and len(_resolved_models) > 1 else None
-            _resolved_2 = _resolved_models[2] if isinstance(_resolved_models, list) and len(_resolved_models) > 2 else None
-
-            # Check models in order of reliability: resolved (most) -> litellm -> payload -> request (least)
-            for model_name in [_resolved_0, _resolved_1, _resolved_2, _litellm_model, _payload_model, _request_model]:
+            # Check models in order of reliability: resolved -> litellm -> payload -> request (least)
+            for model_name in [_resolved_model, _litellm_model, _payload_model, _request_model]:
                 if model_name:
                     # Check if model starts with hosted_vllm/ OR is in FREE_MODELS list (case-insensitive)
                     if model_name.lower().startswith("hosted_vllm/"):
