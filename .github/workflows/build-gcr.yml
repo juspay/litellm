@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - release/prod
+      - release/sandbox
   workflow_dispatch:  # allows manual trigger for testing
 
 env:
