@@ -619,7 +619,13 @@ class SearchToolLiteLLMParams(TypedDict, total=False):
     max_retries: Optional[int]
 
 
-class SearchToolTypedDict(TypedDict):
+class SearchToolInfoTypedDict(TypedDict, total=False):
+    """Optional metadata about a search tool."""
+
+    description: str
+
+
+class SearchToolTypedDict(TypedDict, total=False):
     """
     Configuration for a search tool in the router.
 
@@ -635,6 +641,30 @@ class SearchToolTypedDict(TypedDict):
 
     search_tool_name: Required[str]
     litellm_params: Required[SearchToolLiteLLMParams]
+    search_tool_info: SearchToolInfoTypedDict
+
+
+class GuardrailLiteLLMParams(TypedDict, total=False):
+    """
+    LiteLLM params for guardrails.
+    """
+
+    guardrail: Required[str]
+    mode: Required[str]
+    api_key: Optional[str]
+    api_base: Optional[str]
+    weight: Optional[int]  # For load balancing
+
+
+class GuardrailTypedDict(TypedDict, total=False):
+    """
+    Configuration for a guardrail in the router.
+    """
+
+    guardrail_name: Required[str]
+    litellm_params: Required[GuardrailLiteLLMParams]
+    callback: Any  # The CustomGuardrail instance
+    id: Optional[str]  # Unique identifier for the guardrail deployment
 
 
 class GuardrailLiteLLMParams(TypedDict, total=False):

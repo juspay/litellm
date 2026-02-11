@@ -1,6 +1,7 @@
 # used for /metrics endpoint on LiteLLM Proxy
 #### What this does ####
 #    On success, log events to Prometheus
+import asyncio
 import os
 import sys
 from datetime import datetime, timedelta
@@ -312,6 +313,18 @@ class PrometheusLogger(CustomLogger):
                 labelnames=self.get_labels_for_metric("litellm_deployment_state"),
             )
 
+            self.litellm_deployment_tpm_limit = self._gauge_factory(
+                "litellm_deployment_tpm_limit",
+                "Deployment TPM limit found in config",
+                labelnames=self.get_labels_for_metric("litellm_deployment_tpm_limit"),
+            )
+
+            self.litellm_deployment_rpm_limit = self._gauge_factory(
+                "litellm_deployment_rpm_limit",
+                "Deployment RPM limit found in config",
+                labelnames=self.get_labels_for_metric("litellm_deployment_rpm_limit"),
+            )
+
             self.litellm_deployment_cooled_down = self._counter_factory(
                 "litellm_deployment_cooled_down",
                 "LLM Deployment Analytics - Number of times a deployment has been cooled down by LiteLLM load balancing logic. exception_status is the status of the exception that caused the deployment to be cooled down",
@@ -407,6 +420,19 @@ class PrometheusLogger(CustomLogger):
                 name="litellm_cached_tokens_metric",
                 documentation="Total tokens served from LiteLLM cache",
                 labelnames=self.get_labels_for_metric("litellm_cached_tokens_metric"),
+            )
+
+            # User and Team count metrics
+            self.litellm_total_users_metric = self._gauge_factory(
+                "litellm_total_users",
+                "Total number of users in LiteLLM",
+                labelnames=[],
+            )
+
+            self.litellm_teams_count_metric = self._gauge_factory(
+                "litellm_teams_count",
+                "Total number of teams in LiteLLM",
+                labelnames=[],
             )
 
         except Exception as e:
@@ -1173,28 +1199,34 @@ class PrometheusLogger(CustomLogger):
             "user_api_key_user_max_budget", None
         )
 
-        await self._set_api_key_budget_metrics_after_api_request(
-            user_api_key=user_api_key,
-            user_api_key_alias=user_api_key_alias,
-            response_cost=response_cost,
-            key_max_budget=_api_key_max_budget,
-            key_spend=_api_key_spend,
+        results = await asyncio.gather(
+            self._set_api_key_budget_metrics_after_api_request(
+                user_api_key=user_api_key,
+                user_api_key_alias=user_api_key_alias,
+                response_cost=response_cost,
+                key_max_budget=_api_key_max_budget,
+                key_spend=_api_key_spend,
+            ),
+            self._set_team_budget_metrics_after_api_request(
+                user_api_team=user_api_team,
+                user_api_team_alias=user_api_team_alias,
+                team_spend=_team_spend,
+                team_max_budget=_team_max_budget,
+                response_cost=response_cost,
+            ),
+            self._set_user_budget_metrics_after_api_request(
+                user_id=user_id,
+                user_spend=_user_spend,
+                user_max_budget=_user_max_budget,
+                response_cost=response_cost,
+            ),
+            return_exceptions=True,
         )
-
-        await self._set_team_budget_metrics_after_api_request(
-            user_api_team=user_api_team,
-            user_api_team_alias=user_api_team_alias,
-            team_spend=_team_spend,
-            team_max_budget=_team_max_budget,
-            response_cost=response_cost,
-        )
-
-        await self._set_user_budget_metrics_after_api_request(
-            user_id=user_id,
-            user_spend=_user_spend,
-            user_max_budget=_user_max_budget,
-            response_cost=response_cost,
-        )
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                verbose_logger.debug(
+                    f"[Non-Blocking] Prometheus: Budget metric lookup {['key', 'team', 'user'][i]} failed: {r}"
+                )
 
     def _increment_top_level_request_and_spend_metrics(
         self,
@@ -1740,6 +1772,49 @@ class PrometheusLogger(CustomLogger):
                 )
             )
 
+    def _set_deployment_tpm_rpm_limit_metrics(
+        self,
+        model_info: dict,
+        litellm_params: dict,
+        litellm_model_name: Optional[str],
+        model_id: Optional[str],
+        api_base: Optional[str],
+        llm_provider: Optional[str],
+    ):
+        """
+        Set the deployment TPM and RPM limits metrics
+        """
+        tpm = model_info.get("tpm") or litellm_params.get("tpm")
+        rpm = model_info.get("rpm") or litellm_params.get("rpm")
+
+        if tpm is not None:
+            _labels = prometheus_label_factory(
+                supported_enum_labels=self.get_labels_for_metric(
+                    metric_name="litellm_deployment_tpm_limit"
+                ),
+                enum_values=UserAPIKeyLabelValues(
+                    litellm_model_name=litellm_model_name,
+                    model_id=model_id,
+                    api_base=api_base,
+                    api_provider=llm_provider,
+                ),
+            )
+            self.litellm_deployment_tpm_limit.labels(**_labels).set(tpm)
+
+        if rpm is not None:
+            _labels = prometheus_label_factory(
+                supported_enum_labels=self.get_labels_for_metric(
+                    metric_name="litellm_deployment_rpm_limit"
+                ),
+                enum_values=UserAPIKeyLabelValues(
+                    litellm_model_name=litellm_model_name,
+                    model_id=model_id,
+                    api_base=api_base,
+                    api_provider=llm_provider,
+                ),
+            )
+            self.litellm_deployment_rpm_limit.labels(**_labels).set(rpm)
+
     def set_llm_deployment_success_metrics(
         self,
         request_kwargs: dict,
@@ -1772,6 +1847,16 @@ class PrometheusLogger(CustomLogger):
             llm_provider = _litellm_params.get("custom_llm_provider", None)
             _model_info = _metadata.get("model_info") or {}
             model_id = _model_info.get("id", None)
+
+            if _model_info or _litellm_params:
+                self._set_deployment_tpm_rpm_limit_metrics(
+                    model_info=_model_info,
+                    litellm_params=_litellm_params,
+                    litellm_model_name=litellm_model_name,
+                    model_id=model_id,
+                    api_base=api_base,
+                    llm_provider=llm_provider,
+                )
 
             remaining_requests: Optional[int] = None
             remaining_tokens: Optional[int] = None
@@ -2344,6 +2429,38 @@ class PrometheusLogger(CustomLogger):
         await self._initialize_team_budget_metrics()
         await self._initialize_api_key_budget_metrics()
         await self._initialize_user_budget_metrics()
+        await self._initialize_user_and_team_count_metrics()
+
+    async def _initialize_user_and_team_count_metrics(self):
+        """
+        Initialize user and team count metrics by querying the database.
+
+        Updates:
+        - litellm_total_users: Total count of users in the database
+        - litellm_teams_count: Total count of teams in the database
+        """
+        from litellm.proxy.proxy_server import prisma_client
+
+        if prisma_client is None:
+            verbose_logger.debug(
+                "Prometheus: skipping user/team count metrics initialization, DB not initialized"
+            )
+            return
+
+        try:
+            # Get total user count
+            total_users = await prisma_client.db.litellm_usertable.count()
+            self.litellm_total_users_metric.set(total_users)
+            verbose_logger.debug(f"Prometheus: set litellm_total_users to {total_users}")
+
+            # Get total team count
+            total_teams = await prisma_client.db.litellm_teamtable.count()
+            self.litellm_teams_count_metric.set(total_teams)
+            verbose_logger.debug(f"Prometheus: set litellm_teams_count to {total_teams}")
+        except Exception as e:
+            verbose_logger.exception(
+                f"Error initializing user/team count metrics: {str(e)}"
+            )
 
     async def _set_key_list_budget_metrics(
         self, keys: List[Union[str, UserAPIKeyAuth]]
@@ -2628,12 +2745,14 @@ class PrometheusLogger(CustomLogger):
             max_budget=max_budget,
         )
         try:
+            # Note: Setting check_db_only=True bypasses cache and hits DB on every request,
+            # causing huge latency increase and CPU spikes. Keep check_db_only=False.
             user_info = await get_user_object(
                 user_id=user_id,
                 prisma_client=prisma_client,
                 user_api_key_cache=user_api_key_cache,
                 user_id_upsert=False,
-                check_db_only=True,
+                check_db_only=False,
             )
         except Exception as e:
             verbose_logger.debug(

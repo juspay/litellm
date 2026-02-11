@@ -681,6 +681,73 @@ def test_anthropic_chat_headers_add_context_management_beta():
     assert headers["anthropic-beta"] == "context-management-2025-06-27"
 
 
+def test_anthropic_beta_header_merging_with_output_format():
+    """
+    Test that anthropic-beta headers from extra_headers are merged with
+    output_format beta headers instead of being overridden.
+    
+    This is a regression test for: https://github.com/BerriAI/litellm/issues/...
+    When using response_format with a Pydantic model AND extra_headers with
+    anthropic-beta (e.g., for context-1m extension), both beta headers should
+    be present in the final request.
+    """
+    config = AnthropicConfig()
+    
+    # Simulate headers that already have the context-1m beta header from extra_headers
+    headers = {"anthropic-beta": "context-1m-2025-08-07"}
+    
+    # Simulate output_format being set (happens when using response_format with Sonnet 4.5)
+    optional_params = {
+        "output_format": {
+            "type": "json_schema",
+            "schema": {"type": "object", "properties": {}}
+        }
+    }
+    
+    result_headers = config.update_headers_with_optional_anthropic_beta(
+        headers, optional_params
+    )
+    
+    # Both beta headers should be present
+    beta_value = result_headers["anthropic-beta"]
+    assert "context-1m-2025-08-07" in beta_value, \
+        f"User's context-1m beta header missing from: {beta_value}"
+    assert "structured-outputs-2025-11-13" in beta_value, \
+        f"Structured output beta header missing from: {beta_value}"
+
+
+def test_anthropic_beta_header_merging_with_multiple_features():
+    """
+    Test that multiple beta headers can be merged when using multiple features.
+    """
+    config = AnthropicConfig()
+    
+    # Start with a user-provided beta header
+    headers = {"anthropic-beta": "context-1m-2025-08-07"}
+    
+    # Use multiple features that require beta headers
+    optional_params = {
+        "output_format": {
+            "type": "json_schema",
+            "schema": {"type": "object", "properties": {}}
+        },
+        "context_management": _sample_context_management_payload(),
+        "tools": [{"type": "web_fetch_20250910", "name": "web_fetch"}]
+    }
+    
+    result_headers = config.update_headers_with_optional_anthropic_beta(
+        headers, optional_params
+    )
+    
+    beta_value = result_headers["anthropic-beta"]
+    
+    # All beta headers should be present
+    assert "context-1m-2025-08-07" in beta_value
+    assert "structured-outputs-2025-11-13" in beta_value
+    assert "context-management-2025-06-27" in beta_value
+    assert "web-fetch-2025-09-10" in beta_value
+
+
 def test_anthropic_chat_transform_request_includes_context_management():
     config = AnthropicConfig()
     headers = {}
@@ -2051,67 +2118,6 @@ def test_web_search_tool_result_backwards_compatibility():
     assert provider_fields["web_search_results"] is not None
     assert len(provider_fields["web_search_results"]) == 1
     assert provider_fields["web_search_results"][0]["type"] == "web_search_tool_result"
-
+    
     # Should NOT be in tool_results
     assert provider_fields.get("tool_results") is None
-
-
-class TestAnthropicBetaHeaderFiltering:
-    """Tests for filtering blocked anthropic-beta headers in pass-through endpoint."""
-
-    def test_filters_prompt_caching_scope_header(self):
-        """Test that prompt-caching-scope-* headers are filtered out."""
-        headers = {"anthropic-beta": "prompt-caching-scope-2026-01-05"}
-        result = AnthropicMessagesConfig._filter_blocked_anthropic_beta_headers(headers)
-        assert "anthropic-beta" not in result
-
-    def test_filters_prompt_caching_scope_preserves_valid_headers(self):
-        """Test that valid headers are preserved while blocked ones are filtered."""
-        headers = {
-            "anthropic-beta": "prompt-caching-2024-07-31,prompt-caching-scope-2026-01-05,computer-use-2024-10-22"
-        }
-        result = AnthropicMessagesConfig._filter_blocked_anthropic_beta_headers(headers)
-
-        assert "anthropic-beta" in result
-        assert "prompt-caching-2024-07-31" in result["anthropic-beta"]
-        assert "computer-use-2024-10-22" in result["anthropic-beta"]
-        assert "prompt-caching-scope-2026-01-05" not in result["anthropic-beta"]
-
-    def test_handles_no_anthropic_beta_header(self):
-        """Test that headers without anthropic-beta are unchanged."""
-        headers = {"content-type": "application/json"}
-        result = AnthropicMessagesConfig._filter_blocked_anthropic_beta_headers(headers)
-        assert result == headers
-
-    def test_handles_whitespace_in_headers(self):
-        """Test that whitespace around headers is handled correctly."""
-        headers = {
-            "anthropic-beta": " prompt-caching-2024-07-31 , prompt-caching-scope-2026-01-05 "
-        }
-        result = AnthropicMessagesConfig._filter_blocked_anthropic_beta_headers(headers)
-
-        assert "anthropic-beta" in result
-        assert "prompt-caching-2024-07-31" in result["anthropic-beta"]
-        assert "prompt-caching-scope-2026-01-05" not in result["anthropic-beta"]
-
-    def test_all_valid_headers_pass_through(self):
-        """Test that valid headers pass through unchanged."""
-        headers = {
-            "anthropic-beta": "prompt-caching-2024-07-31,computer-use-2024-10-22,files-api-2025-04-14"
-        }
-        result = AnthropicMessagesConfig._filter_blocked_anthropic_beta_headers(headers)
-
-        assert "anthropic-beta" in result
-        assert "prompt-caching-2024-07-31" in result["anthropic-beta"]
-        assert "computer-use-2024-10-22" in result["anthropic-beta"]
-        assert "files-api-2025-04-14" in result["anthropic-beta"]
-
-    def test_is_blocked_anthropic_beta_header(self):
-        """Test the helper method for checking blocked headers."""
-        # Should be blocked
-        assert AnthropicMessagesConfig._is_blocked_anthropic_beta_header("prompt-caching-scope-2026-01-05") is True
-        assert AnthropicMessagesConfig._is_blocked_anthropic_beta_header("prompt-caching-scope-2025-01-01") is True
-
-        # Should not be blocked
-        assert AnthropicMessagesConfig._is_blocked_anthropic_beta_header("prompt-caching-2024-07-31") is False
-        assert AnthropicMessagesConfig._is_blocked_anthropic_beta_header("computer-use-2024-10-22") is False

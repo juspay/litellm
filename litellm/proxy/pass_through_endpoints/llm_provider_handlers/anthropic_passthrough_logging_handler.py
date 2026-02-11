@@ -396,7 +396,11 @@ class AnthropicPassthroughLoggingHandler:
                 
                 # Add batch-specific metadata to indicate this is a pending batch job
                 litellm_model_response.choices = [Choices(
+<<<<<<< HEAD
                     finish_reason="batch_pending",
+=======
+                    finish_reason="stop",
+>>>>>>> v1.81.3-stable
                     index=0,
                     message={
                         "role": "assistant",
@@ -438,7 +442,11 @@ class AnthropicPassthroughLoggingHandler:
                 
                 # Add error-specific metadata
                 litellm_model_response.choices = [Choices(
+<<<<<<< HEAD
                     finish_reason="batch_error",
+=======
+                    finish_reason="stop",
+>>>>>>> v1.81.3-stable
                     index=0,
                     message={
                         "role": "assistant",
@@ -472,7 +480,11 @@ class AnthropicPassthroughLoggingHandler:
             
             # Add error-specific metadata
             litellm_model_response.choices = [Choices(
+<<<<<<< HEAD
                 finish_reason="batch_error",
+=======
+                finish_reason="stop",
+>>>>>>> v1.81.3-stable
                 index=0,
                 message={
                     "role": "assistant",
