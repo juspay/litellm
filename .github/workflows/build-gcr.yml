@@ -5,7 +5,7 @@ on:
     branches:
       - release/prod
       - release/sandbox
-      - sync/v[0-9.]*
+      - sync/v*
   workflow_dispatch:  # allows manual trigger for testing
 
 env:
