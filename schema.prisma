@@ -868,8 +868,6 @@ model LiteLLM_SkillsTable {
   updated_at     DateTime @default(now()) @updatedAt
   updated_by     String?
 }
-<<<<<<< HEAD
-=======
 
 // Policy table for storing guardrail policies
 model LiteLLM_PolicyTable {
@@ -899,4 +897,3 @@ model LiteLLM_PolicyAttachmentTable {
   updated_at       DateTime  @default(now()) @updatedAt
   updated_by       String?
 }
->>>>>>> v1.81.3-stable
