@@ -28,10 +28,8 @@ jobs:
         run: |
           if [[ "${{ github.ref_name }}" == "release/prod" ]]; then
             echo "project=xyne-prod" >> $GITHUB_OUTPUT
-            echo "cred=${{ secrets.SERVICE_ACCOUNT_KEY }}" >> $GITHUB_OUTPUT
           else
             echo "project=xyne-dev-461113" >> $GITHUB_OUTPUT
-            echo "cred=${{ secrets.SERVICE_ACCOUNT_KEY_SANDBOX }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Set image tag
@@ -41,10 +39,17 @@ jobs:
           echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
           echo "Image tag: ${IMAGE_TAG}"
 
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud (prod)
+        if: github.ref_name == 'release/prod'
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ steps.envselect.outputs.cred }}
+          credentials_json: ${{ secrets.SERVICE_ACCOUNT_KEY }}
+
+      - name: Authenticate to Google Cloud (sandbox)
+        if: github.ref_name != 'release/prod'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.SERVICE_ACCOUNT_KEY_SANDBOX }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
