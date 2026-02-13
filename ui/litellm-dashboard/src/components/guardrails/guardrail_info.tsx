@@ -270,22 +270,39 @@ const GuardrailInfoView: React.FC<GuardrailInfoProps> = ({ guardrailId, onClose,
         updateData.litellm_params.pii_entities_config = newPiiEntitiesConfig;
       }
 
-      // Only add Content Filter patterns if there are changes
+      // Always include Content Filter patterns to ensure they persist when other fields change
       if (guardrailData.litellm_params?.guardrail === "litellm_content_filter") {
-        const originalPatterns = guardrailData.litellm_params?.patterns || [];
-        const originalBlockedWords = guardrailData.litellm_params?.blocked_words || [];
-
         const formattedData = formatContentFilterDataForAPI(
-          contentFilterDataRef.current.patterns,
-          contentFilterDataRef.current.blockedWords,
+          contentFilterDataRef.current.patterns || [],
+          contentFilterDataRef.current.blockedWords || [],
         );
 
-        if (JSON.stringify(originalPatterns) !== JSON.stringify(formattedData.patterns)) {
-          updateData.litellm_params.patterns = formattedData.patterns;
-        }
+        updateData.litellm_params.patterns = formattedData.patterns;
+        updateData.litellm_params.blocked_words = formattedData.blocked_words;
+      }
 
-        if (JSON.stringify(originalBlockedWords) !== JSON.stringify(formattedData.blocked_words)) {
-          updateData.litellm_params.blocked_words = formattedData.blocked_words;
+      if (guardrailData.litellm_params?.guardrail === "tool_permission") {
+        const originalRules = guardrailData.litellm_params?.rules || [];
+        const currentRules = toolPermissionConfig.rules || [];
+        const rulesChanged = JSON.stringify(originalRules) !== JSON.stringify(currentRules);
+
+        const originalDefault = (guardrailData.litellm_params?.default_action || "deny").toLowerCase();
+        const currentDefault = (toolPermissionConfig.default_action || "deny").toLowerCase();
+        const defaultChanged = originalDefault !== currentDefault;
+
+        const originalOnDisallowed = (guardrailData.litellm_params?.on_disallowed_action || "block").toLowerCase();
+        const currentOnDisallowed = (toolPermissionConfig.on_disallowed_action || "block").toLowerCase();
+        const onDisallowedChanged = originalOnDisallowed !== currentOnDisallowed;
+
+        const originalMessage = guardrailData.litellm_params?.violation_message_template || "";
+        const currentMessage = toolPermissionConfig.violation_message_template || "";
+        const messageChanged = originalMessage !== currentMessage;
+
+        if (toolPermissionDirty || rulesChanged || defaultChanged || onDisallowedChanged || messageChanged) {
+          updateData.litellm_params.rules = currentRules;
+          updateData.litellm_params.default_action = currentDefault;
+          updateData.litellm_params.on_disallowed_action = currentOnDisallowed;
+          updateData.litellm_params.violation_message_template = currentMessage || null;
         }
       }
 
