@@ -6,11 +6,7 @@ import mimetypes
 import re
 import xml.etree.ElementTree as ET
 from enum import Enum
-<<<<<<< HEAD
-from typing import Any, Dict, List, Optional, Tuple, Union, cast, overload
-=======
 from typing import Any, Dict, List, Optional, Set, Tuple, Union, cast, overload
->>>>>>> v1.81.3-stable
 
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -1533,8 +1529,6 @@ def convert_to_gemini_tool_call_result(  # noqa: PLR0915
                             verbose_logger.warning(
                                 f"Failed to process image in tool response: {e}"
                             )
-<<<<<<< HEAD
-=======
                 elif content_type in ("file", "input_file"):
                     # Extract file for inline_data (for tool results with PDF, audio, video, etc.)
                     file_data = content.get("file_data", "")
@@ -1562,7 +1556,6 @@ def convert_to_gemini_tool_call_result(  # noqa: PLR0915
                             verbose_logger.warning(
                                 f"Failed to process file in tool response: {e}"
                             )
->>>>>>> v1.81.3-stable
     name: Optional[str] = message.get("name", "")  # type: ignore
 
     # Recover name from last message with tool calls
@@ -2260,28 +2253,6 @@ def anthropic_messages_pt(  # noqa: PLR0915
                 # Fixes: https://github.com/BerriAI/litellm/issues/17737
                 _provider_specific_fields_raw = assistant_content_block.get(
                     "provider_specific_fields"
-<<<<<<< HEAD
-                )
-                _provider_specific_fields: Dict[str, Any] = {}
-                if isinstance(_provider_specific_fields_raw, dict):
-                    _provider_specific_fields = cast(
-                        Dict[str, Any], _provider_specific_fields_raw
-                    )
-                _web_search_results = _provider_specific_fields.get(
-                    "web_search_results"
-                )
-                tool_invoke_results = convert_to_anthropic_tool_invoke(
-                    assistant_tool_calls,
-                    web_search_results=_web_search_results,
-                )
-                # AnthropicMessagesAssistantMessageValues includes AnthropicMessagesToolUseParam
-                assistant_content.extend(
-                    cast(
-                        List[AnthropicMessagesAssistantMessageValues],
-                        tool_invoke_results,
-                    )
-=======
->>>>>>> v1.81.3-stable
                 )
                 _provider_specific_fields: Dict[str, Any] = {}
                 if isinstance(_provider_specific_fields_raw, dict):
