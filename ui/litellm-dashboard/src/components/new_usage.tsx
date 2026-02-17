@@ -796,6 +796,7 @@ const NewUsagePage: React.FC<NewUsagePageProps> = ({ accessToken, userRole, user
                   accessToken={accessToken}
                   userRole={userRole}
                   dateValue={dateValue}
+                  teamId={selectedTeamId}
                 />
               </TabPanel>
             </TabPanels>
