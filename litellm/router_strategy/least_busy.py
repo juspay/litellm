@@ -34,13 +34,14 @@ class LeastBusyLoggingHandler(CustomLogger):
         Uses atomic increment to avoid race conditions.
         """
         try:
-            if kwargs["litellm_params"].get("metadata") is None:
+            litellm_params = kwargs.get("litellm_params")
+            if litellm_params is None or litellm_params.get("metadata") is None:
                 pass
             else:
-                model_group = kwargs["litellm_params"]["metadata"].get(
+                model_group = litellm_params["metadata"].get(
                     "model_group", None
                 )
-                id = kwargs["litellm_params"].get("model_info", {}).get("id", None)
+                id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
                     return
                 elif isinstance(id, int):
@@ -87,15 +88,16 @@ class LeastBusyLoggingHandler(CustomLogger):
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:
             print(f"[Least-Busy CALLBACK] log_success_event (SYNC) called")
-            if kwargs["litellm_params"].get("metadata") is None:
+            litellm_params = kwargs.get("litellm_params")
+            if litellm_params is None or litellm_params.get("metadata") is None:
                 print(f"[Least-Busy CALLBACK] log_success_event skipped - no metadata")
                 pass
             else:
-                model_group = kwargs["litellm_params"]["metadata"].get(
+                model_group = litellm_params["metadata"].get(
                     "model_group", None
                 )
 
-                id = kwargs["litellm_params"].get("model_info", {}).get("id", None)
+                id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
                     print(f"[Least-Busy CALLBACK] log_success_event skipped - model_group={model_group}, id={id}")
                     return
@@ -114,14 +116,15 @@ class LeastBusyLoggingHandler(CustomLogger):
     def log_failure_event(self, kwargs, response_obj, start_time, end_time):
         try:
             print(f"[Least-Busy CALLBACK] log_failure_event (SYNC) called")
-            if kwargs["litellm_params"].get("metadata") is None:
+            litellm_params = kwargs.get("litellm_params")
+            if litellm_params is None or litellm_params.get("metadata") is None:
                 print(f"[Least-Busy CALLBACK] log_failure_event skipped - no metadata")
                 pass
             else:
-                model_group = kwargs["litellm_params"]["metadata"].get(
+                model_group = litellm_params["metadata"].get(
                     "model_group", None
                 )
-                id = kwargs["litellm_params"].get("model_info", {}).get("id", None)
+                id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
                     print(f"[Least-Busy CALLBACK] log_failure_event skipped - model_group={model_group}, id={id}")
                     return
@@ -140,15 +143,16 @@ class LeastBusyLoggingHandler(CustomLogger):
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:
             print(f"[Least-Busy CALLBACK] async_log_success_event (ASYNC) called")
-            if kwargs["litellm_params"].get("metadata") is None:
+            litellm_params = kwargs.get("litellm_params")
+            if litellm_params is None or litellm_params.get("metadata") is None:
                 print(f"[Least-Busy CALLBACK] async_log_success_event skipped - no metadata")
                 pass
             else:
-                model_group = kwargs["litellm_params"]["metadata"].get(
+                model_group = litellm_params["metadata"].get(
                     "model_group", None
                 )
 
-                id = kwargs["litellm_params"].get("model_info", {}).get("id", None)
+                id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
                     print(f"[Least-Busy CALLBACK] async_log_success_event skipped - model_group={model_group}, id={id}")
                     return
@@ -167,14 +171,15 @@ class LeastBusyLoggingHandler(CustomLogger):
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         try:
             print(f"[Least-Busy CALLBACK] async_log_failure_event (ASYNC) called")
-            if kwargs["litellm_params"].get("metadata") is None:
+            litellm_params = kwargs.get("litellm_params")
+            if litellm_params is None or litellm_params.get("metadata") is None:
                 print(f"[Least-Busy CALLBACK] async_log_failure_event skipped - no metadata")
                 pass
             else:
-                model_group = kwargs["litellm_params"]["metadata"].get(
+                model_group = litellm_params["metadata"].get(
                     "model_group", None
                 )
-                id = kwargs["litellm_params"].get("model_info", {}).get("id", None)
+                id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
                     print(f"[Least-Busy CALLBACK] async_log_failure_event skipped - model_group={model_group}, id={id}")
                     return
