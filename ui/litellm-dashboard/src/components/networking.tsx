@@ -8170,24 +8170,40 @@ export const userAgentAnalyticsCall = async (
 };
 
 // New endpoint functions for DAU, WAU, MAU
-export const tagDauCall = async (accessToken: string, endDate: Date, tagFilter?: string, tagFilters?: string[]) => {
+export const tagDauCall = async (
+  accessToken: string,
+  startDate?: string,
+  endDate?: string,
+  tagFilter?: string,
+  tagFilters?: string[],
+  custom_llm_provider?: string,
+  team_id?: string,
+) => {
   /**
-   * Get Daily Active Users (DAU) for last 7 days ending on endDate
+   * Get Daily Active Users (DAU) for a customizable date range
    */
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/tag/dau` : `/tag/dau`;
 
     const queryParams = new URLSearchParams();
 
-    // Format date as YYYY-MM-DD for the API
-    const formatDate = (date: Date) => {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, "0");
-      const day = String(date.getDate()).padStart(2, "0");
-      return `${year}-${month}-${day}`;
-    };
+    if (startDate) {
+      queryParams.append("start_date", startDate);
+    }
 
-    queryParams.append("end_date", formatDate(endDate));
+    if (endDate) {
+      queryParams.append("end_date", endDate);
+    }
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
     if (tagFilters && tagFilters.length > 0) {
@@ -8226,24 +8242,30 @@ export const tagDauCall = async (accessToken: string, endDate: Date, tagFilter?:
   }
 };
 
-export const tagWauCall = async (accessToken: string, endDate: Date, tagFilter?: string, tagFilters?: string[]) => {
+export const tagWauCall = async (
+  accessToken: string,
+  tagFilter?: string,
+  tagFilters?: string[],
+  custom_llm_provider?: string,
+  team_id?: string,
+) => {
   /**
-   * Get Weekly Active Users (WAU) for last 7 weeks ending on endDate
+   * Get Weekly Active Users (WAU) for the last 7 weeks
    */
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/tag/wau` : `/tag/wau`;
 
     const queryParams = new URLSearchParams();
 
-    // Format date as YYYY-MM-DD for the API
-    const formatDate = (date: Date) => {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, "0");
-      const day = String(date.getDate()).padStart(2, "0");
-      return `${year}-${month}-${day}`;
-    };
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
 
-    queryParams.append("end_date", formatDate(endDate));
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
     if (tagFilters && tagFilters.length > 0) {
@@ -8282,24 +8304,33 @@ export const tagWauCall = async (accessToken: string, endDate: Date, tagFilter?:
   }
 };
 
-export const tagMauCall = async (accessToken: string, endDate: Date, tagFilter?: string, tagFilters?: string[]) => {
+export const tagMauCall = async (
+  accessToken: string,
+  months: number = 7,
+  tagFilter?: string,
+  tagFilters?: string[],
+  custom_llm_provider?: string,
+  team_id?: string,
+) => {
   /**
-   * Get Monthly Active Users (MAU) for last 7 months ending on endDate
+   * Get Monthly Active Users (MAU) for the last N months
    */
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/tag/mau` : `/tag/mau`;
 
     const queryParams = new URLSearchParams();
 
-    // Format date as YYYY-MM-DD for the API
-    const formatDate = (date: Date) => {
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, "0");
-      const day = String(date.getDate()).padStart(2, "0");
-      return `${year}-${month}-${day}`;
-    };
+    queryParams.append("months", months.toString());
 
-    queryParams.append("end_date", formatDate(endDate));
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
 
     // Handle multiple tag filters (takes precedence over single tag filter)
     if (tagFilters && tagFilters.length > 0) {
@@ -8334,6 +8365,231 @@ export const tagMauCall = async (accessToken: string, endDate: Date, tagFilter?:
     return data;
   } catch (error) {
     console.error("Failed to fetch MAU:", error);
+    throw error;
+  }
+};
+
+export const leaderboardCall = async (
+  accessToken: string,
+  start_date?: string,
+  end_date?: string,
+  custom_llm_provider?: string,
+  team_id?: string,
+) => {
+  /**
+   * Get all active users by request count with customizable date range
+   * Frontend handles pagination and email search
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/analytics/leaderboard` : `/user/analytics/leaderboard`;
+
+    const queryParams = new URLSearchParams();
+
+    if (start_date) {
+      queryParams.append("start_date", start_date);
+    }
+
+    if (end_date) {
+      queryParams.append("end_date", end_date);
+    }
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
+
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      const errorMessage = deriveErrorMessage(errorData);
+      handleError(errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch leaderboard:", error);
+    throw error;
+  }
+};
+
+export const userDauCall = async (
+  accessToken: string,
+  startDate?: string,
+  endDate?: string,
+  custom_llm_provider?: string,
+  team_id?: string,
+) => {
+  /**
+   * Get daily unique user count (not broken down by user-agent)
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/dau` : `/user/dau`;
+
+    const queryParams = new URLSearchParams();
+
+    if (startDate) {
+      queryParams.append("start_date", startDate);
+    }
+
+    if (endDate) {
+      queryParams.append("end_date", endDate);
+    }
+
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
+
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      const errorMessage = deriveErrorMessage(errorData);
+      handleError(errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch user DAU:", error);
+    throw error;
+  }
+};
+
+export const userWauCall = async (
+  accessToken: string,
+  custom_llm_provider?: string,
+  team_id?: string,
+) => {
+  /**
+   * Get weekly unique user count for the last 7 weeks (not broken down by user-agent)
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/wau` : `/user/wau`;
+
+    const queryParams = new URLSearchParams();
+
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
+
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      const errorMessage = deriveErrorMessage(errorData);
+      handleError(errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch user WAU:", error);
+    throw error;
+  }
+};
+
+export const userMauCall = async (
+  accessToken: string,
+  months: number = 7,
+  custom_llm_provider?: string,
+  team_id?: string,
+) => {
+  /**
+   * Get monthly unique user count for the last N months (not broken down by user-agent)
+   */
+  try {
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/user/mau` : `/user/mau`;
+
+    const queryParams = new URLSearchParams();
+
+    queryParams.append("months", months.toString());
+
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
+
+    const queryString = queryParams.toString();
+    if (queryString) {
+      url += `?${queryString}`;
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      const errorMessage = deriveErrorMessage(errorData);
+      handleError(errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error("Failed to fetch user MAU:", error);
     throw error;
   }
 };
@@ -8373,6 +8629,8 @@ export const userAgentSummaryCall = async (
   startTime: Date,
   endTime: Date,
   tagFilters?: string[],
+  custom_llm_provider?: string,
+  team_id?: string,
 ) => {
   /**
    * Get user agent summary statistics
@@ -8392,6 +8650,16 @@ export const userAgentSummaryCall = async (
 
     queryParams.append("start_date", formatDate(startTime));
     queryParams.append("end_date", formatDate(endTime));
+
+    // Add custom_llm_provider filter if provided
+    if (custom_llm_provider) {
+      queryParams.append("custom_llm_provider", custom_llm_provider);
+    }
+
+    // Add team_id filter if provided
+    if (team_id) {
+      queryParams.append("team_id", team_id);
+    }
 
     // Handle multiple tag filters
     if (tagFilters && tagFilters.length > 0) {
