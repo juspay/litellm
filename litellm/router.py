@@ -743,6 +743,12 @@ class Router:
             self.leastbusy_logger = LeastBusyLoggingHandler(router_cache=self.cache)
             ## add callback
             if isinstance(litellm.input_callback, list):
+                # Remove any existing LeastBusyLoggingHandler instances to prevent
+                # accumulation across hot-reloads (litellm.input_callback has no dedup).
+                litellm.input_callback = [
+                    cb for cb in litellm.input_callback
+                    if not isinstance(cb, LeastBusyLoggingHandler)
+                ]
                 litellm.input_callback.append(self.leastbusy_logger)  # type: ignore
             else:
                 litellm.input_callback = [self.leastbusy_logger]  # type: ignore
