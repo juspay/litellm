@@ -2305,7 +2305,7 @@ def test_web_search_tool_result_backwards_compatibility():
     assert provider_fields["web_search_results"] is not None
     assert len(provider_fields["web_search_results"]) == 1
     assert provider_fields["web_search_results"][0]["type"] == "web_search_tool_result"
-
+    
     # Should NOT be in tool_results
     assert provider_fields.get("tool_results") is None
 

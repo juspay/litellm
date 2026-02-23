@@ -77,6 +77,43 @@ describe("ModelInfoView", () => {
     },
   };
 
+  beforeEach(() => {
+    queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+    vi.clearAllMocks();
+
+    // Set up default mocks
+    mockUseModelsInfo.mockReturnValue({
+      data: {
+        data: [defaultModelData],
+      },
+      isLoading: false,
+      error: null,
+    });
+
+    mockUseModelHub.mockReturnValue({
+      data: {
+        data: [],
+      },
+      isLoading: false,
+      error: null,
+    });
+
+    mockUseModelCostMap.mockReturnValue({
+      data: {},
+      isLoading: false,
+      error: null,
+    });
+  });
+
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    React.createElement(QueryClientProvider, { client: queryClient }, children);
+
   const DEFAULT_ADMIN_PROPS = {
     modelId: "123",
     onClose: vi.fn(),

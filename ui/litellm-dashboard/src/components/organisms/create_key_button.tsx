@@ -1209,6 +1209,42 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                   <Form.Item
                     label={
                       <span>
+                        Policies{" "}
+                        <Tooltip title="Apply policies to this key to control guardrails and other settings">
+                          <a
+                            href="https://docs.litellm.ai/docs/proxy/guardrails/guardrail_policies"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()} // Prevent accordion from collapsing when clicking link
+                          >
+                            <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                          </a>
+                        </Tooltip>
+                      </span>
+                    }
+                    name="policies"
+                    className="mt-4"
+                    help={
+                      premiumUser
+                        ? "Select existing policies or enter new ones"
+                        : "Premium feature - Upgrade to set policies by key"
+                    }
+                  >
+                    <Select
+                      mode="tags"
+                      style={{ width: "100%" }}
+                      disabled={!premiumUser}
+                      placeholder={
+                        !premiumUser
+                          ? "Premium feature - Upgrade to set policies by key"
+                          : "Select or enter policies"
+                      }
+                      options={policiesList.map((name) => ({ value: name, label: name }))}
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    label={
+                      <span>
                         Prompts{" "}
                         <Tooltip title="Allow this key to use specific prompt templates">
                           <a

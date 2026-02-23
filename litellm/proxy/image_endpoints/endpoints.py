@@ -284,6 +284,10 @@ async def image_edit_api(
         data["image"] = image_files
     if mask_files:
         data["mask"] = mask_files
+    
+    # Ensure prompt exists in data (default to None for models that don't require it)
+    if "prompt" not in data:
+        data["prompt"] = None
 
     # Ensure prompt exists in data (default to None for models that don't require it)
     if "prompt" not in data:

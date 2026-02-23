@@ -28,6 +28,11 @@ GOOGLE_IMPORT_ERROR_MESSAGE = (
     "or pip install google-cloud-aiplatform"
 )
 
+GOOGLE_IMPORT_ERROR_MESSAGE = (
+    "Google Cloud SDK not found. Install it with: pip install 'litellm[google]' "
+    "or pip install google-cloud-aiplatform"
+)
+
 if TYPE_CHECKING:
     from google.auth.credentials import Credentials as GoogleCredentialsObject
 else:

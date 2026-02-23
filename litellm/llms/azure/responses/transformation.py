@@ -1,5 +1,6 @@
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, Union
+from copy import deepcopy
 
 import httpx
 from openai.types.responses import ResponseReasoningItem

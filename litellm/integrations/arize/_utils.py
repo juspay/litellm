@@ -371,10 +371,21 @@ def set_attributes(
         if standard_logging_payload is None:
             raise ValueError("standard_logging_object not found in kwargs")
 
-        metadata = (
-            standard_logging_payload.get("metadata")
-            if standard_logging_payload
-            else None
+        metadata = standard_logging_payload.get("metadata") if standard_logging_payload else None
+        _set_metadata_attributes(span, metadata, SpanAttributes)
+
+        metadata_tools = _extract_metadata_tools(metadata)
+        optional_tools = _extract_optional_tools(optional_params)
+
+        call_type = standard_logging_payload.get("call_type")
+        _set_request_attributes(
+            span=span,
+            kwargs=kwargs,
+            standard_logging_payload=standard_logging_payload,
+            optional_params=optional_params,
+            litellm_params=litellm_params,
+            response_obj=response_obj,
+            span_attrs=SpanAttributes,
         )
         _set_metadata_attributes(span, metadata, SpanAttributes)
 

@@ -7,6 +7,8 @@ from typing import Any, Coroutine, Optional, Union, cast
 import httpx
 from openai import AsyncOpenAI, OpenAI
 
+from openai import AsyncOpenAI, OpenAI
+
 from litellm.llms.azure.azure import AsyncAzureOpenAI, AzureOpenAI
 from litellm.types.llms.openai import (
     CancelBatchRequest,

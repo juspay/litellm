@@ -7,6 +7,7 @@ from litellm.proxy._types import KeyManagementRoutes, LitellmUserRoles
 from litellm.types.utils import LiteLLMPydanticObjectBase
 
 from litellm.proxy._types import LitellmUserRoles
+from litellm.types.utils import LiteLLMPydanticObjectBase
 
 
 class LiteLLM_UpperboundKeyGenerateParams(LiteLLMPydanticObjectBase):

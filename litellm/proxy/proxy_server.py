@@ -637,9 +637,9 @@ except ImportError:
 server_root_path = get_server_root_path()
 _license_check = LicenseCheck()
 premium_user: bool = _license_check.is_premium()
-premium_user_data: Optional[
-    "EnterpriseLicenseData"
-] = _license_check.airgapped_license_data
+premium_user_data: Optional["EnterpriseLicenseData"] = (
+    _license_check.airgapped_license_data
+)
 global_max_parallel_request_retries_env: Optional[str] = os.getenv(
     "LITELLM_GLOBAL_MAX_PARALLEL_REQUEST_RETRIES"
 )
@@ -1079,7 +1079,7 @@ def get_openapi_schema():
     from litellm.proxy.common_utils.custom_openapi_spec import CustomOpenAPISpec
 
     openapi_schema = CustomOpenAPISpec.add_llm_api_request_schema_body(openapi_schema)
-    
+
     # Fix Swagger UI execute path error when server_root_path is set
     if server_root_path:
         openapi_schema["servers"] = [{"url": "/" + server_root_path.strip("/")}]
@@ -1109,7 +1109,7 @@ def custom_openapi():
     from litellm.proxy.common_utils.custom_openapi_spec import CustomOpenAPISpec
 
     openapi_schema = CustomOpenAPISpec.add_llm_api_request_schema_body(openapi_schema)
-    
+
     # Fix Swagger UI execute path error when server_root_path is set
     if server_root_path:
         openapi_schema["servers"] = [{"url": "/" + server_root_path.strip("/")}]
@@ -1542,9 +1542,9 @@ master_key: Optional[str] = None
 config_agents: Optional[List[AgentConfig]] = None
 otel_logging = False
 prisma_client: Optional[PrismaClient] = None
-shared_aiohttp_session: Optional[
-    "ClientSession"
-] = None  # Global shared session for connection reuse
+shared_aiohttp_session: Optional["ClientSession"] = (
+    None  # Global shared session for connection reuse
+)
 user_api_key_cache = DualCache(
     default_in_memory_ttl=UserAPIKeyCacheTTLEnum.in_memory_cache_ttl.value
 )
@@ -2046,9 +2046,9 @@ async def update_cache(  # noqa: PLR0915
         _id = "team_id:{}".format(team_id)
         try:
             # Fetch the existing cost for the given user
-            existing_spend_obj: Optional[
-                LiteLLM_TeamTable
-            ] = await user_api_key_cache.async_get_cache(key=_id)
+            existing_spend_obj: Optional[LiteLLM_TeamTable] = (
+                await user_api_key_cache.async_get_cache(key=_id)
+            )
             if existing_spend_obj is None:
                 # do nothing if team not in api key cache
                 return
@@ -3803,6 +3803,45 @@ class ProxyConfig:
             fail_on_error=True,
         )
 
+    async def _init_policy_engine(
+        self,
+        config: Optional[dict],
+        prisma_client: Optional["PrismaClient"],
+        llm_router: Optional["Router"],
+    ):
+        """
+        Initialize the policy engine from config.
+
+        Args:
+            config: The proxy configuration dictionary
+            prisma_client: Optional Prisma client for DB validation
+            llm_router: Optional LLM router for model validation
+        """
+
+        from litellm.proxy.policy_engine.init_policies import init_policies
+        from litellm.proxy.policy_engine.policy_validator import PolicyValidator
+        if config is None:
+            verbose_proxy_logger.debug("Policy engine: config is None, skipping")
+            return
+
+        policies_config = config.get("policies", None)
+        if not policies_config:
+            verbose_proxy_logger.debug("Policy engine: no policies in config, skipping")
+            return
+
+        policy_attachments_config = config.get("policy_attachments", None)
+
+        verbose_proxy_logger.info(f"Policy engine: found {len(policies_config)} policies in config")
+
+        # Initialize policies
+        await init_policies(
+            policies_config=policies_config,
+            policy_attachments_config=policy_attachments_config,
+            prisma_client=prisma_client,
+            validate_db=prisma_client is not None,
+            fail_on_error=True,
+        )
+
     def _load_alerting_settings(self, general_settings: dict):
         """
         Initialize alerting settings
@@ -5326,10 +5365,10 @@ class ProxyConfig:
         )
 
         try:
-            guardrails_in_db: List[
-                Guardrail
-            ] = await GuardrailRegistry.get_all_guardrails_from_db(
-                prisma_client=prisma_client
+            guardrails_in_db: List[Guardrail] = (
+                await GuardrailRegistry.get_all_guardrails_from_db(
+                    prisma_client=prisma_client
+                )
             )
             verbose_proxy_logger.debug(
                 "guardrails from the DB %s", str(guardrails_in_db)
@@ -5711,9 +5750,9 @@ async def initialize(  # noqa: PLR0915
         user_api_base = api_base
         dynamic_config[user_model]["api_base"] = api_base
     if api_version:
-        os.environ[
-            "AZURE_API_VERSION"
-        ] = api_version  # set this for azure - litellm can read this from the env
+        os.environ["AZURE_API_VERSION"] = (
+            api_version  # set this for azure - litellm can read this from the env
+        )
     if max_tokens:  # model-specific param
         dynamic_config[user_model]["max_tokens"] = max_tokens
     if temperature:  # model-specific param
@@ -10321,6 +10360,22 @@ async def model_info_v2(
             sort_by=sortBy,
             sort_order=sortOrder or "asc",
         )
+    
+    # Apply teamId filter if provided
+    if teamId is not None and teamId.strip():
+        all_models = await _filter_models_by_team_id(
+            all_models=all_models,
+            team_id=teamId.strip(),
+            prisma_client=prisma_client,
+            llm_router=llm_router,
+        )
+        # Update search_total_count after teamId filter is applied
+        search_total_count = len(all_models)
+    
+    # If modelId was provided, update search_total_count after filters are applied
+    # to ensure pagination reflects the final filtered result (0 or 1)
+    if modelId is not None:
+        search_total_count = len(all_models)
 
     verbose_proxy_logger.debug("all_models: %s", all_models)
 
@@ -12789,9 +12844,9 @@ async def get_config_list(
                             hasattr(sub_field_info, "description")
                             and sub_field_info.description is not None
                         ):
-                            nested_fields[
-                                idx
-                            ].field_description = sub_field_info.description
+                            nested_fields[idx].field_description = (
+                                sub_field_info.description
+                            )
                         idx += 1
 
                     _stored_in_db = None

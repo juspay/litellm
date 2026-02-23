@@ -250,6 +250,7 @@ model LiteLLM_DeletedTeamTable {
     model_max_budget        Json     @default("{}")
     router_settings  Json? @default("{}")
     team_member_permissions String[] @default([])
+    policies                String[] @default([])
     model_id                Int?     // id for LiteLLM_ModelTable -> stores team-level model aliases
     
     // Original timestamps from team creation/updates
@@ -577,6 +578,7 @@ model LiteLLM_DeletedVerificationToken {
     budget_reset_at         DateTime?
     allowed_cache_controls  String[] @default([])
     allowed_routes          String[] @default([])
+    policies                String[] @default([])
     model_spend             Json     @default("{}")
     model_max_budget        Json     @default("{}")
     router_settings  Json? @default("{}")

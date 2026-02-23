@@ -529,6 +529,42 @@ async def list_vector_stores(
             in_memory_vector_stores = copy.deepcopy(
                 litellm.vector_store_registry.vector_stores
             )
+            
+            vector_stores_to_delete_from_memory: List[str] = []
+            
+            for vector_store in in_memory_vector_stores:
+                vector_store_id = vector_store.get("vector_store_id", None)
+                if not vector_store_id:
+                    continue
+                
+                # If vector store is in memory but NOT in database, it was deleted
+                if vector_store_id not in db_vector_store_ids:
+                    verbose_proxy_logger.info(
+                        f"Vector store {vector_store_id} exists in memory but not in database - marking for deletion from cache"
+                    )
+                    vector_stores_to_delete_from_memory.append(vector_store_id)
+                # If not in our map yet, add it (only in-memory, not in DB)
+                elif vector_store_id not in vector_store_map:
+                    vector_store_map[vector_store_id] = vector_store
+            
+            # Synchronize in-memory registry with database
+            # 1. Remove deleted vector stores from memory
+            for vs_id in vector_stores_to_delete_from_memory:
+                litellm.vector_store_registry.delete_vector_store_from_registry(
+                    vector_store_id=vs_id
+                )
+                verbose_proxy_logger.debug(
+                    f"Removed deleted vector store {vs_id} from in-memory registry"
+                )
+            
+            # 2. Update in-memory registry with database versions (for updates)
+            for vector_store in vector_stores_from_db:
+                vector_store_id = vector_store.get("vector_store_id", None)
+                if vector_store_id:
+                    litellm.vector_store_registry.update_vector_store_in_registry(
+                        vector_store_id=vector_store_id,
+                        updated_data=vector_store
+                    )
 
             vector_stores_to_delete_from_memory: List[str] = []
 
@@ -791,6 +827,28 @@ async def update_vector_store(
             update_data["vector_store_metadata"] = safe_dumps(
                 update_data["vector_store_metadata"]
             )
+        
+        # Handle litellm_params if provided
+        if "litellm_params" in update_data:
+            _input_litellm_params: dict = update_data.get("litellm_params", {}) or {}
+            
+            # Auto-resolve embedding config if embedding model is provided but config is not
+            embedding_model = _input_litellm_params.get("litellm_embedding_model")
+            if embedding_model and not _input_litellm_params.get("litellm_embedding_config"):
+                resolved_config = await _resolve_embedding_config_from_db(
+                    embedding_model=embedding_model,
+                    prisma_client=prisma_client
+                )
+                if resolved_config:
+                    _input_litellm_params["litellm_embedding_config"] = resolved_config
+                    verbose_proxy_logger.info(
+                        f"Auto-resolved embedding config for model {embedding_model}"
+                    )
+            
+            litellm_params_dict = GenericLiteLLMParams(
+                **_input_litellm_params
+            ).model_dump(exclude_none=True)
+            update_data["litellm_params"] = safe_dumps(litellm_params_dict)
 
         # Handle litellm_params if provided
         if "litellm_params" in update_data:

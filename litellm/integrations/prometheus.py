@@ -1386,6 +1386,11 @@ class PrometheusLogger(CustomLogger):
             user_max_budget=_user_max_budget,
             response_cost=response_cost,
         )
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                verbose_logger.debug(
+                    f"[Non-Blocking] Prometheus: Budget metric lookup {['key', 'team', 'user'][i]} failed: {r}"
+                )
 
     def _increment_top_level_request_and_spend_metrics(
         self,

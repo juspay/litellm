@@ -2178,49 +2178,82 @@ if MCP_AVAILABLE:
         Call a specific tool with the provided arguments (handles prefixed tool names).
         """
         start_time = datetime.now()
-        if arguments is None:
-            raise HTTPException(
-                status_code=400, detail="Request arguments are required"
+        litellm_logging_obj: Optional[LiteLLMLoggingObj] = kwargs.get(
+            "litellm_logging_obj", None
+        )
+
+        try:
+            if arguments is None:
+                raise HTTPException(
+                    status_code=400, detail="Request arguments are required"
+                )
+
+            ## CHECK IF USER IS ALLOWED TO CALL THIS TOOL
+            allowed_mcp_server_ids = (
+                await global_mcp_server_manager.get_allowed_mcp_servers(
+                    user_api_key_auth=user_api_key_auth,
+                )
             )
 
-        ## CHECK IF USER IS ALLOWED TO CALL THIS TOOL
-        allowed_mcp_server_ids = (
-            await global_mcp_server_manager.get_allowed_mcp_servers(
+            allowed_mcp_servers: List[MCPServer] = []
+            for allowed_mcp_server_id in allowed_mcp_server_ids:
+                allowed_server = global_mcp_server_manager.get_mcp_server_by_id(
+                    allowed_mcp_server_id
+                )
+                if allowed_server is not None:
+                    allowed_mcp_servers.append(allowed_server)
+
+            allowed_mcp_servers = await _get_allowed_mcp_servers_from_mcp_server_names(
+                mcp_servers=mcp_servers,
+                allowed_mcp_servers=allowed_mcp_servers,
+            )
+            if not allowed_mcp_servers:
+                raise HTTPException(
+                    status_code=403,
+                    detail="User not allowed to call this tool.",
+                )
+
+            # Delegate to execute_mcp_tool for execution
+            response = await execute_mcp_tool(
+                name=name,
+                arguments=arguments,
+                allowed_mcp_servers=allowed_mcp_servers,
+                start_time=start_time,
                 user_api_key_auth=user_api_key_auth,
+                mcp_auth_header=mcp_auth_header,
+                mcp_server_auth_headers=mcp_server_auth_headers,
+                oauth2_headers=oauth2_headers,
+                raw_headers=raw_headers,
+                **kwargs,
             )
-        )
+        except Exception as e:
+            traceback_str = traceback.format_exc(limit=MAXIMUM_TRACEBACK_LINES_TO_LOG)
+            from litellm.proxy.proxy_server import proxy_logging_obj
 
-        allowed_mcp_servers: List[MCPServer] = []
-        for allowed_mcp_server_id in allowed_mcp_server_ids:
-            allowed_server = global_mcp_server_manager.get_mcp_server_by_id(
-                allowed_mcp_server_id
+            if proxy_logging_obj and user_api_key_auth:
+                await proxy_logging_obj.post_call_failure_hook(
+                    request_data=kwargs,
+                    original_exception=e,
+                    user_api_key_dict=user_api_key_auth,
+                    route="/mcp/call_tool",
+                    traceback_str=traceback_str,
+                )
+            raise
+
+        if litellm_logging_obj:
+            litellm_logging_obj.post_call(original_response=response)
+            end_time = datetime.now()
+            await litellm_logging_obj.async_post_mcp_tool_call_hook(
+                kwargs=litellm_logging_obj.model_call_details,
+                response_obj=response,
+                start_time=start_time,
+                end_time=end_time,
             )
-            if allowed_server is not None:
-                allowed_mcp_servers.append(allowed_server)
-
-        allowed_mcp_servers = await _get_allowed_mcp_servers_from_mcp_server_names(
-            mcp_servers=mcp_servers,
-            allowed_mcp_servers=allowed_mcp_servers,
-        )
-        if not allowed_mcp_servers:
-            raise HTTPException(
-                status_code=403,
-                detail="User not allowed to call this tool.",
+            litellm_logging_obj.call_type = CallTypes.call_mcp_tool.value
+            await litellm_logging_obj.async_success_handler(
+                result=response, start_time=start_time, end_time=end_time
             )
-
-        # Delegate to execute_mcp_tool for execution
-        return await execute_mcp_tool(
-            name=name,
-            arguments=arguments,
-            allowed_mcp_servers=allowed_mcp_servers,
-            start_time=start_time,
-            user_api_key_auth=user_api_key_auth,
-            mcp_auth_header=mcp_auth_header,
-            mcp_server_auth_headers=mcp_server_auth_headers,
-            oauth2_headers=oauth2_headers,
-            raw_headers=raw_headers,
-            **kwargs,
-        )
+        return response
 
     async def mcp_get_prompt(
         name: str,

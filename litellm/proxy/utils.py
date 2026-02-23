@@ -142,7 +142,6 @@ else:
 
 unified_guardrail = UnifiedLLMGuardrails()
 
-_anthropic_async_clients = {}
 
 def print_verbose(print_statement):
     """
@@ -1040,6 +1039,7 @@ class ProxyLogging:
         from litellm.integrations.prometheus import PrometheusLogger
         from litellm.types.guardrails import GuardrailEventHooks
         from litellm.integrations.prometheus import PrometheusLogger
+        from litellm.types.guardrails import GuardrailEventHooks
 
         # Determine the event type based on call type
         if (

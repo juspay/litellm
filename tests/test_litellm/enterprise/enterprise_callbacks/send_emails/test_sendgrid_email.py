@@ -104,6 +104,11 @@ async def test_send_email_missing_api_key():
     try:
         logger = SendGridEmailLogger()
 
+        # Mock the response to avoid making real HTTP requests
+        mock_response = mock.AsyncMock(spec=Response)
+        mock_response.status_code = 401
+        mock_httpx_client.post.return_value = mock_response
+
         with pytest.raises(ValueError):
             await logger.send_email(
                 from_email="test@example.com",
@@ -127,6 +132,12 @@ async def test_send_email_multiple_recipients(mock_env_vars, mock_async_client):
     to_email = ["recipient1@example.com", "recipient2@example.com"]
     subject = "Test Subject"
     html_body = "<p>Test email body</p>"
+
+    # Mock the response to avoid making real HTTP requests
+    mock_response = mock.AsyncMock(spec=Response)
+    mock_response.status_code = 202
+    mock_response.text = "accepted"
+    mock_httpx_client.post.return_value = mock_response
 
     await logger.send_email(
         from_email=from_email, to_email=to_email, subject=subject, html_body=html_body

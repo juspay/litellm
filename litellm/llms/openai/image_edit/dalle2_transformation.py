@@ -53,6 +53,7 @@ class DallE2ImageEditConfig(OpenAIImageEditConfig):
         request = ImageEditRequestParams(**request_params)
         request_dict = cast(Dict, request)
 
+
         #########################################################
         # Separate images and masks as `files` and send other parameters as `data`
         #########################################################

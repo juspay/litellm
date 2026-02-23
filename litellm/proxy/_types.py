@@ -456,6 +456,7 @@ class LiteLLMRoutes(enum.Enum):
         "/a2a/{agent_id}",
         "/a2a/{agent_id}/message/send",
         "/a2a/{agent_id}/message/stream",
+        "/a2a/{agent_id}/.well-known/agent-card.json",
     ]
 
     google_routes = [
@@ -2333,10 +2334,6 @@ class ConfigGeneralSettings(LiteLLMPydanticObjectBase):
     mcp_required_fields: Optional[List[str]] = Field(
         None,
         description="List of MCP server fields that must be filled in for a submission to pass standards checks (e.g. ['description', 'source_url', 'alias']).",
-    )
-    vision_fallback_model: Optional[str] = Field(
-        None,
-        description="Fallback model to use when a request contains images but the requested model doesn't support vision. The fallback model must support vision and be available in model_list.",
     )
     user_mcp_management_mode: Optional[UserMCPManagementMode] = Field(
         None,

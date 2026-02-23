@@ -430,6 +430,9 @@ network_mock: bool = False  # When True, use mock transport — no real network 
 ####### STOP SEQUENCE LIMIT #######
 disable_stop_sequence_limit: bool = False  # when True, stop sequence limit is disabled
 
+####### STOP SEQUENCE LIMIT #######
+disable_stop_sequence_limit: bool = False  # when True, stop sequence limit is disabled
+
 #### RETRIES ####
 num_retries: Optional[int] = None  # per model endpoint
 max_fallbacks: Optional[int] = None

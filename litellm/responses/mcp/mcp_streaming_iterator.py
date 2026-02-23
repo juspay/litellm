@@ -307,7 +307,7 @@ class MCPEnhancedStreamingIterator(BaseResponsesAPIStreamingIterator):
 
         # Mark as async iterator
         self.is_async = True
-    
+
     def _extract_mcp_headers_from_params(self) -> None:
         """Extract MCP headers from original request params to pass to tool calls"""
         from typing import Dict, Optional
@@ -315,25 +315,31 @@ class MCPEnhancedStreamingIterator(BaseResponsesAPIStreamingIterator):
         from litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp import (
             MCPRequestHandler,
         )
-        
+
         # Extract headers from secret_fields in original_request_params
         raw_headers_from_request: Optional[Dict[str, str]] = None
         secret_fields = self.original_request_params.get("secret_fields")
         if secret_fields and isinstance(secret_fields, dict):
             raw_headers_from_request = secret_fields.get("raw_headers")
-        
+
         # Extract MCP-specific headers
         self.mcp_auth_header: Optional[str] = None
         self.mcp_server_auth_headers: Optional[Dict[str, Dict[str, str]]] = None
         self.oauth2_headers: Optional[Dict[str, str]] = None
         self.raw_headers: Optional[Dict[str, str]] = raw_headers_from_request
-        
+
         if raw_headers_from_request:
             headers_obj = Headers(raw_headers_from_request)
-            self.mcp_auth_header = MCPRequestHandler._get_mcp_auth_header_from_headers(headers_obj)
-            self.mcp_server_auth_headers = MCPRequestHandler._get_mcp_server_auth_headers_from_headers(headers_obj)
-            self.oauth2_headers = MCPRequestHandler._get_oauth2_headers_from_headers(headers_obj)
-        
+            self.mcp_auth_header = MCPRequestHandler._get_mcp_auth_header_from_headers(
+                headers_obj
+            )
+            self.mcp_server_auth_headers = (
+                MCPRequestHandler._get_mcp_server_auth_headers_from_headers(headers_obj)
+            )
+            self.oauth2_headers = MCPRequestHandler._get_oauth2_headers_from_headers(
+                headers_obj
+            )
+
         # Also check if headers are provided in tools array (from request body)
         tools = self.original_request_params.get("tools")
         if tools:
@@ -343,17 +349,26 @@ class MCPEnhancedStreamingIterator(BaseResponsesAPIStreamingIterator):
                     if tool_headers and isinstance(tool_headers, dict):
                         # Merge tool headers into mcp_server_auth_headers
                         headers_obj_from_tool = Headers(tool_headers)
-                        tool_mcp_server_auth_headers = MCPRequestHandler._get_mcp_server_auth_headers_from_headers(headers_obj_from_tool)
-                        
+                        tool_mcp_server_auth_headers = (
+                            MCPRequestHandler._get_mcp_server_auth_headers_from_headers(
+                                headers_obj_from_tool
+                            )
+                        )
+
                         if tool_mcp_server_auth_headers:
                             if self.mcp_server_auth_headers is None:
                                 self.mcp_server_auth_headers = {}
                             # Merge the headers from tool into existing headers
-                            for server_alias, headers_dict in tool_mcp_server_auth_headers.items():
+                            for (
+                                server_alias,
+                                headers_dict,
+                            ) in tool_mcp_server_auth_headers.items():
                                 if server_alias not in self.mcp_server_auth_headers:
                                     self.mcp_server_auth_headers[server_alias] = {}
-                                self.mcp_server_auth_headers[server_alias].update(headers_dict)
-                        
+                                self.mcp_server_auth_headers[server_alias].update(
+                                    headers_dict
+                                )
+
                         # Also merge raw headers
                         if self.raw_headers is None:
                             self.raw_headers = {}

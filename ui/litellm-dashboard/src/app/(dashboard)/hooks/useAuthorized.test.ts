@@ -169,6 +169,7 @@ describe("useAuthorized", () => {
       admin_ui_disabled: true,
       sso_configured: false,
     });
+    isJwtExpiredMock.mockReturnValue(false);
 
     const decodedPayload = {
       key: "api-key-123",

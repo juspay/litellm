@@ -1172,7 +1172,7 @@ const ChatUI: React.FC<ChatUIProps> = ({
                     try {
                       sessionStorage.removeItem("selectedModel");
                       sessionStorage.removeItem("selectedAgent");
-                    } catch {}
+                    } catch { }
                   }}
                   className="mb-4"
                 />

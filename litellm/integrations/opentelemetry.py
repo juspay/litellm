@@ -21,6 +21,10 @@ from litellm.types.utils import (
     StandardCallbackDynamicParams,
     StandardLoggingPayload,
 )
+from litellm.integrations._types.open_inference import (
+    OpenInferenceSpanKindValues,
+    SpanAttributes,
+)
 
 # OpenTelemetry imports moved to individual functions to avoid import errors when not installed
 

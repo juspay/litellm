@@ -1,6 +1,7 @@
 import os
 import sys
 import types
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import List, Optional
@@ -10,6 +11,9 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from litellm._uuid import uuid
+from litellm.proxy.management_endpoints import (
+    mcp_management_endpoints as mgmt_endpoints,
+)
 
 from litellm._uuid import uuid
 from litellm.proxy.management_endpoints import (

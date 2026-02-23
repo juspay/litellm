@@ -593,6 +593,70 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             ),
         )
 
+    def create_reasoning_summary_text_done_event(
+        self,
+        reasoning_item_id: str,
+        reasoning_content: str,
+        sequence_number: int,
+    ) -> ReasoningSummaryTextDoneEvent:
+        """
+        Create response.reasoning_summary_text.done event.
+        
+        Example:
+        {
+            "type": "response.reasoning_summary_text.done",
+            "item_id": "rs_0c5dae30e53172980069708ba2f59c8197b71ca9820edad07c",
+            "output_index": 0,
+            "sequence_number": 97,
+            "summary_index": 0,
+            "text": "**Clarifying the first humans**\n\nThe  I'm addressing the user's specific interest."
+        }
+        """
+        return ReasoningSummaryTextDoneEvent(
+            type=ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DONE,
+            item_id=reasoning_item_id,
+            output_index=0,
+            sequence_number=sequence_number,
+            summary_index=0,
+            text=reasoning_content,
+        )
+
+    def create_reasoning_summary_part_done_event(
+        self, 
+        reasoning_item_id: str,
+        reasoning_content: str,
+        sequence_number: int,
+    ) -> ReasoningSummaryPartDoneEvent:
+        """
+        Create response.reasoning_summary_part.done event.
+        
+        Example:
+        {
+            "type": "response.reasoning_summary_part.done",
+            "item_id": "rs_0c5dae30e53172980069708ba2f59c8197b71ca9820edad07c",
+            "output_index": 0,
+            "part": {
+                "type": "summary_text",
+                "text": "**Clarifying the first humans**\n\nThe  earlier hominins. It feels important to ensure I'm addressing the user's specific interest."
+            },
+            "sequence_number": 98,
+            "summary_index": 0
+        }
+        """
+        return ReasoningSummaryPartDoneEvent(
+            type=ResponsesAPIStreamEvents.REASONING_SUMMARY_PART_DONE,
+            item_id=reasoning_item_id,
+            output_index=0,
+            sequence_number=sequence_number,
+            summary_index=0,
+            part=BaseLiteLLMOpenAIResponseObject(
+                **{
+                    "type": "summary_text",
+                    "text": reasoning_content,
+                }
+            ),
+        )
+
     def create_output_text_done_event(
         self, litellm_complete_object: ModelResponse
     ) -> OutputTextDoneEvent:

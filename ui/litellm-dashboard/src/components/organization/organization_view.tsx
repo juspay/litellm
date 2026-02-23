@@ -33,8 +33,6 @@ import ObjectPermissionsView from "../object_permissions_view";
 import NumericalInput from "../shared/numerical_input";
 import MemberModal from "../team/EditMembership";
 import VectorStoreSelector from "../vector_store_management/VectorStoreSelector";
-import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
-import { createTeamAliasMap } from "@/utils/teamUtils";
 
 interface OrganizationInfoProps {
   organizationId: string;

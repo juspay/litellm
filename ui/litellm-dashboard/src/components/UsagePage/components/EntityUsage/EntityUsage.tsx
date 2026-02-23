@@ -77,7 +77,7 @@ interface EntitySpendData {
 
 export interface EntityList {
   label: string;
-  value: string | null;
+  value: string;
 }
 
 interface EntityUsageProps {

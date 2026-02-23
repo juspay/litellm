@@ -339,6 +339,90 @@ class TestMCPServerManager:
         assert env == {}
 
     @pytest.mark.asyncio
+    async def test_load_servers_from_config_warns_on_invalid_alias(self, caplog):
+        """Invalid aliases from config should emit warnings during load."""
+
+        manager = MCPServerManager()
+        config = {
+            "validserver": {
+                "alias": "bad/name",
+                "url": "https://example.com",
+                "transport": MCPTransport.http,
+            }
+        }
+
+        with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+            await manager.load_servers_from_config(config)
+
+        assert any(
+            "invalid alias 'bad/name'" in message for message in caplog.messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_load_servers_from_config_accepts_valid_alias(self, caplog):
+        """Valid aliases should be accepted and populate the registry."""
+
+        manager = MCPServerManager()
+        config = {
+            "validserver": {
+                "alias": "friendly_alias",
+                "url": "https://example.com",
+                "transport": MCPTransport.http,
+            }
+        }
+
+        with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+            await manager.load_servers_from_config(config)
+
+        # No warnings logged for the valid alias
+        assert all("invalid alias" not in message for message in caplog.messages)
+
+        server = next(iter(manager.config_mcp_servers.values()))
+        assert server.alias == "friendly_alias"
+        assert server.server_name == "validserver"
+
+    def test_warns_when_custom_separator_invalid(self, monkeypatch, caplog):
+        """Invalid MCP_TOOL_PREFIX_SEPARATOR values should log a warning."""
+
+        original_value = os.environ.get("MCP_TOOL_PREFIX_SEPARATOR")
+        monkeypatch.setenv("MCP_TOOL_PREFIX_SEPARATOR", "/")
+
+        with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+            _reload_mcp_manager_module()
+
+        assert any("violates SEP-986" in message for message in caplog.messages)
+
+        # Restore original setting and ensure warning disappears
+        if original_value is None:
+            monkeypatch.delenv("MCP_TOOL_PREFIX_SEPARATOR", raising=False)
+        else:
+            monkeypatch.setenv("MCP_TOOL_PREFIX_SEPARATOR", original_value)
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+            _reload_mcp_manager_module()
+
+        assert all("violates SEP-986" not in message for message in caplog.messages)
+
+    def test_accepts_valid_custom_separator(self, monkeypatch, caplog):
+        """Valid separators should not emit warnings during module import."""
+
+        original_value = os.environ.get("MCP_TOOL_PREFIX_SEPARATOR")
+        monkeypatch.setenv("MCP_TOOL_PREFIX_SEPARATOR", "_")
+
+        with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+            _reload_mcp_manager_module()
+
+        assert all("violates SEP-986" not in message for message in caplog.messages)
+
+        if original_value is None:
+            monkeypatch.delenv("MCP_TOOL_PREFIX_SEPARATOR", raising=False)
+        else:
+            monkeypatch.setenv("MCP_TOOL_PREFIX_SEPARATOR", original_value)
+
+        _reload_mcp_manager_module()
+
+    @pytest.mark.asyncio
     async def test_list_tools_with_server_specific_auth_headers(self):
         """Test list_tools method with server-specific auth headers"""
         manager = MCPServerManager()
