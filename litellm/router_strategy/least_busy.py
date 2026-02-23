@@ -28,10 +28,27 @@ class LeastBusyLoggingHandler(CustomLogger):
         """
         return f"deployment:{model_group}:{deployment_id}:request_count"
 
+    def _get_seen_key(self, call_id: str, deployment_id: str) -> str:
+        """
+        Cache key for deduplicating streaming chunk calls per (request, deployment) pair.
+        Including deployment_id means retries on a *different* deployment still get counted.
+        """
+        return f"least_busy:seen:{call_id}:{deployment_id}"
+
     def log_pre_api_call(self, model, messages, kwargs):
         """
         Log when a model is being used.
         Uses atomic increment to avoid race conditions.
+
+        Deduplicates per (request, deployment) pair using litellm_call_id + deployment_id.
+
+        Root cause of duplicate increments: litellm.input_callback has no dedup, so every
+        Router re-initialization (config hot-reload) appends a new LeastBusyLoggingHandler
+        instance. After N reloads, N handlers all fire log_pre_api_call for the same request.
+        The dedup key ensures only the first handler to run actually increments.
+
+        Including deployment_id in the key means retries to a *different* deployment still
+        get their own increment (only same-deployment duplicates are skipped).
         """
         try:
             litellm_params = kwargs.get("litellm_params")
@@ -46,6 +63,18 @@ class LeastBusyLoggingHandler(CustomLogger):
                     return
                 elif isinstance(id, int):
                     id = str(id)
+
+                # Deduplicate: log_pre_api_call fires for every streaming chunk.
+                # Key = (call_id, deployment_id) so retries on a different deployment
+                # still get their own increment, while repeated chunk calls are skipped.
+                call_id = kwargs.get("litellm_call_id")
+                if call_id:
+                    seen_key = self._get_seen_key(call_id, id)
+                    # local_only=True: in-memory only, no Redis round-trip.
+                    # Streaming chunks always hit the same pod, so pod-local dedup is correct.
+                    if self.router_cache.get_cache(key=seen_key, local_only=True) is not None:
+                        return  # Already incremented for this (request, deployment) pair
+                    self.router_cache.set_cache(key=seen_key, value=1, ttl=600, local_only=True)
 
                 cache_key = self._get_request_count_cache_key(model_group, id)
                 # Atomic increment - no race condition possible
