@@ -67,6 +67,7 @@ from litellm.llms.openai_like.json_loader import JSONProviderRegistry
 from litellm.router_strategy.budget_limiter import RouterBudgetLimiting
 from litellm.router_strategy.least_busy import LeastBusyLoggingHandler
 from litellm.router_strategy.lowest_cost import LowestCostLoggingHandler
+from litellm.router_strategy.smart_routing import SmartRoutingHandler
 from litellm.router_strategy.lowest_latency import LowestLatencyLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
 from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2
@@ -741,13 +742,6 @@ class Router:
             or routing_strategy == RoutingStrategy.LEAST_BUSY
         ):
             self.leastbusy_logger = LeastBusyLoggingHandler(router_cache=self.cache)
-            ## add callback
-            if isinstance(litellm.input_callback, list):
-                litellm.input_callback.append(self.leastbusy_logger)  # type: ignore
-            else:
-                litellm.input_callback = [self.leastbusy_logger]  # type: ignore
-            if isinstance(litellm.callbacks, list):
-                litellm.logging_callback_manager.add_litellm_callback(self.leastbusy_logger)  # type: ignore
         elif (
             routing_strategy == RoutingStrategy.USAGE_BASED_ROUTING.value
             or routing_strategy == RoutingStrategy.USAGE_BASED_ROUTING
@@ -788,8 +782,60 @@ class Router:
             )
             if isinstance(litellm.callbacks, list):
                 litellm.logging_callback_manager.add_litellm_callback(self.lowestcost_logger)  # type: ignore
+        elif (
+            routing_strategy == RoutingStrategy.SMART_ROUTING.value
+            or routing_strategy == RoutingStrategy.SMART_ROUTING
+        ):
+            self.smart_routing_handler = SmartRoutingHandler(
+                dual_cache=self.cache,
+                should_batch_redis_writes=True,
+            )
+            # Register vLLM metrics endpoints from deployment configs
+            self._register_smart_routing_vllm_endpoints()
         else:
             pass
+
+    def _register_smart_routing_vllm_endpoints(self) -> None:
+        """
+        Scan model_list for deployments with vllm_metrics_url configured
+        and register them for metrics polling.
+
+        Users configure vLLM metrics endpoints in litellm_params:
+        ```yaml
+        model_list:
+          - model_name: "vllm-model"
+            litellm_params:
+              model: "openai/facebook/opt-125m"
+              api_base: "http://vllm-instance-1:8000/v1"
+              vllm_metrics_url: "http://vllm-instance-1:8000/metrics"
+            model_info:
+              id: "vllm-1"
+        ```
+        """
+        if self.smart_routing_handler is None:
+            return
+
+        for deployment in self.model_list or []:
+            litellm_params = deployment.get("litellm_params", {})
+            model_info = deployment.get("model_info", {})
+            deployment_id = model_info.get("id")
+            metrics_url = litellm_params.get("vllm_metrics_url")
+
+            if deployment_id is None or metrics_url is None:
+                continue
+
+            verbose_router_logger.info(
+                "smart-routing: registering vLLM metrics endpoint "
+                "deployment_id=%s, url=%s",
+                deployment_id, metrics_url,
+            )
+            self.smart_routing_handler.register_vllm_endpoint(
+                deployment_id=str(deployment_id),
+                metrics_url=str(metrics_url),
+            )
+
+        # Start polling if any endpoints were registered
+        self.smart_routing_handler.start_vllm_polling()
 
     def initialize_assistants_endpoint(self):
         ## INITIALIZE PASS THROUGH ASSISTANTS ENDPOINT ##
@@ -1226,11 +1272,104 @@ class Router:
         except Exception as e:
             raise e
 
+    # ── Inflight request tracking helpers (for least-busy / smart routing) ──
+
+    def _should_track_inflight(self) -> bool:
+        """Return True if the current routing strategy needs in-flight tracking."""
+        return (
+            self.routing_strategy == "least-busy"
+            and self.leastbusy_logger is not None
+        ) or (
+            self.routing_strategy == "smart-routing"
+            and getattr(self, "smart_routing_handler", None) is not None
+        )
+
+    def _get_deployment_model_group_and_id(
+        self, deployment: dict
+    ) -> Optional[tuple]:
+        """Extract (model_group, deployment_id) from a deployment dict."""
+        try:
+            metadata = deployment.get("litellm_params", {}).get("metadata", {})
+            model_group = metadata.get("model_group")
+            deployment_id = deployment.get("model_info", {}).get("id")
+            if model_group is None or deployment_id is None:
+                return None
+            if isinstance(deployment_id, int):
+                deployment_id = str(deployment_id)
+            return (model_group, deployment_id)
+        except Exception:
+            return None
+
+    async def _async_increment_inflight(self, deployment: dict) -> None:
+        """Increment in-flight counter for the given deployment (async)."""
+        if not self._should_track_inflight():
+            return
+        info = self._get_deployment_model_group_and_id(deployment)
+        if info is None:
+            return
+        model_group, deployment_id = info
+        try:
+            if self.routing_strategy == "least-busy" and self.leastbusy_logger is not None:
+                await self.leastbusy_logger.async_increment_request_count(model_group, deployment_id)
+            elif self.routing_strategy == "smart-routing" and getattr(self, "smart_routing_handler", None) is not None:
+                await self.smart_routing_handler.async_increment_request_count(model_group, deployment_id)
+        except Exception as e:
+            verbose_router_logger.debug("Failed to increment inflight count: %s", e)
+
+    async def _async_decrement_inflight(self, deployment: dict) -> None:
+        """Decrement in-flight counter for the given deployment (async)."""
+        if not self._should_track_inflight():
+            return
+        info = self._get_deployment_model_group_and_id(deployment)
+        if info is None:
+            return
+        model_group, deployment_id = info
+        try:
+            if self.routing_strategy == "least-busy" and self.leastbusy_logger is not None:
+                await self.leastbusy_logger.async_decrement_request_count(model_group, deployment_id)
+            elif self.routing_strategy == "smart-routing" and getattr(self, "smart_routing_handler", None) is not None:
+                await self.smart_routing_handler.async_decrement_request_count(model_group, deployment_id)
+        except Exception as e:
+            verbose_router_logger.debug("Failed to decrement inflight count: %s", e)
+
+    def _sync_increment_inflight(self, deployment: dict) -> None:
+        """Increment in-flight counter for the given deployment (sync)."""
+        if not self._should_track_inflight():
+            return
+        info = self._get_deployment_model_group_and_id(deployment)
+        if info is None:
+            return
+        model_group, deployment_id = info
+        try:
+            if self.routing_strategy == "least-busy" and self.leastbusy_logger is not None:
+                self.leastbusy_logger.increment_request_count(model_group, deployment_id)
+            elif self.routing_strategy == "smart-routing" and getattr(self, "smart_routing_handler", None) is not None:
+                self.smart_routing_handler.increment_request_count(model_group, deployment_id)
+        except Exception as e:
+            verbose_router_logger.debug("Failed to increment inflight count: %s", e)
+
+    def _sync_decrement_inflight(self, deployment: dict) -> None:
+        """Decrement in-flight counter for the given deployment (sync)."""
+        if not self._should_track_inflight():
+            return
+        info = self._get_deployment_model_group_and_id(deployment)
+        if info is None:
+            return
+        model_group, deployment_id = info
+        try:
+            if self.routing_strategy == "least-busy" and self.leastbusy_logger is not None:
+                self.leastbusy_logger.decrement_request_count(model_group, deployment_id)
+            elif self.routing_strategy == "smart-routing" and getattr(self, "smart_routing_handler", None) is not None:
+                self.smart_routing_handler.decrement_request_count(model_group, deployment_id)
+        except Exception as e:
+            verbose_router_logger.debug("Failed to decrement inflight count: %s", e)
+
     def _completion(
         self, model: str, messages: List[Dict[str, str]], **kwargs
     ) -> Union[ModelResponse, CustomStreamWrapper]:
         model_name = None
         deployment = None
+        _inflight_incremented = False
         try:
             # pick the one that is available (lowest TPM/RPM)
             deployment = self.get_available_deployment(
@@ -1240,6 +1379,10 @@ class Router:
                 request_kwargs=kwargs,
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
+
+            # Track inflight request for least-busy / smart routing
+            self._sync_increment_inflight(deployment)
+            _inflight_incremented = True
 
             # No copy needed - data is only read and spread into new dict below
             data = deployment["litellm_params"]
@@ -1288,6 +1431,11 @@ class Router:
                         llm_provider="",
                     )
 
+            # For non-streaming responses, decrement immediately
+            if not isinstance(response, CustomStreamWrapper):
+                self._sync_decrement_inflight(deployment)
+                _inflight_incremented = False
+
             return response
         except Exception as e:
             verbose_router_logger.info(
@@ -1297,6 +1445,15 @@ class Router:
             if deployment is not None:
                 self._set_deployment_num_retries_on_exception(e, deployment)
             raise e
+        finally:
+            # Safety net: if we incremented but didn't decrement (exception path
+            # for non-streaming, or streaming where decrement will happen in the
+            # stream consumer), decrement now.
+            # Note: for streaming responses, the stream consumer is responsible
+            # for decrementing. But sync streaming in _completion doesn't have
+            # the same generator cleanup as async, so we decrement here.
+            if _inflight_incremented and deployment is not None:
+                self._sync_decrement_inflight(deployment)
 
     # fmt: off
 
@@ -1379,13 +1536,18 @@ class Router:
         model_response: CustomStreamWrapper,
         messages: List[Dict[str, str]],
         initial_kwargs: dict,
+        deployment: Optional[dict] = None,
     ) -> CustomStreamWrapper:
         """
         Helper to iterate over a streaming response.
 
-        Catches errors for fallbacks using the router's fallback system
+        Catches errors for fallbacks using the router's fallback system.
+        The `deployment` parameter is used to decrement the inflight counter
+        when the stream completes, errors, or is disconnected by the client.
         """
         from litellm.exceptions import MidStreamFallbackError
+
+        router_self = self  # capture for use inside nested class/generator
 
         class FallbackStreamWrapper(CustomStreamWrapper):
             def __init__(self, async_generator: AsyncGenerator):
@@ -1503,6 +1665,15 @@ class Router:
                         f"Fallback also failed: {fallback_error}"
                     )
                     raise fallback_error
+            finally:
+                # Decrement inflight counter when stream completes, errors, or client disconnects.
+                # Python's async generator aclose() triggers the finally block, which handles
+                # the client-disconnect case that callbacks could never catch.
+                if deployment is not None:
+                    try:
+                        await router_self._async_decrement_inflight(deployment)
+                    except Exception:
+                        pass
 
         return FallbackStreamWrapper(stream_with_fallbacks())
 
@@ -1520,6 +1691,7 @@ class Router:
         _timeout_debug_deployment_dict = (
             {}
         )  # this is a temporary dict to debug timeout issues
+        _inflight_incremented = False
         try:
             input_kwargs_for_streaming_fallback = kwargs.copy()
             input_kwargs_for_streaming_fallback["model"] = model
@@ -1546,6 +1718,10 @@ class Router:
                     parent_otel_span=_get_parent_otel_span_from_kwargs(kwargs),
                 )
             )
+
+            # Track inflight request for least-busy / smart routing
+            await self._async_increment_inflight(deployment)
+            _inflight_incremented = True
 
             # debug how often this deployment picked
 
@@ -1630,12 +1806,18 @@ class Router:
             )
 
             if isinstance(response, CustomStreamWrapper):
+                # For streaming, pass deployment so the iterator can decrement on completion/disconnect
+                _inflight_incremented = False  # ownership transfers to streaming iterator
                 return await self._acompletion_streaming_iterator(
                     model_response=response,
                     messages=messages,
                     initial_kwargs=input_kwargs_for_streaming_fallback,
+                    deployment=deployment,
                 )
 
+            # Non-streaming: decrement before returning
+            await self._async_decrement_inflight(deployment)
+            _inflight_incremented = False
             return response
         except litellm.Timeout as e:
             deployment_request_timeout_param = _timeout_debug_deployment_dict.get(
@@ -1659,6 +1841,13 @@ class Router:
             if deployment is not None:
                 self._set_deployment_num_retries_on_exception(e, deployment)
             raise e
+        finally:
+            # Safety net: decrement if we still own the counter
+            if _inflight_incremented and deployment is not None:
+                try:
+                    await self._async_decrement_inflight(deployment)
+                except Exception:
+                    pass
 
     def _update_kwargs_before_fallbacks(
         self,
@@ -2833,6 +3022,8 @@ class Router:
             raise e
 
     async def _atext_completion(self, model: str, prompt: str, **kwargs):
+        deployment = None
+        _inflight_incremented = False
         try:
             verbose_router_logger.debug(
                 f"Inside _atext_completion()- model: {model}; kwargs: {kwargs}"
@@ -2845,6 +3036,10 @@ class Router:
                 request_kwargs=kwargs,
             )
             self._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs)
+
+            # Track inflight request for least-busy / smart routing
+            await self._async_increment_inflight(deployment)
+            _inflight_incremented = True
 
             data = deployment["litellm_params"].copy()
             model_name = data["model"]
@@ -2893,6 +3088,11 @@ class Router:
             verbose_router_logger.info(
                 f"litellm.atext_completion(model={model_name})\033[32m 200 OK\033[0m"
             )
+
+            # Decrement inflight counter for non-streaming responses
+            await self._async_decrement_inflight(deployment)
+            _inflight_incremented = False
+
             return response
         except Exception as e:
             verbose_router_logger.info(
@@ -2901,6 +3101,12 @@ class Router:
             if model is not None:
                 self.fail_calls[model] += 1
             raise e
+        finally:
+            if _inflight_incremented and deployment is not None:
+                try:
+                    await self._async_decrement_inflight(deployment)
+                except Exception:
+                    pass
 
     async def aadapter_completion(
         self,
@@ -7913,6 +8119,7 @@ class Router:
             and self.routing_strategy != "cost-based-routing"
             and self.routing_strategy != "latency-based-routing"
             and self.routing_strategy != "least-busy"
+            and self.routing_strategy != "smart-routing"
         ):  # prevent regressions for other routing strategies, that don't have async get available deployments implemented.
             return self.get_available_deployment(
                 model=model,
@@ -8001,6 +8208,16 @@ class Router:
             ):
                 deployment = (
                     await self.leastbusy_logger.async_get_available_deployments(
+                        model_group=model,
+                        healthy_deployments=healthy_deployments,  # type: ignore
+                    )
+                )
+            elif (
+                self.routing_strategy == "smart-routing"
+                and getattr(self, "smart_routing_handler", None) is not None
+            ):
+                deployment = (
+                    await self.smart_routing_handler.async_get_available_deployments(
                         model_group=model,
                         healthy_deployments=healthy_deployments,  # type: ignore
                     )
@@ -8324,6 +8541,14 @@ class Router:
                 healthy_deployments=healthy_deployments,  # type: ignore
                 messages=messages,
                 input=input,
+            )
+        elif (
+            self.routing_strategy == "smart-routing"
+            and getattr(self, "smart_routing_handler", None) is not None
+        ):
+            deployment = self.smart_routing_handler.get_available_deployments(
+                model_group=model,
+                healthy_deployments=healthy_deployments,  # type: ignore
             )
         else:
             deployment = None

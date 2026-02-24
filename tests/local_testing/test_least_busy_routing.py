@@ -1,5 +1,6 @@
 #### What this tests ####
 #    This tests the router's ability to identify the least busy deployment
+#    Tests the direct increment/decrement API (not callbacks)
 
 import asyncio
 import os
@@ -23,53 +24,34 @@ from litellm import Router
 from litellm.caching.caching import DualCache
 from litellm.router_strategy.least_busy import LeastBusyLoggingHandler
 
-### UNIT TESTS FOR LEAST BUSY LOGGING ###
+### UNIT TESTS FOR LEAST BUSY DIRECT API ###
 
 
-def test_model_added():
+def test_increment_request_count():
+    """Test that increment_request_count works correctly"""
     test_cache = DualCache()
-    least_busy_logger = LeastBusyLoggingHandler(router_cache=test_cache)
+    handler = LeastBusyLoggingHandler(router_cache=test_cache)
     model_group = "gpt-3.5-turbo"
     deployment_id = "1234"
-    kwargs = {
-        "litellm_params": {
-            "metadata": {
-                "model_group": model_group,
-                "deployment": "azure/gpt-4.1-mini",
-            },
-            "model_info": {"id": deployment_id},
-        }
-    }
-    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
-    # New cache key format uses individual keys per deployment
+
+    result = handler.increment_request_count(model_group, deployment_id)
     cache_key = f"deployment:{model_group}:{deployment_id}:request_count"
-    assert test_cache.get_cache(key=cache_key) is not None
+    assert result == 1
     assert test_cache.get_cache(key=cache_key) == 1
 
 
-def test_get_available_deployments():
+def test_decrement_request_count():
+    """Test that decrement_request_count works correctly"""
     test_cache = DualCache()
-    least_busy_logger = LeastBusyLoggingHandler(router_cache=test_cache)
+    handler = LeastBusyLoggingHandler(router_cache=test_cache)
     model_group = "gpt-3.5-turbo"
-    deployment = "azure/gpt-4.1-mini"
     deployment_id = "1234"
-    kwargs = {
-        "litellm_params": {
-            "metadata": {
-                "model_group": model_group,
-                "deployment": deployment,
-            },
-            "model_info": {"id": deployment_id},
-        }
-    }
-    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
-    # New cache key format uses individual keys per deployment
-    cache_key = f"deployment:{model_group}:{deployment_id}:request_count"
-    assert test_cache.get_cache(key=cache_key) is not None
-    assert test_cache.get_cache(key=cache_key) == 1
 
-
-# test_get_available_deployments()
+    # Increment first
+    handler.increment_request_count(model_group, deployment_id)
+    # Then decrement
+    result = handler.decrement_request_count(model_group, deployment_id)
+    assert result == 0
 
 
 @pytest.mark.parametrize("async_test", [True, False])
@@ -114,8 +96,6 @@ async def test_router_get_available_deployments(async_test):
         num_retries=3,
     )  # type: ignore
 
-    router.leastbusy_logger.test_flag = True
-
     model_group = "azure-model"
     # Set individual cache keys for each deployment (new format)
     request_counts = {"1": 10, "2": 54, "3": 100}
@@ -142,13 +122,10 @@ async def test_router_get_available_deployments(async_test):
         messages=[{"role": "user", "content": "Hey, how's it going?"}],
     )
 
-    # wait 2 seconds for callbacks to complete
-    time.sleep(2)
-
-    # Verify the counts are back to what they were (increment then decrement)
-    assert router.leastbusy_logger.logged_success == 1
-
-    # With new format, we check individual keys
+    # With the new try/finally approach, counts should be decremented immediately
+    # (no need to wait for callbacks)
+    # The deployment that was picked for the completion call will have been
+    # incremented then decremented, so counts should match original
     for deployment_id, expected_count in request_counts.items():
         cache_key = f"deployment:{model_group}:{deployment_id}:request_count"
         actual_count = router.cache.get_cache(key=cache_key)
@@ -293,47 +270,40 @@ async def test_router_completion_streaming():
 def test_atomic_increment_decrement():
     """
     Test that atomic increment and decrement operations work correctly
+    using the new direct API
     """
     test_cache = DualCache()
-    least_busy_logger = LeastBusyLoggingHandler(router_cache=test_cache)
+    handler = LeastBusyLoggingHandler(router_cache=test_cache)
     model_group = "test-model"
     deployment_id = "test-deployment"
-
-    kwargs = {
-        "litellm_params": {
-            "metadata": {
-                "model_group": model_group,
-            },
-            "model_info": {"id": deployment_id},
-        }
-    }
 
     cache_key = f"deployment:{model_group}:{deployment_id}:request_count"
 
     # Increment multiple times
-    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
+    handler.increment_request_count(model_group, deployment_id)
     assert test_cache.get_cache(key=cache_key) == 1
 
-    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
+    handler.increment_request_count(model_group, deployment_id)
     assert test_cache.get_cache(key=cache_key) == 2
 
-    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
+    handler.increment_request_count(model_group, deployment_id)
     assert test_cache.get_cache(key=cache_key) == 3
 
-    # Decrement via success callback
-    least_busy_logger.log_success_event(kwargs=kwargs, response_obj=None, start_time=None, end_time=None)
+    # Decrement
+    handler.decrement_request_count(model_group, deployment_id)
     assert test_cache.get_cache(key=cache_key) == 2
 
-    # Decrement via failure callback
-    least_busy_logger.log_failure_event(kwargs=kwargs, response_obj=None, start_time=None, end_time=None)
+    # Decrement again
+    handler.decrement_request_count(model_group, deployment_id)
     assert test_cache.get_cache(key=cache_key) == 1
 
     # Decrement again
-    least_busy_logger.log_success_event(kwargs=kwargs, response_obj=None, start_time=None, end_time=None)
+    handler.decrement_request_count(model_group, deployment_id)
     assert test_cache.get_cache(key=cache_key) == 0
 
     # Decrement past 0 should reset to 0 (not go negative)
-    least_busy_logger.log_success_event(kwargs=kwargs, response_obj=None, start_time=None, end_time=None)
+    result = handler.decrement_request_count(model_group, deployment_id)
+    assert result == 0
     count = test_cache.get_cache(key=cache_key)
     assert count == 0, f"Count should be 0, got {count}"
 
@@ -342,42 +312,37 @@ def test_atomic_increment_decrement():
 async def test_async_atomic_increment_decrement():
     """
     Test that async atomic increment and decrement operations work correctly
+    using the new direct API
     """
     test_cache = DualCache()
-    least_busy_logger = LeastBusyLoggingHandler(router_cache=test_cache)
+    handler = LeastBusyLoggingHandler(router_cache=test_cache)
     model_group = "test-model"
     deployment_id = "test-deployment"
 
-    kwargs = {
-        "litellm_params": {
-            "metadata": {
-                "model_group": model_group,
-            },
-            "model_info": {"id": deployment_id},
-        }
-    }
-
     cache_key = f"deployment:{model_group}:{deployment_id}:request_count"
 
-    # Increment via pre_api_call (sync)
-    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
-    assert test_cache.get_cache(key=cache_key) == 1
-
-    least_busy_logger.log_pre_api_call(model="test", messages=[], kwargs=kwargs)
-    assert test_cache.get_cache(key=cache_key) == 2
-
-    # Decrement via async success callback
-    await least_busy_logger.async_log_success_event(kwargs=kwargs, response_obj=None, start_time=None, end_time=None)
+    # Increment via async API
+    await handler.async_increment_request_count(model_group, deployment_id)
     count = await test_cache.async_get_cache(key=cache_key)
     assert count == 1
 
-    # Decrement via async failure callback
-    await least_busy_logger.async_log_failure_event(kwargs=kwargs, response_obj=None, start_time=None, end_time=None)
+    await handler.async_increment_request_count(model_group, deployment_id)
+    count = await test_cache.async_get_cache(key=cache_key)
+    assert count == 2
+
+    # Decrement via async API
+    await handler.async_decrement_request_count(model_group, deployment_id)
+    count = await test_cache.async_get_cache(key=cache_key)
+    assert count == 1
+
+    # Decrement again
+    await handler.async_decrement_request_count(model_group, deployment_id)
     count = await test_cache.async_get_cache(key=cache_key)
     assert count == 0
 
     # Decrement past 0 should reset to 0
-    await least_busy_logger.async_log_success_event(kwargs=kwargs, response_obj=None, start_time=None, end_time=None)
+    result = await handler.async_decrement_request_count(model_group, deployment_id)
+    assert result == 0
     count = await test_cache.async_get_cache(key=cache_key)
     assert count == 0, f"Count should be 0, got {count}"
 
@@ -387,7 +352,7 @@ def test_get_least_busy_deployment():
     Test that the least busy deployment is correctly selected
     """
     test_cache = DualCache()
-    least_busy_logger = LeastBusyLoggingHandler(router_cache=test_cache)
+    handler = LeastBusyLoggingHandler(router_cache=test_cache)
     model_group = "test-model"
 
     # Create healthy deployments
@@ -403,7 +368,7 @@ def test_get_least_busy_deployment():
     test_cache.set_cache(key=f"deployment:{model_group}:dep-3:request_count", value=10)
 
     # Should select dep-2 (least busy with count=2)
-    selected = least_busy_logger.get_available_deployments(
+    selected = handler.get_available_deployments(
         model_group=model_group,
         healthy_deployments=healthy_deployments,
     )
@@ -417,7 +382,7 @@ async def test_async_get_least_busy_deployment():
     Test that the async least busy deployment selection works correctly
     """
     test_cache = DualCache()
-    least_busy_logger = LeastBusyLoggingHandler(router_cache=test_cache)
+    handler = LeastBusyLoggingHandler(router_cache=test_cache)
     model_group = "test-model"
 
     # Create healthy deployments
@@ -433,9 +398,49 @@ async def test_async_get_least_busy_deployment():
     await test_cache.async_set_cache(key=f"deployment:{model_group}:dep-3:request_count", value=1)
 
     # Should select dep-3 (least busy with count=1)
-    selected = await least_busy_logger.async_get_available_deployments(
+    selected = await handler.async_get_available_deployments(
         model_group=model_group,
         healthy_deployments=healthy_deployments,
     )
 
     assert selected["model_info"]["id"] == "dep-3", f"Expected dep-3, got {selected['model_info']['id']}"
+
+
+def test_ttl_is_30_minutes():
+    """
+    Test that the TTL is set to 1800 seconds (30 minutes)
+    to handle long-running streaming requests
+    """
+    assert LeastBusyLoggingHandler.REQUEST_COUNT_TTL == 1800
+
+
+def test_router_inflight_helpers():
+    """
+    Test the router's _should_track_inflight and related helper methods
+    """
+    model_list = [
+        {
+            "model_name": "test-model",
+            "litellm_params": {
+                "model": "openai/gpt-4.1-mini",
+                "api_key": "test-key",
+            },
+            "model_info": {"id": "dep-1"},
+        },
+    ]
+
+    # Test with least-busy routing
+    router = Router(
+        model_list=model_list,
+        routing_strategy="least-busy",
+        set_verbose=False,
+    )  # type: ignore
+    assert router._should_track_inflight() is True
+
+    # Test with simple-shuffle routing (should not track)
+    router2 = Router(
+        model_list=model_list,
+        routing_strategy="simple-shuffle",
+        set_verbose=False,
+    )  # type: ignore
+    assert router2._should_track_inflight() is False

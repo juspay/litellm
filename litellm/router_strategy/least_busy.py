@@ -1,25 +1,30 @@
 #### What this does ####
 #   identifies least busy deployment
 #   How is this achieved?
-#   - Before each call, have the router print the state of requests {"deployment": "requests_in_flight"}
-#   - use litellm.input_callbacks to log when a request is just about to be made to a model - {"deployment-id": traffic}
-#   - use litellm.success + failure callbacks to log when a request completed
+#   - Router calls increment_request_count() before making a request
+#   - Router calls decrement_request_count() in a try/finally block after the request completes
 #   - in get_available_deployment, for a given model group name -> pick based on traffic
 
 import random
-from typing import List, Optional
+from typing import Optional
 
+from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
-from litellm.integrations.custom_logger import CustomLogger
 
 
-class LeastBusyLoggingHandler(CustomLogger):
-    test_flag: bool = False
-    logged_success: int = 0
-    logged_failure: int = 0
+class LeastBusyLoggingHandler:
+    """
+    Tracks in-flight request counts per deployment for least-busy routing.
+
+    Instead of using callbacks (which can miss decrements on streaming disconnects),
+    the router calls increment/decrement directly with try/finally guarantees.
+    """
 
     def __init__(self, router_cache: DualCache):
         self.router_cache = router_cache
+
+    # TTL of 1800s (30 min) to handle long-running streaming requests
+    REQUEST_COUNT_TTL = 1800
 
     def _get_request_count_cache_key(self, model_group: str, deployment_id: str) -> str:
         """
@@ -28,172 +33,95 @@ class LeastBusyLoggingHandler(CustomLogger):
         """
         return f"deployment:{model_group}:{deployment_id}:request_count"
 
-    def log_pre_api_call(self, model, messages, kwargs):
+    def increment_request_count(self, model_group: str, deployment_id: str) -> int:
         """
-        Log when a model is being used.
-        Uses atomic increment to avoid race conditions.
+        Sync: atomically increment the in-flight request count for a deployment.
+        Called by the router before making a request.
+        Returns the new count.
         """
-        try:
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
-                pass
-            else:
-                model_group = litellm_params["metadata"].get(
-                    "model_group", None
-                )
-                id = litellm_params.get("model_info", {}).get("id", None)
-                if model_group is None or id is None:
-                    return
-                elif isinstance(id, int):
-                    id = str(id)
-
-                cache_key = self._get_request_count_cache_key(model_group, id)
-                # Atomic increment - no race condition possible
-                # Use 10-minute TTL to handle long-running LLM requests
-                new_value = self.router_cache.increment_cache(key=cache_key, value=1, ttl=600)
-                print(f"[Least-Busy INCREMENT] deployment_id={id}, model_group={model_group}, new_count={new_value}, stream={kwargs.get('stream', False)}")
-        except Exception as e:
-            print(f"[Least-Busy ERROR] log_pre_api_call failed: {e}")
-            pass
-
-    def _sync_decrement_request_count(self, model_group: str, deployment_id: str):
-        """
-        Sync helper to atomically decrement request count, ensuring it never goes below 0.
-        """
+        if isinstance(deployment_id, int):
+            deployment_id = str(deployment_id)
         cache_key = self._get_request_count_cache_key(model_group, deployment_id)
-        # Use atomic increment with -1 to decrement
-        # Maintain 10-minute TTL to handle long-running requests
-        new_value = self.router_cache.increment_cache(key=cache_key, value=-1, ttl=600)
-        print(f"[Least-Busy DECREMENT SYNC] deployment_id={deployment_id}, model_group={model_group}, new_count={new_value}")
-        # If we went negative due to a race condition (e.g., decrement before increment was visible),
-        # reset to 0 to avoid negative counts affecting routing
-        if new_value < 0:
-            print(f"[Least-Busy WARNING] Negative count detected for deployment_id={deployment_id}, resetting to 0")
-            self.router_cache.set_cache(key=cache_key, value=0, ttl=600)
+        new_value = self.router_cache.increment_cache(
+            key=cache_key, value=1, ttl=self.REQUEST_COUNT_TTL
+        )
+        verbose_router_logger.debug(
+            "least-busy increment: deployment_id=%s, model_group=%s, new_count=%s",
+            deployment_id, model_group, new_value,
+        )
+        return new_value
 
-    async def _async_decrement_request_count(self, model_group: str, deployment_id: str):
+    def decrement_request_count(self, model_group: str, deployment_id: str) -> int:
         """
-        Async helper to atomically decrement request count, ensuring it never goes below 0.
+        Sync: atomically decrement the in-flight request count for a deployment.
+        Called by the router in a finally block after a request completes.
+        Ensures count never goes below 0.
+        Returns the new count.
         """
+        if isinstance(deployment_id, int):
+            deployment_id = str(deployment_id)
         cache_key = self._get_request_count_cache_key(model_group, deployment_id)
-        # Use atomic increment with -1 to decrement
-        # Maintain 10-minute TTL to handle long-running requests
-        new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1, ttl=600)
-        print(f"[Least-Busy DECREMENT ASYNC] deployment_id={deployment_id}, model_group={model_group}, new_count={new_value}")
-        # If we went negative due to a race condition, reset to 0
+        new_value = self.router_cache.increment_cache(
+            key=cache_key, value=-1, ttl=self.REQUEST_COUNT_TTL
+        )
+        verbose_router_logger.debug(
+            "least-busy decrement: deployment_id=%s, model_group=%s, new_count=%s",
+            deployment_id, model_group, new_value,
+        )
         if new_value < 0:
-            print(f"[Least-Busy WARNING] Negative count detected for deployment_id={deployment_id}, resetting to 0")
-            await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=600)
+            verbose_router_logger.warning(
+                "least-busy: negative count for deployment_id=%s, resetting to 0",
+                deployment_id,
+            )
+            self.router_cache.set_cache(key=cache_key, value=0, ttl=self.REQUEST_COUNT_TTL)
+            return 0
+        return new_value
 
-    def log_success_event(self, kwargs, response_obj, start_time, end_time):
-        try:
-            print(f"[Least-Busy CALLBACK] log_success_event (SYNC) called")
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] log_success_event skipped - no metadata")
-                pass
-            else:
-                model_group = litellm_params["metadata"].get(
-                    "model_group", None
-                )
+    async def async_increment_request_count(self, model_group: str, deployment_id: str) -> int:
+        """
+        Async: atomically increment the in-flight request count for a deployment.
+        Called by the router before making a request.
+        Returns the new count.
+        """
+        if isinstance(deployment_id, int):
+            deployment_id = str(deployment_id)
+        cache_key = self._get_request_count_cache_key(model_group, deployment_id)
+        new_value = await self.router_cache.async_increment_cache(
+            key=cache_key, value=1, ttl=self.REQUEST_COUNT_TTL
+        )
+        verbose_router_logger.debug(
+            "least-busy async increment: deployment_id=%s, model_group=%s, new_count=%s",
+            deployment_id, model_group, new_value,
+        )
+        return new_value
 
-                id = litellm_params.get("model_info", {}).get("id", None)
-                if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] log_success_event skipped - model_group={model_group}, id={id}")
-                    return
-                elif isinstance(id, int):
-                    id = str(id)
-
-                self._sync_decrement_request_count(model_group, id)
-
-                ### TESTING ###
-                if self.test_flag:
-                    self.logged_success += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] log_success_event (SYNC) failed: {e}")
-            pass
-
-    def log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        try:
-            print(f"[Least-Busy CALLBACK] log_failure_event (SYNC) called")
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] log_failure_event skipped - no metadata")
-                pass
-            else:
-                model_group = litellm_params["metadata"].get(
-                    "model_group", None
-                )
-                id = litellm_params.get("model_info", {}).get("id", None)
-                if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] log_failure_event skipped - model_group={model_group}, id={id}")
-                    return
-                elif isinstance(id, int):
-                    id = str(id)
-
-                self._sync_decrement_request_count(model_group, id)
-
-                ### TESTING ###
-                if self.test_flag:
-                    self.logged_failure += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] log_failure_event (SYNC) failed: {e}")
-            pass
-
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
-        try:
-            print(f"[Least-Busy CALLBACK] async_log_success_event (ASYNC) called")
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] async_log_success_event skipped - no metadata")
-                pass
-            else:
-                model_group = litellm_params["metadata"].get(
-                    "model_group", None
-                )
-
-                id = litellm_params.get("model_info", {}).get("id", None)
-                if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] async_log_success_event skipped - model_group={model_group}, id={id}")
-                    return
-                elif isinstance(id, int):
-                    id = str(id)
-
-                await self._async_decrement_request_count(model_group, id)
-
-                ### TESTING ###
-                if self.test_flag:
-                    self.logged_success += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] async_log_success_event (ASYNC) failed: {e}")
-            pass
-
-    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        try:
-            print(f"[Least-Busy CALLBACK] async_log_failure_event (ASYNC) called")
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] async_log_failure_event skipped - no metadata")
-                pass
-            else:
-                model_group = litellm_params["metadata"].get(
-                    "model_group", None
-                )
-                id = litellm_params.get("model_info", {}).get("id", None)
-                if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] async_log_failure_event skipped - model_group={model_group}, id={id}")
-                    return
-                elif isinstance(id, int):
-                    id = str(id)
-
-                await self._async_decrement_request_count(model_group, id)
-
-                ### TESTING ###
-                if self.test_flag:
-                    self.logged_failure += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] async_log_failure_event (ASYNC) failed: {e}")
-            pass
+    async def async_decrement_request_count(self, model_group: str, deployment_id: str) -> int:
+        """
+        Async: atomically decrement the in-flight request count for a deployment.
+        Called by the router in a finally block after a request completes.
+        Ensures count never goes below 0.
+        Returns the new count.
+        """
+        if isinstance(deployment_id, int):
+            deployment_id = str(deployment_id)
+        cache_key = self._get_request_count_cache_key(model_group, deployment_id)
+        new_value = await self.router_cache.async_increment_cache(
+            key=cache_key, value=-1, ttl=self.REQUEST_COUNT_TTL
+        )
+        verbose_router_logger.debug(
+            "least-busy async decrement: deployment_id=%s, model_group=%s, new_count=%s",
+            deployment_id, model_group, new_value,
+        )
+        if new_value < 0:
+            verbose_router_logger.warning(
+                "least-busy: negative count for deployment_id=%s, resetting to 0",
+                deployment_id,
+            )
+            await self.router_cache.async_set_cache(
+                key=cache_key, value=0, ttl=self.REQUEST_COUNT_TTL
+            )
+            return 0
+        return new_value
 
     def _get_request_counts_for_deployments(
         self,
@@ -223,7 +151,10 @@ class LeastBusyLoggingHandler(CustomLogger):
             result[deployment_id] = max(0, int(count)) if count is not None else 0
 
         if none_count == len(healthy_deployments) and none_count > 0:
-            print("[Least-Busy WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to random routing.")
+            verbose_router_logger.warning(
+                "least-busy: Redis returned None for all deployments - "
+                "Redis may be unavailable. Falling back to random routing."
+            )
         return result
 
     async def _async_get_request_counts_for_deployments(
@@ -254,7 +185,10 @@ class LeastBusyLoggingHandler(CustomLogger):
             result[deployment_id] = max(0, int(count)) if count is not None else 0
 
         if none_count == len(healthy_deployments) and none_count > 0:
-            print("[Least-Busy WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to random routing.")
+            verbose_router_logger.warning(
+                "least-busy: Redis returned None for all deployments - "
+                "Redis may be unavailable. Falling back to random routing."
+            )
         return result
 
     def _get_available_deployments(
@@ -268,11 +202,9 @@ class LeastBusyLoggingHandler(CustomLogger):
         When multiple deployments have the same minimum traffic count,
         randomly select among them to ensure fair distribution.
         """
-        # Extract healthy deployment IDs for logging
-        healthy_ids = [d["model_info"]["id"] for d in healthy_deployments]
-
-        print(f"[Least-Busy DEBUG] Cached all_deployments: {all_deployments}")
-        print(f"[Least-Busy DEBUG] Healthy deployment IDs: {healthy_ids}")
+        verbose_router_logger.debug(
+            "least-busy: deployment counts=%s", all_deployments
+        )
 
         # First pass: find the minimum traffic count
         min_traffic = float("inf")
@@ -285,7 +217,6 @@ class LeastBusyLoggingHandler(CustomLogger):
                 min_traffic = traffic
 
         # Second pass: collect all deployments with minimum traffic
-        # This fixes the tie-breaking bias where the first deployment always won
         min_deployments = []
         for d in healthy_deployments:
             deployment_id = d["model_info"]["id"]
@@ -298,11 +229,16 @@ class LeastBusyLoggingHandler(CustomLogger):
         # Randomly select among deployments with equal minimum traffic
         if min_deployments:
             selected = random.choice(min_deployments)
-            print(f"[Least-Busy DEBUG] Selected deployment ID: {selected['model_info']['id']} with traffic={min_traffic} (from {len(min_deployments)} candidates)")
+            verbose_router_logger.debug(
+                "least-busy: selected deployment_id=%s with traffic=%s (from %d candidates)",
+                selected["model_info"]["id"], min_traffic, len(min_deployments),
+            )
             return selected
         else:
             # Fallback: should not happen if healthy_deployments is non-empty
-            print("[Least-Busy DEBUG] WARNING: No deployment found, falling back to RANDOM choice")
+            verbose_router_logger.warning(
+                "least-busy: no deployment found, falling back to random choice"
+            )
             return random.choice(healthy_deployments)
 
     def get_available_deployments(
