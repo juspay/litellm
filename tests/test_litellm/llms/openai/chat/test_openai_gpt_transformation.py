@@ -14,7 +14,6 @@ from litellm.llms.openai.chat.gpt_transformation import (
     OpenAIChatCompletionStreamingHandler,
     OpenAIGPTConfig,
 )
-from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 
 
 class TestOpenAIGPTConfig:
@@ -209,10 +208,10 @@ class TestOpenAIChatCompletionStreamingHandler:
     def test_chunk_parser_maps_reasoning_to_reasoning_content(self):
         """
         Test that chunk_parser maps 'reasoning' field to 'reasoning_content'.
-
+        
         Some OpenAI-compatible providers (e.g., GLM-5, hosted_vllm) return
         delta.reasoning, but LiteLLM expects delta.reasoning_content.
-
+        
         Regression test for: Streaming responses with delta.reasoning field
         coming back empty when using openai/ or hosted_vllm/ providers.
         """

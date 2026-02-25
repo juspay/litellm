@@ -786,13 +786,13 @@ class OpenAIChatCompletionStreamingHandler(BaseModelResponseIterator):
     def _map_reasoning_to_reasoning_content(self, choices: list) -> list:
         """
         Map 'reasoning' field to 'reasoning_content' field in delta.
-
-        Some OpenAI-compatible providers (e.g., GLM-5, hosted_vllm) return
+        
+        Some OpenAI-compatible providers (e.g., GLM-5, hosted_vllm) return 
         delta.reasoning, but LiteLLM expects delta.reasoning_content.
-
+        
         Args:
             choices: List of choice objects from the streaming chunk
-
+            
         Returns:
             List of choices with reasoning field mapped to reasoning_content
         """
@@ -801,14 +801,14 @@ class OpenAIChatCompletionStreamingHandler(BaseModelResponseIterator):
             if "reasoning" in delta:
                 delta["reasoning_content"] = delta.pop("reasoning")
         return choices
-
+    
     def chunk_parser(self, chunk: dict) -> ModelResponseStream:
         try:
             choices = chunk.get("choices", [])
             choices = self._map_reasoning_to_reasoning_content(choices)
-
-            kwargs: Dict[str, Any] = {
-                "id": chunk.get("id"),
+            
+            kwargs = {
+                "id": chunk["id"],
                 "object": "chat.completion.chunk",
                 "created": chunk.get("created"),
                 "model": chunk.get("model"),
