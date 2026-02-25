@@ -899,6 +899,10 @@ class CustomStreamWrapper:
                                     choice_json.pop(
                                         "finish_reason", None
                                     )  # for mistral etc. which return a value in their last chunk (not-openai compatible).
+                                    # Map reasoning to reasoning_content in delta
+                                    if "delta" in choice_json and isinstance(choice_json["delta"], dict):
+                                        if "reasoning" in choice_json["delta"]:
+                                            choice_json["delta"]["reasoning_content"] = choice_json["delta"].pop("reasoning")
                                     print_verbose(f"choice_json: {choice_json}")
                                     choices.append(StreamingChoices(**choice_json))
                             except Exception:
@@ -1467,6 +1471,9 @@ class CustomStreamWrapper:
                                 else dict(original_chunk.choices[0].delta)
                             )
                             print_verbose(f"original delta: {delta}")
+                            # Map 'reasoning' to 'reasoning_content' for OpenAI-compatible providers
+                            if "reasoning" in delta:
+                                delta["reasoning_content"] = delta.pop("reasoning")
                             model_response.choices[0].delta = Delta(**delta)
                             print_verbose(
                                 f"new delta: {model_response.choices[0].delta}"
