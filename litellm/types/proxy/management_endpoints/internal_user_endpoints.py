@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import HTTPException
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
 
 from litellm.proxy._types import (
     LiteLLM_UserTableWithKeyCount,
@@ -92,49 +92,35 @@ class BatchUpdateUserBudgetRequest(BaseModel):
     """
 
     target_type: Literal["all", "users", "team"]
+    reset_spend: bool = False
     budget_limit: Optional[float] = None
     budget_duration: Optional[str] = None
     user_emails: Optional[List[str]] = None
     team_ids: Optional[List[str]] = None
-    reset_spend: bool = False
 
-    @field_validator("budget_limit")
-    @classmethod
-    def validate_budget_limit(cls, v, info):
-        values = info.data if hasattr(info, "data") else {}
-        reset_spend = values.get("reset_spend", False)
-
-        # If not resetting spend, budget_limit is required
-        if not reset_spend and v is None:
+    @model_validator(mode="after")
+    def validate_cross_fields(self):
+        # Validate budget_limit based on reset_spend
+        if not self.reset_spend and self.budget_limit is None:
             raise ValueError("budget_limit is required when reset_spend is False")
 
         # If budget_limit is provided, it must be non-negative
-        if v is not None and v < 0:
+        if self.budget_limit is not None and self.budget_limit < 0:
             raise ValueError("budget_limit must be non-negative")
 
-        return v
-
-    @field_validator("user_emails")
-    @classmethod
-    def validate_user_emails(cls, v, info):
-        values = info.data if hasattr(info, "data") else {}
-        target_type = values.get("target_type")
-
-        if target_type == "users" and (not v or len(v) == 0):
+        # Validate user_emails when target_type is "users"
+        if self.target_type == "users" and (
+            not self.user_emails or len(self.user_emails) == 0
+        ):
             raise ValueError("user_emails is required when target_type is 'users'")
 
-        return v
-
-    @field_validator("team_ids")
-    @classmethod
-    def validate_team_ids(cls, v, info):
-        values = info.data if hasattr(info, "data") else {}
-        target_type = values.get("target_type")
-
-        if target_type == "team" and (not v or len(v) == 0):
+        # Validate team_ids when target_type is "team"
+        if self.target_type == "team" and (
+            not self.team_ids or len(self.team_ids) == 0
+        ):
             raise ValueError("team_ids is required when target_type is 'team'")
 
-        return v
+        return self
 
 
 class BatchUpdateUserBudgetResponse(BaseModel):

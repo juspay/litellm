@@ -1493,6 +1493,17 @@ async def batch_update_user_budgets(
         # Add updated_at timestamp
         update_data["updated_at"] = datetime.now(timezone.utc)
 
+        # Validate that at least one meaningful field is being updated
+        # to avoid unnecessary database updates that only change the timestamp
+        if set(update_data.keys()) == {"updated_at"}:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "No budget update fields provided. "
+                    "Specify reset_spend, budget_limit, or budget_duration."
+                },
+            )
+
         # Build WHERE clause based on target_type
         where_clause: Dict[str, Any] = {}
 
@@ -1502,21 +1513,12 @@ async def batch_update_user_budgets(
 
         elif data.target_type == "users":
             # Update specific users by email
-            if not data.user_emails:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "user_emails is required when target_type is 'users'"},
-                )
+            # Note: validation that user_emails is non-empty is done in the Pydantic model
             where_clause["user_email"] = {"in": data.user_emails}
 
         elif data.target_type == "team":
             # Update users in specific teams
-            if not data.team_ids:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "team_ids is required when target_type is 'team'"},
-                )
-            # Find users who have any of the specified team_ids in their teams array
+            # Note: validation that team_ids is non-empty is done in the Pydantic model
             where_clause["teams"] = {"hasSome": data.team_ids}
 
         else:
@@ -1530,18 +1532,10 @@ async def batch_update_user_budgets(
             f"Executing batch update with where clause: {where_clause}"
         )
 
-        if data.target_type == "all":
-            # Update all users
-            result = await prisma_client.db.litellm_usertable.update_many(
-                data=update_data,
-                where={},
-            )
-        else:
-            # Update with specific WHERE clause
-            result = await prisma_client.db.litellm_usertable.update_many(
-                data=update_data,
-                where=where_clause,
-            )
+        result = await prisma_client.db.litellm_usertable.update_many(
+            data=update_data,
+            where=where_clause,
+        )
 
         affected_rows = result if isinstance(result, int) else 0
 
