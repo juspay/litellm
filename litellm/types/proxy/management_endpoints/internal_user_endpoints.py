@@ -79,3 +79,71 @@ class BulkUpdateUserResponse(BaseModel):
     total_requested: int
     successful_updates: int
     failed_updates: int
+
+
+class BatchUpdateUserBudgetRequest(BaseModel):
+    """
+    Request for batch updating user budgets.
+    Supports three modes:
+    1. Update all users (target_type: "all")
+    2. Update specific users (target_type: "users" with user_emails list)
+    3. Update users in teams (target_type: "team" with team_ids list)
+    Also supports resetting spend to 0 when reset_spend=True
+    """
+
+    target_type: Literal["all", "users", "team"]
+    budget_limit: Optional[float] = None
+    budget_duration: Optional[str] = None
+    user_emails: Optional[List[str]] = None
+    team_ids: Optional[List[str]] = None
+    reset_spend: bool = False
+
+    @field_validator("budget_limit")
+    @classmethod
+    def validate_budget_limit(cls, v, info):
+        values = info.data if hasattr(info, "data") else {}
+        reset_spend = values.get("reset_spend", False)
+
+        # If not resetting spend, budget_limit is required
+        if not reset_spend and v is None:
+            raise ValueError("budget_limit is required when reset_spend is False")
+
+        # If budget_limit is provided, it must be non-negative
+        if v is not None and v < 0:
+            raise ValueError("budget_limit must be non-negative")
+
+        return v
+
+    @field_validator("user_emails")
+    @classmethod
+    def validate_user_emails(cls, v, info):
+        values = info.data if hasattr(info, "data") else {}
+        target_type = values.get("target_type")
+
+        if target_type == "users" and (not v or len(v) == 0):
+            raise ValueError("user_emails is required when target_type is 'users'")
+
+        return v
+
+    @field_validator("team_ids")
+    @classmethod
+    def validate_team_ids(cls, v, info):
+        values = info.data if hasattr(info, "data") else {}
+        target_type = values.get("target_type")
+
+        if target_type == "team" and (not v or len(v) == 0):
+            raise ValueError("team_ids is required when target_type is 'team'")
+
+        return v
+
+
+class BatchUpdateUserBudgetResponse(BaseModel):
+    """Response for batch update user budget operations"""
+
+    success: bool
+    message: str
+    affected_rows: int
+    budget_limit: Optional[float] = None
+    budget_duration: Optional[str] = None
+    target_type: str
+    reset_spend: bool
