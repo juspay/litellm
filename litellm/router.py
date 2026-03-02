@@ -1595,6 +1595,7 @@ class Router:
                         deployment=deployment,
                         logging_obj=logging_obj,
                         parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await _response
             else:
@@ -1602,6 +1603,7 @@ class Router:
                     deployment=deployment,
                     logging_obj=logging_obj,
                     parent_otel_span=parent_otel_span,
+                    messages=messages,
                 )
 
                 response = await _response
@@ -2474,12 +2476,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=None,  # aimage_generation doesn't use messages
                     )
                     response = await response
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    messages=None,
                 )
                 response = await response
 
@@ -2586,12 +2592,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await response
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    messages=messages,
                 )
                 response = await response
 
@@ -2880,12 +2890,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await response
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    messages=messages,
                 )
                 response = await response
 
@@ -2979,12 +2993,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await response  # type: ignore
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    messages=messages,
                 )
                 response = await response  # type: ignore
 
@@ -3245,12 +3263,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await response  # type: ignore
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    messages=messages,
                 )
                 response = await response  # type: ignore
 
@@ -3481,12 +3503,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await response
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    messages=messages,
                 )
                 response = await response
 
@@ -3620,7 +3646,9 @@ class Router:
                         response = await response  # type: ignore
                 else:
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await response  # type: ignore
 
@@ -3748,12 +3776,16 @@ class Router:
                     - If allowed, increment the rpm limit (allows global value to be updated, concurrency-safe)
                     """
                     await self.async_routing_strategy_pre_call_checks(
-                        deployment=deployment, parent_otel_span=parent_otel_span
+                        deployment=deployment,
+                        parent_otel_span=parent_otel_span,
+                        messages=messages,
                     )
                     response = await response  # type: ignore
             else:
                 await self.async_routing_strategy_pre_call_checks(
-                    deployment=deployment, parent_otel_span=parent_otel_span
+                    deployment=deployment,
+                    parent_otel_span=parent_otel_span,
+                    messages=messages,
                 )
                 response = await response  # type: ignore
 
@@ -5482,11 +5514,18 @@ class Router:
         deployment: dict,
         parent_otel_span: Optional[Span],
         logging_obj: Optional[LiteLLMLogging] = None,
+        messages: Optional[List[AllMessageValues]] = None,
     ):
         """
         For usage-based-routing-v2, enables running rpm checks before the call is made, inside the semaphore.
 
         -> makes the calls concurrency-safe, when rpm limits are set for a deployment
+
+        Args:
+            deployment: The selected deployment
+            parent_otel_span: OpenTelemetry span
+            logging_obj: Logging object
+            messages: Messages for token estimation (for TPM-based routing)
 
         Returns:
         - None
@@ -5497,7 +5536,9 @@ class Router:
         for _callback in litellm.callbacks:
             if isinstance(_callback, CustomLogger):
                 try:
-                    await _callback.async_pre_call_check(deployment, parent_otel_span)
+                    await _callback.async_pre_call_check(
+                        deployment, parent_otel_span, messages
+                    )
                 except litellm.RateLimitError as e:
                     ## LOG FAILURE EVENT
                     if logging_obj is not None:

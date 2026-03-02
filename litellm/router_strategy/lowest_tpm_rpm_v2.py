@@ -1,6 +1,7 @@
 #### What this does ####
 #   identifies lowest tpm deployment
 import random
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import httpx
@@ -26,7 +27,7 @@ else:
 
 
 class RoutingArgs(LiteLLMPydanticObjectBase):
-    ttl: int = 1 * 60  # 1min (RPM/TPM expire key)
+    ttl: int = 10 * 60  # 10min (RPM/TPM expire key - handles long-running requests)
 
 
 class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
@@ -40,12 +41,19 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
     Uses batch get (redis.mget)
 
     Increments tpm/rpm limit using redis.incr
+
+    NEW: Pre-reserves TPM based on estimated input tokens for fair cross-pod routing.
+         Actual tokens are adjusted after request completion.
     """
 
     test_flag: bool = False
     logged_success: int = 0
     logged_failure: int = 0
     default_cache_time_seconds: int = 1 * 60 * 60  # 1 hour
+
+    # Store estimated tokens per (model_id, minute) for cross-request correlation
+    # This is needed because async_log_success_event receives different kwargs
+    _estimated_tokens_cache: Dict[str, float] = {}
 
     def __init__(
         self, router_cache: DualCache, routing_args: dict = {}
@@ -149,19 +157,24 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             return deployment  # don't fail calls if eg. redis fails to connect
 
     async def async_pre_call_check(
-        self, deployment: Dict, parent_otel_span: Optional[Span]
+        self,
+        deployment: Dict,
+        parent_otel_span: Optional[Span],
+        messages: Optional[List[Dict[str, str]]] = None,
     ) -> Optional[Dict]:
         """
-        Pre-call check + update model rpm
+        Pre-call check + update model rpm AND estimated tpm
         - Used inside semaphore
         - raise rate limit error if deployment over limit
+        - Increments TPM by estimated input tokens for fair cross-pod routing
 
         Why? solves concurrency issue - https://github.com/BerriAI/litellm/issues/2994
 
-        Returns - deployment
+        Returns - deployment with estimated_input_tokens stored for later adjustment
 
         Raises - RateLimitError if deployment over defined RPM limit
         """
+        estimated_input_tokens = 0
         try:
             # ------------
             # Setup values
@@ -228,6 +241,49 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                         ),
                         num_retries=deployment.get("num_retries"),
                     )
+
+            # ------------
+            # NEW: Estimate and reserve TPM for fair cross-pod routing
+            # ------------
+            if messages:
+                try:
+                    # Get model name for token counting
+                    model_name = deployment.get("litellm_params", {}).get(
+                        "model", "gpt-3.5-turbo"
+                    )
+
+                    # Estimate input tokens
+                    estimated_input_tokens = token_counter(
+                        model=model_name, messages=messages
+                    )
+
+                    tpm_key = f"{model_id}:{deployment_name}:tpm:{current_minute}"
+
+                    # Use IMMEDIATE Redis increment (not batched) for cross-pod visibility
+                    await self.router_cache.async_increment_cache(
+                        key=tpm_key,
+                        value=float(estimated_input_tokens),
+                        ttl=self.routing_args.ttl,
+                        parent_otel_span=parent_otel_span,
+                    )
+
+                    print(
+                        f"[Usage-Based-Routing-v2] Reserved {estimated_input_tokens} tokens for deployment {model_id}"
+                    )
+
+                    # Store estimated tokens keyed by (model_id, minute) for later adjustment
+                    # This is needed because async_log_success_event receives different kwargs
+                    cache_key = f"{model_id}:{current_minute}"
+                    LowestTPMLoggingHandler_v2._estimated_tokens_cache[cache_key] = float(
+                        estimated_input_tokens
+                    )
+
+                except Exception as e:
+                    print(
+                        f"[Usage-Based-Routing-v2] Token estimation failed: {e}"
+                    )
+                    pass  # Don't fail if token estimation fails
+
             return deployment
         except Exception as e:
             if isinstance(e, litellm.RateLimitError):
@@ -287,6 +343,9 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         try:
             """
             Update TPM usage on success
+
+            NOTE: TPM is adjusted by delta (actual - estimated) because we already
+            reserved estimated tokens in async_pre_call_check for fair cross-pod routing.
             """
             standard_logging_object: Optional[StandardLoggingPayload] = kwargs.get(
                 "standard_logging_object"
@@ -315,12 +374,34 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             # ------------
             # update cache
             parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
-            ## TPM
+
+            # NEW: Get estimated tokens from class-level cache (set in async_pre_call_check)
+            # This is keyed by (model_id, minute) to correlate pre-call estimate with post-call adjustment
+            cache_key = f"{id}:{current_minute}"
+            estimated_input_tokens = LowestTPMLoggingHandler_v2._estimated_tokens_cache.get(
+                cache_key, 0
+            )
+
+            # Clean up the cache entry (one-time use per request)
+            if cache_key in LowestTPMLoggingHandler_v2._estimated_tokens_cache:
+                del LowestTPMLoggingHandler_v2._estimated_tokens_cache[cache_key]
+
+            # Calculate delta (actual - estimated)
+            # We reserved estimated tokens in pre_call_check, now adjust to actual
+            delta = float(total_tokens) - float(estimated_input_tokens)
+
+            ## TPM - adjust by delta instead of adding total_tokens
             await self.router_cache.async_increment_cache(
                 key=tpm_key,
-                value=total_tokens,
+                value=delta,
                 ttl=self.routing_args.ttl,
                 parent_otel_span=parent_otel_span,
+            )
+
+            print(
+                f"[Usage-Based-Routing-v2] Adjusted TPM by {delta} "
+                f"(actual={total_tokens}, estimated={estimated_input_tokens}) "
+                f"for deployment {id}"
             )
 
             ### TESTING ###
@@ -460,7 +541,11 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         """
         Async implementation of get deployments.
 
-        Reduces time to retrieve the tpm/rpm values from cache
+        Reduces time to retrieve the tpm/rpm values from cache.
+
+        Uses a 10-minute sliding window to track TPM/RPM, which handles:
+        - Long-running requests (>60s)
+        - Better load distribution across minute boundaries
         """
         # get list of potential deployments
         verbose_router_logger.debug(
@@ -468,8 +553,9 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         )
 
         dt = get_utc_datetime()
-        current_minute = dt.strftime("%H-%M")
 
+        # Generate keys for last 10 minutes (sliding window)
+        # This ensures we don't lose track of in-flight long requests at minute boundaries
         tpm_keys = []
         rpm_keys = []
         for m in healthy_deployments:
@@ -478,11 +564,15 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                     "id"
                 )  # a deployment should always have an 'id'. this is set in router.py
                 deployment_name = m.get("litellm_params", {}).get("model")
-                tpm_key = "{}:{}:tpm:{}".format(id, deployment_name, current_minute)
-                rpm_key = "{}:{}:rpm:{}".format(id, deployment_name, current_minute)
 
-                tpm_keys.append(tpm_key)
-                rpm_keys.append(rpm_key)
+                # Query last 10 minutes of keys
+                for minute_offset in range(10):
+                    minute_dt = dt - timedelta(minutes=minute_offset)
+                    minute_str = minute_dt.strftime("%H-%M")
+                    tpm_key = "{}:{}:tpm:{}".format(id, deployment_name, minute_str)
+                    rpm_key = "{}:{}:rpm:{}".format(id, deployment_name, minute_str)
+                    tpm_keys.append(tpm_key)
+                    rpm_keys.append(rpm_key)
 
         combined_tpm_rpm_keys = tpm_keys + rpm_keys
 
@@ -496,19 +586,62 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
 
         self._log_redis_unavailable_warning(combined_tpm_rpm_values)
 
+        # Sum TPM/RPM values across the 10-minute window for each deployment
         if combined_tpm_rpm_values is not None:
-            tpm_values = combined_tpm_rpm_values[: len(tpm_keys)]
-            rpm_values = combined_tpm_rpm_values[len(tpm_keys) :]
+            # Group values by deployment (each deployment has 10 keys)
+            num_deployments = len(healthy_deployments)
+            tpm_values = []
+            rpm_values = []
+
+            for i in range(num_deployments):
+                # Sum TPM for this deployment across 10 minutes
+                deployment_tpm_values = combined_tpm_rpm_values[
+                    i * 10 : (i + 1) * 10
+                ]
+                deployment_tpm_sum = sum(
+                    v for v in deployment_tpm_values if v is not None
+                )
+                tpm_values.append(deployment_tpm_sum)
+
+                # Sum RPM for this deployment across 10 minutes
+                rpm_start_idx = len(tpm_keys) + (i * 10)
+                rpm_end_idx = rpm_start_idx + 10
+                deployment_rpm_values = combined_tpm_rpm_values[rpm_start_idx:rpm_end_idx]
+                deployment_rpm_sum = sum(
+                    v for v in deployment_rpm_values if v is not None
+                )
+                rpm_values.append(deployment_rpm_sum)
         else:
             tpm_values = None
             rpm_values = None
 
+        # Use current minute keys for logging/debugging purposes
+        current_minute = dt.strftime("%H-%M")
+        current_tpm_keys = [
+            "{}:{}:tpm:{}".format(
+                m.get("model_info", {}).get("id"),
+                m.get("litellm_params", {}).get("model"),
+                current_minute,
+            )
+            for m in healthy_deployments
+            if isinstance(m, dict)
+        ]
+        current_rpm_keys = [
+            "{}:{}:rpm:{}".format(
+                m.get("model_info", {}).get("id"),
+                m.get("litellm_params", {}).get("model"),
+                current_minute,
+            )
+            for m in healthy_deployments
+            if isinstance(m, dict)
+        ]
+
         deployment = self._common_checks_available_deployment(
             model_group=model_group,
             healthy_deployments=healthy_deployments,
-            tpm_keys=tpm_keys,
+            tpm_keys=current_tpm_keys,
             tpm_values=tpm_values,
-            rpm_keys=rpm_keys,
+            rpm_keys=current_rpm_keys,
             rpm_values=rpm_values,
             messages=messages,
             input=input,
@@ -587,6 +720,10 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
     ):
         """
         Returns a deployment with the lowest TPM/RPM usage.
+
+        Uses a 10-minute sliding window to track TPM/RPM, which handles:
+        - Long-running requests (>60s)
+        - Better load distribution across minute boundaries
         """
         # get list of potential deployments
         verbose_router_logger.debug(
@@ -594,7 +731,9 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         )
 
         dt = get_utc_datetime()
-        current_minute = dt.strftime("%H-%M")
+
+        # Generate keys for last 10 minutes (sliding window)
+        # This ensures we don't lose track of in-flight long requests at minute boundaries
         tpm_keys = []
         rpm_keys = []
         for m in healthy_deployments:
@@ -603,32 +742,75 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                     "id"
                 )  # a deployment should always have an 'id'. this is set in router.py
                 deployment_name = m.get("litellm_params", {}).get("model")
-                tpm_key = "{}:{}:tpm:{}".format(id, deployment_name, current_minute)
-                rpm_key = "{}:{}:rpm:{}".format(id, deployment_name, current_minute)
 
-                tpm_keys.append(tpm_key)
-                rpm_keys.append(rpm_key)
+                # Query last 10 minutes of keys
+                for minute_offset in range(10):
+                    minute_dt = dt - timedelta(minutes=minute_offset)
+                    minute_str = minute_dt.strftime("%H-%M")
+                    tpm_key = "{}:{}:tpm:{}".format(id, deployment_name, minute_str)
+                    rpm_key = "{}:{}:rpm:{}".format(id, deployment_name, minute_str)
+                    tpm_keys.append(tpm_key)
+                    rpm_keys.append(rpm_key)
 
         # Use redis_only=True to get global counts across all pods
         # This is critical for distributed deployments where multiple pods need to see
         # the global TPM/RPM count, not their local stale view
-        tpm_values = self.router_cache.batch_get_cache(
+        combined_tpm_values = self.router_cache.batch_get_cache(
             keys=tpm_keys, parent_otel_span=parent_otel_span, redis_only=True
         )  # [1, 2, None, ..]
-        rpm_values = self.router_cache.batch_get_cache(
+        combined_rpm_values = self.router_cache.batch_get_cache(
             keys=rpm_keys, parent_otel_span=parent_otel_span, redis_only=True
         )  # [1, 2, None, ..]
 
+        # Sum TPM/RPM values across the 10-minute window for each deployment
+        num_deployments = len(healthy_deployments)
+        tpm_values = []
+        rpm_values = []
+
+        for i in range(num_deployments):
+            # Sum TPM for this deployment across 10 minutes
+            deployment_tpm_values = combined_tpm_values[i * 10 : (i + 1) * 10]
+            deployment_tpm_sum = sum(v for v in deployment_tpm_values if v is not None)
+            tpm_values.append(deployment_tpm_sum)
+
+            # Sum RPM for this deployment across 10 minutes
+            deployment_rpm_values = combined_rpm_values[i * 10 : (i + 1) * 10]
+            deployment_rpm_sum = sum(v for v in deployment_rpm_values if v is not None)
+            rpm_values.append(deployment_rpm_sum)
+
         # Log warning if Redis is unavailable
         if healthy_deployments:
-            self._log_redis_unavailable_warning((tpm_values or []) + (rpm_values or []) or None)
+            self._log_redis_unavailable_warning(
+                (combined_tpm_values or []) + (combined_rpm_values or []) or None
+            )
+
+        # Use current minute keys for logging/debugging purposes
+        current_minute = dt.strftime("%H-%M")
+        current_tpm_keys = [
+            "{}:{}:tpm:{}".format(
+                m.get("model_info", {}).get("id"),
+                m.get("litellm_params", {}).get("model"),
+                current_minute,
+            )
+            for m in healthy_deployments
+            if isinstance(m, dict)
+        ]
+        current_rpm_keys = [
+            "{}:{}:rpm:{}".format(
+                m.get("model_info", {}).get("id"),
+                m.get("litellm_params", {}).get("model"),
+                current_minute,
+            )
+            for m in healthy_deployments
+            if isinstance(m, dict)
+        ]
 
         deployment = self._common_checks_available_deployment(
             model_group=model_group,
             healthy_deployments=healthy_deployments,
-            tpm_keys=tpm_keys,
+            tpm_keys=current_tpm_keys,
             tpm_values=tpm_values,
-            rpm_keys=rpm_keys,
+            rpm_keys=current_rpm_keys,
             rpm_values=rpm_values,
             messages=messages,
             input=input,
