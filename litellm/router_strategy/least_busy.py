@@ -7,10 +7,11 @@
 #   - in get_available_deployment, for a given model group name -> pick based on traffic
 
 import random
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.types.utils import Span
 
 
 class LeastBusyLoggingHandler(CustomLogger):
@@ -20,6 +21,33 @@ class LeastBusyLoggingHandler(CustomLogger):
 
     def __init__(self, router_cache: DualCache):
         self.router_cache = router_cache
+
+    async def async_pre_call_check(
+        self,
+        deployment: Dict,
+        parent_otel_span: Optional[Span] = None,
+        messages: Optional[List] = None,
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Pre-call check for least busy routing.
+
+        This method is called by the router before making an API call.
+        For least-busy routing, we don't need to do any rate limiting checks here,
+        as the selection is already done in get_available_deployments.
+
+        Args:
+            deployment: The selected deployment dict
+            parent_otel_span: Optional OpenTelemetry span for tracing
+            messages: Optional messages list (passed from router as positional arg)
+            **kwargs: Additional arguments
+
+        Returns:
+            The deployment dict (unchanged)
+        """
+        # Least-busy routing doesn't need pre-call checks
+        # The deployment selection already happened in get_available_deployments
+        return deployment
 
     def _get_request_count_cache_key(self, model_group: str, deployment_id: str) -> str:
         """
