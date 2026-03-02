@@ -37,6 +37,21 @@ class LowestLatencyLoggingHandler(CustomLogger):
         self.router_cache = router_cache
         self.routing_args = RoutingArgs(**routing_args)
 
+    async def async_pre_call_check(
+        self,
+        deployment: Dict,
+        parent_otel_span: Optional[Span] = None,
+        messages: Optional[List] = None,
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Pre-call check for lowest latency routing.
+
+        Lowest latency routing doesn't need pre-call rate limiting checks.
+        Returns deployment unchanged.
+        """
+        return deployment
+
     def log_success_event(  # noqa: PLR0915
         self, kwargs, response_obj, start_time, end_time
     ):

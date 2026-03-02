@@ -1,13 +1,20 @@
 #### What this does ####
 #   picks based on response time (for streaming, this is time to first token)
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import litellm
 from litellm import ModelResponse, token_counter, verbose_logger
 from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Span as _Span
+
+    Span = _Span
+else:
+    Span = Any
 
 
 class LowestCostLoggingHandler(CustomLogger):
@@ -19,6 +26,21 @@ class LowestCostLoggingHandler(CustomLogger):
         self, router_cache: DualCache, routing_args: dict = {}
     ):
         self.router_cache = router_cache
+
+    async def async_pre_call_check(
+        self,
+        deployment: Dict,
+        parent_otel_span: Optional[Span] = None,
+        messages: Optional[List] = None,
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Pre-call check for lowest cost routing.
+
+        Lowest cost routing doesn't need pre-call rate limiting checks.
+        Returns deployment unchanged.
+        """
+        return deployment
 
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:

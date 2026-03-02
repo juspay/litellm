@@ -2,7 +2,7 @@
 #   identifies lowest tpm deployment
 import traceback
 from datetime import datetime
-from typing import Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from litellm import token_counter
 from litellm._logging import verbose_router_logger
@@ -10,6 +10,13 @@ from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.utils import LiteLLMPydanticObjectBase
 from litellm.utils import print_verbose
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Span as _Span
+
+    Span = _Span
+else:
+    Span = Any
 
 
 class RoutingArgs(LiteLLMPydanticObjectBase):
@@ -27,6 +34,20 @@ class LowestTPMLoggingHandler(CustomLogger):
     ):
         self.router_cache = router_cache
         self.routing_args = RoutingArgs(**routing_args)
+
+    async def async_pre_call_check(
+        self,
+        deployment: Dict,
+        parent_otel_span: Optional[Span] = None,
+        messages: Optional[List] = None,
+        **kwargs,
+    ) -> Optional[Dict]:
+        """
+        Pre-call check for lowest TPM routing.
+
+        Returns deployment unchanged.
+        """
+        return deployment
 
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:

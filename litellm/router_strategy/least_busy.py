@@ -7,11 +7,17 @@
 #   - in get_available_deployment, for a given model group name -> pick based on traffic
 
 import random
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.types.utils import Span
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import Span as _Span
+
+    Span = _Span
+else:
+    Span = Any
 
 
 class LeastBusyLoggingHandler(CustomLogger):

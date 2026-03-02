@@ -160,10 +160,9 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         self,
         deployment: Dict,
         parent_otel_span: Optional[Span],
+        messages: Optional[List[Dict[str, str]]] = None,
         **kwargs,
     ) -> Optional[Dict]:
-        # Extract messages from kwargs (passed from router)
-        messages: Optional[List[Dict[str, str]]] = kwargs.get("messages")
         """
         Pre-call check + update model rpm AND estimated tpm
         - Used inside semaphore
