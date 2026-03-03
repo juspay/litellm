@@ -160,6 +160,8 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         self,
         deployment: Dict,
         parent_otel_span: Optional[Span] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+        **kwargs,
     ) -> Optional[Dict]:
         """
         Pre-call check + update model rpm AND estimated tpm
@@ -172,12 +174,10 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         Returns - deployment with estimated_input_tokens stored for later adjustment
 
         Raises - RateLimitError if deployment over defined RPM limit
-
-        NOTE: Signature must match CustomLogger.async_pre_call_check() exactly
-        (2 args) or Python method resolution will fail.
         """
-        # Get messages from deployment dict (populated by router before call)
-        messages = deployment.get("_messages")
+        # Get messages from deployment dict (fallback if not passed as arg)
+        if messages is None and deployment:
+            messages = deployment.get("_messages")
         estimated_input_tokens = 0
         try:
             # ------------
@@ -275,12 +275,15 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
                         f"[Usage-Based-Routing-v2] Reserved {estimated_input_tokens} tokens for deployment {model_id}"
                     )
 
-                    # Store estimated tokens keyed by (model_id, minute) for later adjustment
-                    # This is needed because async_log_success_event receives different kwargs
-                    cache_key = f"{model_id}:{current_minute}"
-                    LowestTPMLoggingHandler_v2._estimated_tokens_cache[cache_key] = float(
-                        estimated_input_tokens
-                    )
+                    # Store estimated tokens keyed by request_id for later adjustment
+                    # Using request_id instead of (model_id, minute) to handle cross-minute requests
+                    request_id = deployment.get("_request_id")
+                    if request_id:
+                        cache_key = f"{model_id}:{request_id}"
+                        LowestTPMLoggingHandler_v2._estimated_tokens_cache[cache_key] = {
+                            "estimated_tokens": float(estimated_input_tokens),
+                            "minute": current_minute,
+                        }
 
                 except Exception as e:
                     print(
@@ -380,14 +383,18 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
             parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
 
             # NEW: Get estimated tokens from class-level cache (set in async_pre_call_check)
-            # This is keyed by (model_id, minute) to correlate pre-call estimate with post-call adjustment
-            cache_key = f"{id}:{current_minute}"
-            estimated_input_tokens = LowestTPMLoggingHandler_v2._estimated_tokens_cache.get(
-                cache_key, 0
-            )
+            # This is keyed by request_id to handle cross-minute requests correctly
+            request_id = kwargs.get("litellm_call_id") or standard_logging_object.get("litellm_call_id")
+            estimated_input_tokens = 0
+            cache_key = None
+            if request_id:
+                cache_key = f"{id}:{request_id}"
+                cached_data = LowestTPMLoggingHandler_v2._estimated_tokens_cache.get(cache_key)
+                if cached_data:
+                    estimated_input_tokens = cached_data.get("estimated_tokens", 0)
 
             # Clean up the cache entry (one-time use per request)
-            if cache_key in LowestTPMLoggingHandler_v2._estimated_tokens_cache:
+            if cache_key and cache_key in LowestTPMLoggingHandler_v2._estimated_tokens_cache:
                 del LowestTPMLoggingHandler_v2._estimated_tokens_cache[cache_key]
 
             # Calculate delta (actual - estimated)

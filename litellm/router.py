@@ -5542,7 +5542,7 @@ class Router:
             if isinstance(_callback, CustomLogger):
                 try:
                     await _callback.async_pre_call_check(
-                        deployment, parent_otel_span
+                        deployment, parent_otel_span, messages
                     )
                 except litellm.RateLimitError as e:
                     ## LOG FAILURE EVENT
