@@ -83,7 +83,11 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         - None/empty messages -> None (no stickiness, degrades to least-busy).
         - Single message -> hash that message.
         - Multiple messages -> hash all except the last (the conversation context).
-        - Long conversations (>20 prefix messages) -> first 10 + last 10.
+        - Long conversations (>20 prefix messages) -> first 20 only.
+
+        Uses the first 20 messages because they never change as the conversation
+        grows, keeping the hash stable across turns. Using last-N would cause the
+        hash to shift every turn, breaking stickiness.
 
         SHA-256 of canonical JSON ensures cross-pod determinism.
         """
@@ -96,10 +100,12 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         else:
             prefix = messages[:-1]
 
-        # Bound hashing cost for very long conversations
+        # Bound hashing cost for very long conversations.
+        # Only use the first 20 messages — these never change as the conversation
+        # grows, so the hash stays stable across turns (preserving stickiness).
         original_prefix_len = len(prefix)
         if len(prefix) > 20:
-            prefix = prefix[:10] + prefix[-10:]
+            prefix = prefix[:20]
 
         try:
             canonical = json.dumps(
@@ -113,6 +119,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             f"[StickyLeastBusy STICKY-KEY] "
             f"total_messages={len(messages)}, "
             f"prefix_messages={original_prefix_len}, "
+            f"bounded_to={min(original_prefix_len, 20)}, "
             f"sticky_key={sticky_key[:16]}..."
         )
         return sticky_key
@@ -182,6 +189,41 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         return f"sticky_lb:{model_group}:{deployment_id}:request_count"
 
     # =========================================================================
+    # TTL Refresh
+    # =========================================================================
+
+    def _refresh_cache_ttl(self, cache_key: str) -> None:
+        """
+        Refresh Redis TTL on every increment/decrement.
+
+        The shared redis_cache.increment_cache only sets TTL on first key creation
+        (when current_ttl == -1). For sustained traffic lasting > cache_ttl seconds,
+        the key would expire and in-flight decrements would hit a fresh key at 0,
+        going negative. By refreshing TTL on every access, the key only expires
+        after cache_ttl seconds of ZERO activity to that deployment.
+        """
+        try:
+            if (
+                self.router_cache.redis_cache is not None
+                and hasattr(self.router_cache.redis_cache, "redis_client")
+                and self.router_cache.redis_cache.redis_client is not None
+            ):
+                self.router_cache.redis_cache.redis_client.expire(
+                    cache_key, self.cache_ttl
+                )
+        except Exception:
+            pass  # Best-effort — if Redis is down, we can't refresh TTL anyway
+
+    async def _async_refresh_cache_ttl(self, cache_key: str) -> None:
+        """Async variant: refresh Redis TTL on every access."""
+        try:
+            if self.router_cache.redis_cache is not None:
+                _redis_client = self.router_cache.redis_cache.init_async_client()
+                await _redis_client.expire(cache_key, self.cache_ttl)
+        except Exception:
+            pass
+
+    # =========================================================================
     # Streaming Dedup
     # =========================================================================
 
@@ -249,6 +291,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             new_value = self.router_cache.increment_cache(
                 key=cache_key, value=1, ttl=self.cache_ttl
             )
+            self._refresh_cache_ttl(cache_key)
             stream = kwargs.get("stream", False)
             print(
                 f"[StickyLeastBusy INCREMENT] "
@@ -288,6 +331,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             new_value = self.router_cache.increment_cache(
                 key=cache_key, value=-1, ttl=self.cache_ttl
             )
+            self._refresh_cache_ttl(cache_key)
             print(
                 f"[StickyLeastBusy DECREMENT {callback_type}] "
                 f"deployment_id={dep_id}, "
@@ -340,6 +384,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             new_value = await self.router_cache.async_increment_cache(
                 key=cache_key, value=-1, ttl=self.cache_ttl
             )
+            await self._async_refresh_cache_ttl(cache_key)
             print(
                 f"[StickyLeastBusy DECREMENT {callback_type}] "
                 f"deployment_id={dep_id}, "
