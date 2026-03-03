@@ -5533,11 +5533,16 @@ class Router:
         Raises:
         - Rate Limit Exception - If the deployment is over it's tpm/rpm limits
         """
+        # Store messages in deployment for access by callbacks
+        # (avoids signature mismatch with CustomLogger base class)
+        if messages is not None:
+            deployment["_messages"] = messages
+
         for _callback in litellm.callbacks:
             if isinstance(_callback, CustomLogger):
                 try:
                     await _callback.async_pre_call_check(
-                        deployment, parent_otel_span, messages
+                        deployment, parent_otel_span
                     )
                 except litellm.RateLimitError as e:
                     ## LOG FAILURE EVENT

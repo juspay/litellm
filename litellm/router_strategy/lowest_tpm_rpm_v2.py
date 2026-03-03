@@ -159,9 +159,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
     async def async_pre_call_check(
         self,
         deployment: Dict,
-        parent_otel_span: Optional[Span],
-        messages: Optional[List[Dict[str, str]]] = None,
-        **kwargs,
+        parent_otel_span: Optional[Span] = None,
     ) -> Optional[Dict]:
         """
         Pre-call check + update model rpm AND estimated tpm
@@ -174,7 +172,12 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         Returns - deployment with estimated_input_tokens stored for later adjustment
 
         Raises - RateLimitError if deployment over defined RPM limit
+
+        NOTE: Signature must match CustomLogger.async_pre_call_check() exactly
+        (2 args) or Python method resolution will fail.
         """
+        # Get messages from deployment dict (populated by router before call)
+        messages = deployment.get("_messages")
         estimated_input_tokens = 0
         try:
             # ------------
