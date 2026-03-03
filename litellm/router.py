@@ -754,6 +754,17 @@ class Router:
             routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY.value
             or routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY
         ):
+            # Remove any previously registered sticky-least-busy handlers from
+            # input_callback to prevent duplicate registrations on config reload.
+            # Each handler instance has its own _seen_call_ids dedup dict, so
+            # N duplicate handlers = N increments per request but only 1 decrement
+            # (litellm.callbacks is already deduped by add_litellm_callback).
+            if isinstance(litellm.input_callback, list):
+                litellm.input_callback = [
+                    cb for cb in litellm.input_callback
+                    if not isinstance(cb, StickyLeastBusyLoggingHandler)
+                ]
+
             sticky_args = routing_strategy_args or {}
             self.sticky_leastbusy_logger = StickyLeastBusyLoggingHandler(
                 router_cache=self.cache,

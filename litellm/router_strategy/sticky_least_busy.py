@@ -58,13 +58,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         self._seen_call_ids: Dict[str, bool] = {}
         self._seen_call_ids_max_size: int = 10000
 
-        # Decrement dedup: track which litellm_call_ids we've already decremented.
-        # litellm calls BOTH failure_handler (sync) and async_failure_handler (async)
-        # for the same failed request (see litellm/utils.py:1950-1960), causing
-        # double-decrements. This set ensures we only decrement once per call_id.
-        self._decremented_call_ids: Dict[str, bool] = {}
-        self._decremented_call_ids_max_size: int = 10000
-
         # Consistent hash ring (rebuilt when deployments change)
         self._hash_ring: List[Tuple[int, str]] = []
         self._ring_deployment_ids: frozenset = frozenset()
@@ -218,40 +211,8 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         self._seen_call_ids[litellm_call_id] = True
         return True
 
-    def _should_decrement(self, litellm_call_id: str) -> bool:
-        """
-        Returns True only for the FIRST decrement with this litellm_call_id.
-
-        litellm calls BOTH failure_handler() and async_failure_handler() for the
-        same failed request (litellm/utils.py:1950-1960), causing double-decrements.
-        This ensures we only decrement once per call_id.
-        """
-        if litellm_call_id in self._decremented_call_ids:
-            print(
-                f"[StickyLeastBusy DEDUP] Skipping duplicate decrement "
-                f"for call_id={litellm_call_id[:16]}... "
-                f"(double-callback dedup)"
-            )
-            return False
-
-        if len(self._decremented_call_ids) >= self._decremented_call_ids_max_size:
-            evict_count = self._decremented_call_ids_max_size // 10
-            keys_to_remove = list(self._decremented_call_ids.keys())[:evict_count]
-            for key in keys_to_remove:
-                self._decremented_call_ids.pop(key, None)
-            print(
-                f"[StickyLeastBusy DEDUP] Evicted {evict_count} old decremented_call_ids "
-                f"(was at capacity {self._decremented_call_ids_max_size})"
-            )
-
-        self._decremented_call_ids[litellm_call_id] = True
-        return True
-
     def _cleanup_call_id(self, litellm_call_id: str) -> None:
         self._seen_call_ids.pop(litellm_call_id, None)
-        # Note: do NOT clean up _decremented_call_ids here.
-        # The decrement dedup must persist until the entry is evicted,
-        # because the second (duplicate) callback hasn't fired yet.
 
     # =========================================================================
     # CustomLogger Callbacks - Request Tracking
@@ -305,12 +266,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
 
     def _decrement_request_count(self, kwargs, callback_type: str) -> None:
         try:
-            if kwargs is None:
-                print(
-                    f"[StickyLeastBusy DECREMENT] Skipped ({callback_type}) "
-                    f"- kwargs is None"
-                )
-                return
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
                 print(
@@ -328,14 +283,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 return
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
-
-            # Dedup: litellm fires BOTH sync and async failure callbacks for the
-            # same request. Only decrement once per call_id.
-            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get(
-                "litellm_call_id"
-            )
-            if litellm_call_id and not self._should_decrement(litellm_call_id):
-                return
 
             cache_key = self._get_request_count_cache_key(model_group, dep_id)
             new_value = self.router_cache.increment_cache(
@@ -350,10 +297,15 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if new_value < 0:
                 print(
                     f"[StickyLeastBusy WARNING] Negative count detected "
-                    f"for deployment_id={dep_id} (count={new_value}). "
-                    f"NOT resetting - will self-correct as requests complete."
+                    f"for deployment_id={dep_id}, resetting to 0"
+                )
+                self.router_cache.set_cache(
+                    key=cache_key, value=0, ttl=self.cache_ttl
                 )
 
+            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get(
+                "litellm_call_id"
+            )
             if litellm_call_id:
                 self._cleanup_call_id(litellm_call_id)
         except Exception as e:
@@ -366,12 +318,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         self, kwargs, callback_type: str
     ) -> None:
         try:
-            if kwargs is None:
-                print(
-                    f"[StickyLeastBusy DECREMENT] Skipped ({callback_type}) "
-                    f"- kwargs is None"
-                )
-                return
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
                 print(
@@ -390,14 +336,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
 
-            # Dedup: litellm fires BOTH sync and async failure callbacks for the
-            # same request. Only decrement once per call_id.
-            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get(
-                "litellm_call_id"
-            )
-            if litellm_call_id and not self._should_decrement(litellm_call_id):
-                return
-
             cache_key = self._get_request_count_cache_key(model_group, dep_id)
             new_value = await self.router_cache.async_increment_cache(
                 key=cache_key, value=-1, ttl=self.cache_ttl
@@ -411,10 +349,15 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if new_value < 0:
                 print(
                     f"[StickyLeastBusy WARNING] Negative count detected "
-                    f"for deployment_id={dep_id} (count={new_value}). "
-                    f"NOT resetting - will self-correct as requests complete."
+                    f"for deployment_id={dep_id}, resetting to 0"
+                )
+                await self.router_cache.async_set_cache(
+                    key=cache_key, value=0, ttl=self.cache_ttl
                 )
 
+            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get(
+                "litellm_call_id"
+            )
             if litellm_call_id:
                 self._cleanup_call_id(litellm_call_id)
         except Exception as e:
