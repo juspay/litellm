@@ -36,7 +36,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.commit_hash }}
       -
@@ -53,14 +53,14 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       -
         name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: litellm/litellm:${{ github.event.inputs.tag || 'latest' }} 
       -
         name: Build and push litellm-database image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -68,7 +68,7 @@ jobs:
           tags: litellm/litellm-database:${{ github.event.inputs.tag || 'latest' }}
       -
         name: Build and push litellm-spend-logs image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -76,7 +76,7 @@ jobs:
           tags: litellm/litellm-spend_logs:${{ github.event.inputs.tag || 'latest' }}
       -
         name: Build and push litellm-non_root image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
@@ -90,7 +90,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.commit_hash }}
       # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
@@ -103,7 +103,7 @@ jobs:
       # This step uses [docker/metadata-action](https://github.com/docker/metadata-action#about) to extract tags and labels that will be applied to the specified image. The `id` "meta" allows the output of this step to be referenced in a subsequent step. The `images` value provides the base name for the tags and labels.
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@a60f0f62b5c12316066c8db464bfb2faafd7907b
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
       # Configure multi platform Docker builds
@@ -115,7 +115,7 @@ jobs:
       # It uses the `context` parameter to define the build's context as the set of files located in the specified path. For more information, see "[Usage](https://github.com/docker/build-push-action#usage)" in the README of the `docker/build-push-action` repository.
       # It uses the `tags` and `labels` parameters to tag and label the image with the output from the "meta" step.
       - name: Build and push Docker image
-        uses: docker/build-push-action@4976231911ebf5f32aad765192d35f942aa48cb8
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           push: true
@@ -135,7 +135,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.commit_hash }}
 
@@ -148,7 +148,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for EE Dockerfile
         id: meta-ee
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@a60f0f62b5c12316066c8db464bfb2faafd7907b
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-ee
       # Configure multi platform Docker builds
@@ -158,7 +158,7 @@ jobs:
         uses: docker/setup-buildx-action@edfb0fe6204400c56fbfd3feba3fe9ad1adfa345
 
       - name: Build and push EE Docker image
-        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: Dockerfile
@@ -178,7 +178,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.commit_hash }}
 
@@ -191,7 +191,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for database Dockerfile
         id: meta-database
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@a60f0f62b5c12316066c8db464bfb2faafd7907b
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-database
       # Configure multi platform Docker builds
@@ -201,7 +201,7 @@ jobs:
         uses: docker/setup-buildx-action@edfb0fe6204400c56fbfd3feba3fe9ad1adfa345
 
       - name: Build and push Database Docker image
-        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: ./docker/Dockerfile.database
@@ -221,7 +221,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.commit_hash }}
 
@@ -234,7 +234,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for non_root Dockerfile
         id: meta-non_root
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@a60f0f62b5c12316066c8db464bfb2faafd7907b
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-non_root
       # Configure multi platform Docker builds
@@ -244,7 +244,7 @@ jobs:
         uses: docker/setup-buildx-action@edfb0fe6204400c56fbfd3feba3fe9ad1adfa345
 
       - name: Build and push non_root Docker image
-        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: ./docker/Dockerfile.non_root
@@ -264,7 +264,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.commit_hash }}
 
@@ -277,7 +277,7 @@ jobs:
 
       - name: Extract metadata (tags, labels) for spend-logs Dockerfile
         id: meta-spend-logs
-        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        uses: docker/metadata-action@a60f0f62b5c12316066c8db464bfb2faafd7907b
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-spend_logs
       # Configure multi platform Docker builds
@@ -287,7 +287,7 @@ jobs:
         uses: docker/setup-buildx-action@edfb0fe6204400c56fbfd3feba3fe9ad1adfa345
 
       - name: Build and push Database Docker image
-        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
           file: ./litellm-js/spend-logs/Dockerfile
@@ -305,7 +305,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -371,7 +371,7 @@ jobs:
       - name: Display release tag
         run: echo "RELEASE_TAG is $RELEASE_TAG"
       - name: "Create release"
-        uses: "actions/github-script@v6"
+        uses: "actions/github-script@v8"
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           script: |
@@ -396,7 +396,7 @@ jobs:
             }
       - name: Fetch Release Notes
         id: release-notes
-        uses: actions/github-script@v6
+        uses: actions/github-script@v8
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
           script: |
