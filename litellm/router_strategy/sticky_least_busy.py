@@ -116,48 +116,64 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         messages: Optional[List[Dict[str, str]]],
     ) -> Optional[str]:
         """
-        Compute a deterministic hash from the conversation prefix.
+        Compute a deterministic hash that identifies the conversation.
 
+        The key must be STABLE across all turns of the same conversation so that
+        consecutive messages route to the same node (KV cache reuse). We achieve
+        this by hashing the conversation's "identity" — the system prompt (if any)
+        plus the first user message — which never changes as the conversation grows.
+
+        Algorithm:
         - None/empty messages -> None (no stickiness, degrades to least-busy).
-        - Single message -> hash that message.
-        - Multiple messages -> hash all except the last (the conversation context).
-        - Long conversations (>20 prefix messages) -> first 20 only.
+        - Extract up to the first 2 messages: [system_prompt, first_user_msg].
+          If no system message, just [first_user_msg].
+        - Hash this fixed identity with SHA-256 of canonical JSON.
 
-        Uses the first 20 messages because they never change as the conversation
-        grows, keeping the hash stable across turns. Using last-N would cause the
-        hash to shift every turn, breaking stickiness.
-
-        SHA-256 of canonical JSON ensures cross-pod determinism.
+        This ensures:
+        - Same conversation always produces the same hash on every turn.
+        - Different conversations (different first user question) get different hashes.
+        - The hash is deterministic across pods (canonical JSON + SHA-256).
+        - Different users with the same system prompt but different first questions
+          get different hashes (no hotspot).
         """
         if not messages:
             print("[StickyLeastBusy STICKY-KEY] No messages provided, sticky_key=None")
             return None
 
-        if len(messages) == 1:
-            prefix = messages
-        else:
-            prefix = messages[:-1]
+        # Extract the conversation identity: system prompt (if any) + first user message.
+        # This is constant across all turns of the same conversation.
+        identity: List[Dict[str, str]] = []
+        for msg in messages:
+            role = msg.get("role", "")
+            identity.append(msg)
+            if role == "user":
+                # Found first user message — we have enough to identify the conversation
+                break
+            elif role in ("system", "developer"):
+                # System/developer prompt — include it but keep looking for first user message
+                continue
+            else:
+                # assistant or other role before first user message — stop here
+                break
 
-        # Bound hashing cost for very long conversations.
-        # Only use the first 20 messages — these never change as the conversation
-        # grows, so the hash stays stable across turns (preserving stickiness).
-        original_prefix_len = len(prefix)
-        if len(prefix) > 20:
-            prefix = prefix[:20]
+        if not identity:
+            print("[StickyLeastBusy STICKY-KEY] No identity messages found, sticky_key=None")
+            return None
 
         try:
             canonical = json.dumps(
-                prefix, sort_keys=True, ensure_ascii=True, separators=(",", ":")
+                identity, sort_keys=True, ensure_ascii=True, separators=(",", ":")
             )
         except (TypeError, ValueError):
-            canonical = str(prefix)
+            canonical = str(identity)
 
         sticky_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        identity_roles = [m.get("role", "?") for m in identity]
         print(
             f"[StickyLeastBusy STICKY-KEY] "
             f"total_messages={len(messages)}, "
-            f"prefix_messages={original_prefix_len}, "
-            f"bounded_to={min(original_prefix_len, 20)}, "
+            f"identity_messages={len(identity)}, "
+            f"identity_roles={identity_roles}, "
             f"sticky_key={sticky_key[:16]}..."
         )
         return sticky_key
