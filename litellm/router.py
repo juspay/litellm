@@ -754,18 +754,18 @@ class Router:
             routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY.value
             or routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY
         ):
-            # Reuse existing handler to preserve dedup state and hash ring cache.
-            # routing_strategy_init is called on every config reload (and sometimes
-            # per-request via proxy config sync). Creating a new handler each time
-            # wipes the _seen_call_ids dedup dict, causing duplicate increments.
-            if not getattr(self, "sticky_leastbusy_logger", None):
-                sticky_args = routing_strategy_args or {}
-                self.sticky_leastbusy_logger = StickyLeastBusyLoggingHandler(
-                    router_cache=self.cache,
-                    imbalance_threshold=sticky_args.get("imbalance_threshold", 1.5),
-                    virtual_nodes=sticky_args.get("virtual_nodes", 150),
-                    cache_ttl=sticky_args.get("cache_ttl", 600),
-                )
+            # StickyLeastBusyLoggingHandler uses a class-level singleton (__new__).
+            # Even if routing_strategy_init is called per-request or on config reload,
+            # the same handler instance is returned, preserving _seen_call_ids dedup
+            # state and hash ring cache. Only router_cache is updated (may change
+            # across Router instances).
+            sticky_args = routing_strategy_args or {}
+            self.sticky_leastbusy_logger = StickyLeastBusyLoggingHandler(
+                router_cache=self.cache,
+                imbalance_threshold=sticky_args.get("imbalance_threshold", 1.5),
+                virtual_nodes=sticky_args.get("virtual_nodes", 150),
+                cache_ttl=sticky_args.get("cache_ttl", 600),
+            )
 
             # Clean stale references from input_callback, then re-add the
             # singleton. This prevents duplicate handlers while preserving state.

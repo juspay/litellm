@@ -28,11 +28,42 @@ from litellm.integrations.custom_logger import CustomLogger
 class StickyLeastBusyLoggingHandler(CustomLogger):
     """
     Routing handler that combines conversation stickiness with load-aware rebalancing.
+
+    Uses a class-level singleton to survive Router re-creation. The LiteLLM proxy
+    may create new Router instances per-request or on config syncs. Without a
+    singleton, each new instance gets a fresh _seen_call_ids dict, breaking
+    streaming dedup and causing in-flight counts to grow monotonically.
     """
+
+    _instance: Optional["StickyLeastBusyLoggingHandler"] = None
 
     test_flag: bool = False
     logged_success: int = 0
     logged_failure: int = 0
+
+    def __new__(
+        cls,
+        router_cache: DualCache,
+        imbalance_threshold: float = 1.5,
+        virtual_nodes: int = 150,
+        cache_ttl: int = 600,
+    ):
+        """
+        Singleton: return existing instance if one exists.
+        Only update router_cache (which may change across Router instances).
+        """
+        if cls._instance is not None:
+            # Update router_cache to the latest Router's cache (may have new Redis connection)
+            cls._instance.router_cache = router_cache
+            print(
+                f"[StickyLeastBusy REUSE] Reusing existing handler "
+                f"(seen_call_ids={len(cls._instance._seen_call_ids)}, "
+                f"ring_nodes={len(cls._instance._hash_ring)})"
+            )
+            return cls._instance
+        instance = super().__new__(cls)
+        cls._instance = instance
+        return instance
 
     def __init__(
         self,
@@ -48,6 +79,13 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             virtual_nodes: Number of virtual nodes per deployment on the consistent hash ring.
             cache_ttl: TTL in seconds for request count cache keys.
         """
+        # Skip re-initialization if already initialized (singleton reuse)
+        if hasattr(self, "_initialized") and self._initialized:
+            # Always update router_cache (may point to a new Router's cache)
+            self.router_cache = router_cache
+            return
+
+        self._initialized = True
         self.router_cache = router_cache
         self.imbalance_threshold = imbalance_threshold
         self.virtual_nodes = virtual_nodes
