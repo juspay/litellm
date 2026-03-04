@@ -754,28 +754,30 @@ class Router:
             routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY.value
             or routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY
         ):
-            # Remove any previously registered sticky-least-busy handlers from
-            # input_callback to prevent duplicate registrations on config reload.
-            # Each handler instance has its own _seen_call_ids dedup dict, so
-            # N duplicate handlers = N increments per request but only 1 decrement
-            # (litellm.callbacks is already deduped by add_litellm_callback).
+            # Reuse existing handler to preserve dedup state and hash ring cache.
+            # routing_strategy_init is called on every config reload (and sometimes
+            # per-request via proxy config sync). Creating a new handler each time
+            # wipes the _seen_call_ids dedup dict, causing duplicate increments.
+            if not getattr(self, "sticky_leastbusy_logger", None):
+                sticky_args = routing_strategy_args or {}
+                self.sticky_leastbusy_logger = StickyLeastBusyLoggingHandler(
+                    router_cache=self.cache,
+                    imbalance_threshold=sticky_args.get("imbalance_threshold", 1.5),
+                    virtual_nodes=sticky_args.get("virtual_nodes", 150),
+                    cache_ttl=sticky_args.get("cache_ttl", 600),
+                )
+
+            # Clean stale references from input_callback, then re-add the
+            # singleton. This prevents duplicate handlers while preserving state.
             if isinstance(litellm.input_callback, list):
                 litellm.input_callback = [
                     cb for cb in litellm.input_callback
                     if not isinstance(cb, StickyLeastBusyLoggingHandler)
                 ]
-
-            sticky_args = routing_strategy_args or {}
-            self.sticky_leastbusy_logger = StickyLeastBusyLoggingHandler(
-                router_cache=self.cache,
-                imbalance_threshold=sticky_args.get("imbalance_threshold", 1.5),
-                virtual_nodes=sticky_args.get("virtual_nodes", 150),
-                cache_ttl=sticky_args.get("cache_ttl", 600),
-            )
-            if isinstance(litellm.input_callback, list):
                 litellm.input_callback.append(self.sticky_leastbusy_logger)  # type: ignore
             else:
                 litellm.input_callback = [self.sticky_leastbusy_logger]  # type: ignore
+            # add_litellm_callback already deduplicates by class, safe to call repeatedly
             if isinstance(litellm.callbacks, list):
                 litellm.logging_callback_manager.add_litellm_callback(self.sticky_leastbusy_logger)  # type: ignore
         elif (
