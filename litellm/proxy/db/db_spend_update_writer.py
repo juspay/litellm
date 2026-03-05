@@ -212,7 +212,6 @@ class DBSpendUpdateWriter:
                     )
                 )
 
-            
             if disable_spend_logs is False:
                 await self._insert_spend_log_to_db(
                     payload=copy.deepcopy(payload),
