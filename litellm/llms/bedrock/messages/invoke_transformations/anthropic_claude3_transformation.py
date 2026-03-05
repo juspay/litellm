@@ -215,11 +215,9 @@ class AmazonAnthropicClaudeMessagesConfig(
         """
         Adjust tool search beta header for Bedrock.
 
-        Bedrock requires a different beta header for tool search on Opus 4 models
-        when tool search is used without programmatic tool calling or input examples.
-
-        Note: On Amazon Bedrock, server-side tool search is only supported on Claude Opus 4
-        with the `tool-search-tool-2025-10-19` beta header.
+        Note: The advanced-tool-use-2025-11-20 beta header has been deprecated by Anthropic.
+        On Amazon Bedrock, server-side tool search may require the `tool-search-tool-2025-10-19`
+        beta header for Claude Opus 4 models.
 
         Ref: https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool
 
@@ -230,8 +228,10 @@ class AmazonAnthropicClaudeMessagesConfig(
             input_examples_used: Whether input examples are used
             beta_set: The set of beta headers to modify in-place
         """
+        # Discard deprecated beta header if present (from user-provided headers)
+        beta_set.discard(ANTHROPIC_TOOL_SEARCH_BETA_HEADER)
+
         if tool_search_used and not (programmatic_tool_calling_used or input_examples_used):
-            beta_set.discard(ANTHROPIC_TOOL_SEARCH_BETA_HEADER)
             if "opus-4" in model.lower() or "opus_4" in model.lower():
                 beta_set.add("tool-search-tool-2025-10-19")
 

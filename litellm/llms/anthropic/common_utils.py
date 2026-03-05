@@ -320,14 +320,9 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         api_key: str,
         anthropic_version: Optional[str] = None,
         computer_tool_used: Optional[str] = None,
-        prompt_caching_set: bool = False,
-        pdf_used: bool = False,
         file_id_used: bool = False,
         mcp_server_used: bool = False,
         web_search_tool_used: bool = False,
-        tool_search_used: bool = False,
-        programmatic_tool_calling_used: bool = False,
-        input_examples_used: bool = False,
         effort_used: bool = False,
         is_vertex_request: bool = False,
         user_anthropic_beta_headers: Optional[List[str]] = None,
@@ -348,10 +343,9 @@ class AnthropicModelInfo(BaseLLMModelInfo):
             betas.add("code-execution-2025-05-22")
         if mcp_server_used:
             betas.add("mcp-client-2025-04-04")
-        # Tool search, programmatic tool calling, and input_examples all use the same beta header
-        if tool_search_used or programmatic_tool_calling_used or input_examples_used:
-            from litellm.types.llms.anthropic import ANTHROPIC_TOOL_SEARCH_BETA_HEADER
-            betas.add(ANTHROPIC_TOOL_SEARCH_BETA_HEADER)
+        # Note: The advanced-tool-use-2025-11-20 beta header has been deprecated by Anthropic
+        # Tool search, programmatic tool calling, and input_examples now work without a beta header
+        # See: https://github.com/BerriAI/litellm/issues/22398
         
         # Effort parameter uses a separate beta header
         if effort_used:
@@ -407,17 +401,12 @@ class AnthropicModelInfo(BaseLLMModelInfo):
             )
 
         tools = optional_params.get("tools")
-        prompt_caching_set = self.is_cache_control_set(messages=messages)
         computer_tool_used = self.is_computer_tool_used(tools=tools)
         mcp_server_used = self.is_mcp_server_used(
             mcp_servers=optional_params.get("mcp_servers")
         )
-        pdf_used = self.is_pdf_used(messages=messages)
         file_id_used = self.is_file_id_used(messages=messages)
         web_search_tool_used = self.is_web_search_tool_used(tools=tools)
-        tool_search_used = self.is_tool_search_used(tools=tools)
-        programmatic_tool_calling_used = self.is_programmatic_tool_calling_used(tools=tools)
-        input_examples_used = self.is_input_examples_used(tools=tools)
         effort_used = self.is_effort_used(optional_params=optional_params, model=model)
         code_execution_tool_used = self.is_code_execution_tool_used(tools=tools)
         container_with_skills_used = self.is_container_with_skills_used(optional_params=optional_params)
@@ -426,17 +415,12 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         )
         anthropic_headers = self.get_anthropic_headers(
             computer_tool_used=computer_tool_used,
-            prompt_caching_set=prompt_caching_set,
-            pdf_used=pdf_used,
             api_key=api_key,
             file_id_used=file_id_used,
             web_search_tool_used=web_search_tool_used,
             is_vertex_request=optional_params.get("is_vertex_request", False),
             user_anthropic_beta_headers=user_anthropic_beta_headers,
             mcp_server_used=mcp_server_used,
-            tool_search_used=tool_search_used,
-            programmatic_tool_calling_used=programmatic_tool_calling_used,
-            input_examples_used=input_examples_used,
             effort_used=effort_used,
             code_execution_tool_used=code_execution_tool_used,
             container_with_skills_used=container_with_skills_used,

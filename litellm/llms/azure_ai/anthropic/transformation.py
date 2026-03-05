@@ -58,12 +58,10 @@ class AzureAnthropicConfig(AnthropicConfig):
 
         # Get tools and other anthropic-specific setup
         tools = optional_params.get("tools")
-        prompt_caching_set = self.is_cache_control_set(messages=messages)
         computer_tool_used = self.is_computer_tool_used(tools=tools)
         mcp_server_used = self.is_mcp_server_used(
             mcp_servers=optional_params.get("mcp_servers")
         )
-        pdf_used = self.is_pdf_used(messages=messages)
         file_id_used = self.is_file_id_used(messages=messages)
         user_anthropic_beta_headers = self._get_user_anthropic_beta_headers(
             anthropic_beta_header=headers.get("anthropic-beta")
@@ -72,8 +70,6 @@ class AzureAnthropicConfig(AnthropicConfig):
         # Get anthropic headers (but we'll replace x-api-key with Azure auth)
         anthropic_headers = self.get_anthropic_headers(
             computer_tool_used=computer_tool_used,
-            prompt_caching_set=prompt_caching_set,
-            pdf_used=pdf_used,
             api_key=api_key or "",  # Azure auth is already in headers
             file_id_used=file_id_used,
             is_vertex_request=optional_params.get("is_vertex_request", False),
