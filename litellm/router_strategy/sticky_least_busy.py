@@ -6,7 +6,8 @@ on vLLM/SGLang nodes), but rebalances to the least-busy deployment when the stic
 target is overloaded.
 
 How this works:
-  1. Hash the message prefix (all messages except the last) to compute a sticky key.
+  1. Hash the conversation identity (system prompt + first user message) to compute
+     a sticky key that is constant across all turns.
   2. Map sticky key to a preferred deployment via consistent hashing.
   3. If preferred deployment's in-flight count < threshold * avg_load, use it (sticky).
   4. If overloaded, route to the deployment with the fewest in-flight requests (rebalance).
@@ -55,7 +56,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         if cls._instance is not None:
             # Update router_cache to the latest Router's cache (may have new Redis connection)
             cls._instance.router_cache = router_cache
-            print(
+            verbose_router_logger.info(
                 f"[StickyLeastBusy REUSE] Reusing existing handler "
                 f"(seen_call_ids={len(cls._instance._seen_call_ids)}, "
                 f"ring_nodes={len(cls._instance._hash_ring)})"
@@ -100,7 +101,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         self._hash_ring: List[Tuple[int, str]] = []
         self._ring_deployment_ids: frozenset = frozenset()
 
-        print(
+        verbose_router_logger.info(
             f"[StickyLeastBusy INIT] Initialized with "
             f"imbalance_threshold={imbalance_threshold}, "
             f"virtual_nodes={virtual_nodes}, "
@@ -137,7 +138,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
           get different hashes (no hotspot).
         """
         if not messages:
-            print("[StickyLeastBusy STICKY-KEY] No messages provided, sticky_key=None")
+            verbose_router_logger.debug(
+                "[StickyLeastBusy STICKY-KEY] No messages provided, sticky_key=None"
+            )
             return None
 
         # Extract the conversation identity: system prompt (if any) + first user message.
@@ -157,7 +160,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 break
 
         if not identity:
-            print("[StickyLeastBusy STICKY-KEY] No identity messages found, sticky_key=None")
+            verbose_router_logger.debug(
+                "[StickyLeastBusy STICKY-KEY] No identity messages found, sticky_key=None"
+            )
             return None
 
         try:
@@ -169,7 +174,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
 
         sticky_key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
         identity_roles = [m.get("role", "?") for m in identity]
-        print(
+        verbose_router_logger.debug(
             f"[StickyLeastBusy STICKY-KEY] "
             f"total_messages={len(messages)}, "
             f"identity_messages={len(identity)}, "
@@ -191,7 +196,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         if new_ids == self._ring_deployment_ids:
             return
 
-        print(
+        verbose_router_logger.info(
             f"[StickyLeastBusy RING-BUILD] Rebuilding hash ring: "
             f"prev_deployments={len(self._ring_deployment_ids)}, "
             f"new_deployments={len(new_ids)}, "
@@ -209,7 +214,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         self._hash_ring = ring
         self._ring_deployment_ids = new_ids
 
-        print(
+        verbose_router_logger.info(
             f"[StickyLeastBusy RING-BUILD] Ring built with "
             f"{len(ring)} virtual nodes "
             f"({self.virtual_nodes} per deployment)"
@@ -218,7 +223,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
     def _get_deployment_for_key(self, sticky_key: str) -> Optional[str]:
         """Map a sticky key to a deployment ID via the consistent hash ring."""
         if not self._hash_ring:
-            print("[StickyLeastBusy RING-LOOKUP] Hash ring is empty, returning None")
+            verbose_router_logger.debug(
+                "[StickyLeastBusy RING-LOOKUP] Hash ring is empty, returning None"
+            )
             return None
 
         h = int(hashlib.md5(sticky_key.encode("utf-8")).hexdigest(), 16)
@@ -227,7 +234,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             idx = 0
 
         result = self._hash_ring[idx][1]
-        print(
+        verbose_router_logger.debug(
             f"[StickyLeastBusy RING-LOOKUP] "
             f"sticky_key={sticky_key[:16]}... -> deployment_id={result}"
         )
@@ -287,7 +294,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         Subsequent calls (SSE streaming chunks) return False.
         """
         if litellm_call_id in self._seen_call_ids:
-            print(
+            verbose_router_logger.debug(
                 f"[StickyLeastBusy DEDUP] Skipping duplicate increment "
                 f"for call_id={litellm_call_id[:16]}... "
                 f"(streaming chunk dedup)"
@@ -299,7 +306,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             keys_to_remove = list(self._seen_call_ids.keys())[:evict_count]
             for key in keys_to_remove:
                 self._seen_call_ids.pop(key, None)
-            print(
+            verbose_router_logger.debug(
                 f"[StickyLeastBusy DEDUP] Evicted {evict_count} old call_ids "
                 f"(was at capacity {self._seen_call_ids_max_size})"
             )
@@ -316,21 +323,16 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
 
     def log_pre_api_call(self, model, messages, kwargs):
         """Increment in-flight count. Deduped by litellm_call_id for streaming."""
+        if kwargs is None:
+            return
         try:
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
-                print(
-                    "[StickyLeastBusy INCREMENT] Skipped - no litellm_params/metadata"
-                )
                 return
 
             model_group = litellm_params["metadata"].get("model_group")
             dep_id = litellm_params.get("model_info", {}).get("id")
             if model_group is None or dep_id is None:
-                print(
-                    f"[StickyLeastBusy INCREMENT] Skipped - "
-                    f"model_group={model_group}, dep_id={dep_id}"
-                )
                 return
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
@@ -347,7 +349,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             )
             self._refresh_cache_ttl(cache_key)
             stream = kwargs.get("stream", False)
-            print(
+            verbose_router_logger.debug(
                 f"[StickyLeastBusy INCREMENT] "
                 f"deployment_id={dep_id}, "
                 f"model_group={model_group}, "
@@ -356,27 +358,20 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 f"call_id={litellm_call_id[:16] if litellm_call_id else 'None'}..."
             )
         except Exception as e:
-            print(f"[StickyLeastBusy ERROR] log_pre_api_call failed: {e}")
             verbose_router_logger.error(
                 f"StickyLeastBusy log_pre_api_call error: {e}"
             )
 
     def _decrement_request_count(self, kwargs, callback_type: str) -> None:
+        if kwargs is None:
+            return
         try:
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
-                print(
-                    f"[StickyLeastBusy DECREMENT] Skipped ({callback_type}) "
-                    f"- no litellm_params/metadata"
-                )
                 return
             model_group = litellm_params["metadata"].get("model_group")
             dep_id = litellm_params.get("model_info", {}).get("id")
             if model_group is None or dep_id is None:
-                print(
-                    f"[StickyLeastBusy DECREMENT] Skipped ({callback_type}) "
-                    f"- model_group={model_group}, dep_id={dep_id}"
-                )
                 return
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
@@ -386,14 +381,14 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 key=cache_key, value=-1, ttl=self.cache_ttl
             )
             self._refresh_cache_ttl(cache_key)
-            print(
+            verbose_router_logger.debug(
                 f"[StickyLeastBusy DECREMENT {callback_type}] "
                 f"deployment_id={dep_id}, "
                 f"model_group={model_group}, "
                 f"new_count={new_value}"
             )
             if new_value < 0:
-                print(
+                verbose_router_logger.warning(
                     f"[StickyLeastBusy WARNING] Negative count detected "
                     f"for deployment_id={dep_id}, resetting to 0"
                 )
@@ -407,7 +402,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if litellm_call_id:
                 self._cleanup_call_id(litellm_call_id)
         except Exception as e:
-            print(f"[StickyLeastBusy ERROR] decrement ({callback_type}) failed: {e}")
             verbose_router_logger.error(
                 f"StickyLeastBusy decrement error: {e}"
             )
@@ -415,21 +409,15 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
     async def _async_decrement_request_count(
         self, kwargs, callback_type: str
     ) -> None:
+        if kwargs is None:
+            return
         try:
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
-                print(
-                    f"[StickyLeastBusy DECREMENT] Skipped ({callback_type}) "
-                    f"- no litellm_params/metadata"
-                )
                 return
             model_group = litellm_params["metadata"].get("model_group")
             dep_id = litellm_params.get("model_info", {}).get("id")
             if model_group is None or dep_id is None:
-                print(
-                    f"[StickyLeastBusy DECREMENT] Skipped ({callback_type}) "
-                    f"- model_group={model_group}, dep_id={dep_id}"
-                )
                 return
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
@@ -439,14 +427,14 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 key=cache_key, value=-1, ttl=self.cache_ttl
             )
             await self._async_refresh_cache_ttl(cache_key)
-            print(
+            verbose_router_logger.debug(
                 f"[StickyLeastBusy DECREMENT {callback_type}] "
                 f"deployment_id={dep_id}, "
                 f"model_group={model_group}, "
                 f"new_count={new_value}"
             )
             if new_value < 0:
-                print(
+                verbose_router_logger.warning(
                     f"[StickyLeastBusy WARNING] Negative count detected "
                     f"for deployment_id={dep_id}, resetting to 0"
                 )
@@ -460,21 +448,16 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if litellm_call_id:
                 self._cleanup_call_id(litellm_call_id)
         except Exception as e:
-            print(
-                f"[StickyLeastBusy ERROR] async decrement ({callback_type}) failed: {e}"
-            )
             verbose_router_logger.error(
                 f"StickyLeastBusy async decrement error: {e}"
             )
 
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
-        print("[StickyLeastBusy CALLBACK] log_success_event (SYNC) called")
         self._decrement_request_count(kwargs, callback_type="SYNC-SUCCESS")
         if self.test_flag:
             self.logged_success += 1
 
     def log_failure_event(self, kwargs, response_obj, start_time, end_time):
-        print("[StickyLeastBusy CALLBACK] log_failure_event (SYNC) called")
         self._decrement_request_count(kwargs, callback_type="SYNC-FAILURE")
         if self.test_flag:
             self.logged_failure += 1
@@ -482,7 +465,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
     async def async_log_success_event(
         self, kwargs, response_obj, start_time, end_time
     ):
-        print("[StickyLeastBusy CALLBACK] async_log_success_event (ASYNC) called")
         await self._async_decrement_request_count(
             kwargs, callback_type="ASYNC-SUCCESS"
         )
@@ -492,7 +474,6 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
     async def async_log_failure_event(
         self, kwargs, response_obj, start_time, end_time
     ):
-        print("[StickyLeastBusy CALLBACK] async_log_failure_event (ASYNC) called")
         await self._async_decrement_request_count(
             kwargs, callback_type="ASYNC-FAILURE"
         )
@@ -520,7 +501,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             result[dep_id] = max(0, int(count)) if count is not None else 0
 
         if none_count == len(healthy_deployments) and none_count > 0:
-            print(
+            verbose_router_logger.warning(
                 "[StickyLeastBusy WARNING] Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
             )
@@ -545,7 +526,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             result[dep_id] = max(0, int(count)) if count is not None else 0
 
         if none_count == len(healthy_deployments) and none_count > 0:
-            print(
+            verbose_router_logger.warning(
                 "[StickyLeastBusy WARNING] Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
             )
@@ -595,26 +576,17 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         avg_load = total_load / len(dep_ids) if dep_ids else 0
 
         # --- Log node status overview ---
-        print(
-            f"[StickyLeastBusy ROUTING] ====== Routing Decision ======"
+        node_summary = ", ".join(
+            f"{did}={request_counts.get(did, 0)}" for did in dep_ids
         )
-        print(
+        verbose_router_logger.debug(
             f"[StickyLeastBusy ROUTING] "
             f"healthy_nodes={len(dep_ids)}, "
             f"total_in_flight={total_load}, "
             f"avg_load={avg_load:.2f}, "
-            f"threshold={self.imbalance_threshold}"
+            f"threshold={self.imbalance_threshold}, "
+            f"loads=[{node_summary}]"
         )
-        for did in dep_ids:
-            load = request_counts.get(did, 0)
-            dep = dep_id_to_deployment[did]
-            api_base = dep.get("litellm_params", {}).get("api_base", "unknown")
-            print(
-                f"[StickyLeastBusy ROUTING]   "
-                f"node={did} | "
-                f"api_base={api_base} | "
-                f"in_flight={load}"
-            )
 
         # Try sticky routing
         if sticky_key:
@@ -624,7 +596,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 effective_avg = max(avg_load, 1.0)
                 threshold_value = self.imbalance_threshold * effective_avg
 
-                print(
+                verbose_router_logger.debug(
                     f"[StickyLeastBusy STICKY-CHECK] "
                     f"preferred_node={preferred_id}, "
                     f"preferred_load={preferred_load}, "
@@ -634,17 +606,14 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
 
                 if preferred_load < threshold_value:
                     selected = dep_id_to_deployment[preferred_id]
-                    print(
+                    verbose_router_logger.debug(
                         f"[StickyLeastBusy DECISION] STICKY -> "
                         f"{self._get_deployment_info(selected)} "
                         f"(load={preferred_load} < threshold={threshold_value:.2f})"
                     )
-                    print(
-                        f"[StickyLeastBusy ROUTING] =============================="
-                    )
                     return selected
                 else:
-                    print(
+                    verbose_router_logger.debug(
                         f"[StickyLeastBusy STICKY-OVERRIDE] "
                         f"Overriding stickiness! "
                         f"preferred_node={preferred_id} is overloaded "
@@ -652,13 +621,13 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                         f"falling back to least-busy"
                     )
             else:
-                print(
+                verbose_router_logger.debug(
                     f"[StickyLeastBusy STICKY-CHECK] "
                     f"preferred_node={preferred_id} not found in healthy deployments, "
                     f"falling back to least-busy"
                 )
         else:
-            print(
+            verbose_router_logger.debug(
                 "[StickyLeastBusy STICKY-CHECK] "
                 "No sticky key (no messages or single new conversation), "
                 "using least-busy"
@@ -685,15 +654,12 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if min_deployments
             else random.choice(healthy_deployments)
         )
-        print(
+        verbose_router_logger.debug(
             f"[StickyLeastBusy DECISION] LEAST-BUSY -> "
             f"{self._get_deployment_info(selected)} "
             f"(min_load={min_load}, "
             f"candidates_with_min_load={len(min_deployments)}, "
             f"candidate_ids={min_dep_ids})"
-        )
-        print(
-            f"[StickyLeastBusy ROUTING] =============================="
         )
         return selected
 
@@ -707,7 +673,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         healthy_deployments: list,
         messages: Optional[List[Dict[str, str]]] = None,
     ) -> dict:
-        print(
+        verbose_router_logger.debug(
             f"[StickyLeastBusy] get_available_deployments called "
             f"(SYNC) for model_group={model_group}"
         )
@@ -723,7 +689,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         healthy_deployments: list,
         messages: Optional[List[Dict[str, str]]] = None,
     ) -> dict:
-        print(
+        verbose_router_logger.debug(
             f"[StickyLeastBusy] async_get_available_deployments called "
             f"(ASYNC) for model_group={model_group}"
         )
