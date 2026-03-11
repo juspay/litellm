@@ -2,7 +2,7 @@
 Production message filter callback - removes cache-busting content.
 """
 
-from typing import Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.caching.caching import DualCache
 from litellm.proxy._types import UserAPIKeyAuth
@@ -47,9 +47,28 @@ class MessageFilterProd(CustomGuardrail):
 
         return False
 
-    def _filter_content(self, content):
-        """Filter content (string or list of blocks)."""
+    def _should_remove_string(self, text: str) -> bool:
+        """Check if a plain string starts with any filter keyword."""
+        for keyword in self.filter_keywords:
+            if text.startswith(keyword):
+                verbose_proxy_logger.debug(
+                    f"Removing string content starting with '{keyword}' "
+                    f"(content redacted, length={len(text)})"
+                )
+                return True
+        return False
+
+    def _filter_content(self, content) -> Optional[Union[str, List[Dict[str, Any]]]]:
+        """Filter content (string or list of blocks).
+
+        Returns None when a plain string matches a filter keyword (caller
+        should remove the field/message entirely).  Returns a filtered list
+        (possibly empty) for list content, or the original value when no
+        filtering applies.
+        """
         if isinstance(content, str):
+            if self._should_remove_string(content):
+                return None
             return content
 
         if isinstance(content, list):
@@ -74,27 +93,49 @@ class MessageFilterProd(CustomGuardrail):
         # Filter messages array
         messages = data.get("messages")
         if isinstance(messages, list):
+            new_messages = []
             for message in messages:
                 if not isinstance(message, dict):
+                    new_messages.append(message)
                     continue
 
                 content = message.get("content")
                 if content is None:
+                    new_messages.append(message)
                     continue
 
                 filtered_content = self._filter_content(content)
-                if filtered_content != content:
-                    message["content"] = filtered_content
+                if filtered_content is None:
+                    # Drop the entire message when its string content is a
+                    # billing-header line.
+                    filtered_count += 1
+                    verbose_proxy_logger.info(
+                        f"Dropped {message.get('role', 'unknown')} message whose "
+                        "content was entirely a cache-busting billing header"
+                    )
+                elif filtered_content != content:
+                    message = {**message, "content": filtered_content}
+                    new_messages.append(message)
                     filtered_count += 1
                     verbose_proxy_logger.info(
                         f"Filtered cache-busting content from {message.get('role', 'unknown')} message"
                     )
+                else:
+                    new_messages.append(message)
+            data["messages"] = new_messages
 
         # Filter system field
         system = data.get("system")
         if system:
             filtered_system = self._filter_content(system)
-            if filtered_system != system:
+            if filtered_system is None:
+                # The entire system value was a billing-header string; remove it.
+                del data["system"]
+                filtered_count += 1
+                verbose_proxy_logger.info(
+                    "Removed system field that was entirely a cache-busting billing header"
+                )
+            elif filtered_system != system:
                 data["system"] = filtered_system
                 filtered_count += 1
                 verbose_proxy_logger.info(
