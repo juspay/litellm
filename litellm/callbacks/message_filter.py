@@ -40,7 +40,8 @@ class MessageFilterProd(CustomGuardrail):
         for keyword in self.filter_keywords:
             if text.startswith(keyword):
                 verbose_proxy_logger.debug(
-                    f"Removing content block starting with '{keyword}': {text[:80]}..."
+                    f"Removing content block starting with '{keyword}' "
+                    f"(content redacted, length={len(text)})"
                 )
                 return True
 
