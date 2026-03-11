@@ -114,12 +114,12 @@ class MessageFilterProd(CustomGuardrail):
                 else:
                     data["system"] = filtered_system
                     filtered_count += 1
-                    verbose_proxy_logger.error(
+                    verbose_proxy_logger.info(
                         "Filtered cache-busting content from system field"
                     )
 
         if filtered_count > 0:
-            verbose_proxy_logger.error(
+            verbose_proxy_logger.info(
                 f"Message filter: removed cache-busting content from {filtered_count} location(s)"
             )
 
