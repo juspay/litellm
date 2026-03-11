@@ -73,7 +73,7 @@ class MessageFilterProd(CustomGuardrail):
 
         # Filter messages array
         messages = data.get("messages")
-        if messages:
+        if isinstance(messages, list):
             for message in messages:
                 if not isinstance(message, dict):
                     continue
