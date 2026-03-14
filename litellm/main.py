@@ -1539,6 +1539,9 @@ def completion(  # type: ignore # noqa: PLR0915
             litellm_request_debug=kwargs.get("litellm_request_debug", False),
             tpm=kwargs.get("tpm"),
             rpm=kwargs.get("rpm"),
+            is_centralized_redis_cache_incremented=kwargs.get(
+                "is_centralized_redis_cache_incremented"
+            ),
         )
         cast(LiteLLMLoggingObj, logging).update_environment_variables(
             model=model,
