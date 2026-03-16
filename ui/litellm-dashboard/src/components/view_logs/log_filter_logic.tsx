@@ -46,7 +46,7 @@ export function useLogFilterLogic({
   userRole: string | null;
   currentPage: number;
 }) {
-  const defaultFilters = useMemo<LogFilterState>(
+const defaultFilters = useMemo<LogFilterState>(
     () => ({
       [FILTER_KEYS.TEAM_ID]: "",
       [FILTER_KEYS.KEY_HASH]: "",

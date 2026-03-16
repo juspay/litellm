@@ -9,7 +9,7 @@ on:
     paths:
       - 'schema.prisma'  # Check root schema.prisma
     branches:
-      - main
+      # - main
 
 jobs:
   publish-migrations:
