@@ -275,8 +275,9 @@ class TestDeploymentSelection:
         handler._select_deployment(MG, deployments, request_counts, sticky_key)
 
         # Now dep-1 is massively overloaded
-        # avg = (2 + 100 + 2) / 3 = 34.67, threshold = 1.5 * 34.67 = 52.0
-        # dep-1 at 100 >= 52.0, so rebalance
+        # avg = (2+100+2)/3 = 34.67, min = 2
+        # reference = (34.67+2)/2 = 18.33, threshold = 1.5 * 18.33 = 27.5
+        # dep-1 at 100 >= 27.5, so rebalance
         request_counts = {"dep-0": 2, "dep-1": 100, "dep-2": 2}
         result = handler._select_deployment(MG, deployments, request_counts, sticky_key)
         assert result["model_info"]["id"] != "dep-1"
@@ -394,7 +395,7 @@ class TestDeploymentSelection:
         assert len(selected_ids) >= 2
 
     def test_threshold_boundary_stays_sticky(self):
-        """When load is below threshold, should stay sticky."""
+        """When load is below threshold with avg+min blend, should stay sticky."""
         cache = DualCache()
         handler = StickyLeastBusyRedisLoggingHandler(
             router_cache=cache, imbalance_threshold=2.0
@@ -406,9 +407,56 @@ class TestDeploymentSelection:
         request_counts = {"dep-0": 5, "dep-1": 1, "dep-2": 5}
         handler._select_deployment(MG, deployments, request_counts, sticky_key)
 
-        # dep-1 load = 6, avg = (3 + 6 + 3) / 3 = 4, threshold = 2.0 * 4 = 8
-        # 6 < 8, should stay sticky
+        # dep-1 load = 6, avg = (3+6+3)/3 = 4, min = 3
+        # reference = (4+3)/2 = 3.5, threshold = 2.0 * max(3.5, 1.0) = 7.0
+        # 6 < 7.0, should stay sticky
         request_counts = {"dep-0": 3, "dep-1": 6, "dep-2": 3}
+        result = handler._select_deployment(MG, deployments, request_counts, sticky_key)
+        assert result["model_info"]["id"] == "dep-1"
+
+    def test_skewed_distribution_triggers_rebalance(self):
+        """With skewed loads [50, 25, 20, 7, 5], avg+min blend correctly rebalances."""
+        cache = DualCache()
+        handler = StickyLeastBusyRedisLoggingHandler(
+            router_cache=cache, imbalance_threshold=1.5
+        )
+        deployments = [_make_deployment(f"dep-{i}") for i in range(5)]
+        sticky_key = "skewed-test"
+
+        # First request: assign to dep-4 (least busy at 1)
+        request_counts = {"dep-0": 10, "dep-1": 10, "dep-2": 10, "dep-3": 10, "dep-4": 1}
+        handler._select_deployment(MG, deployments, request_counts, sticky_key)
+
+        # Now loads are skewed: dep-4 has 25, but dep-3=7 and dep-4 isn't least busy
+        # avg = (50+25+20+7+5)/5 = 21.4, min = 5
+        # reference = (21.4+5)/2 = 13.2, threshold = 1.5 * 13.2 = 19.8
+        # dep-4 stored at 25 >= 19.8 → should rebalance
+        request_counts = {"dep-0": 50, "dep-1": 25, "dep-2": 20, "dep-3": 7, "dep-4": 5}
+        # Override the stored mapping to dep-1 (the one at 25)
+        route_key = handler._get_sticky_route_cache_key(MG, sticky_key)
+        cache.set_cache(key=route_key, value="dep-1")
+
+        result = handler._select_deployment(MG, deployments, request_counts, sticky_key)
+        # dep-1 at 25 >= 19.8, should rebalance to least-busy (dep-4 at 5)
+        assert result["model_info"]["id"] != "dep-1"
+        assert result["model_info"]["id"] in ("dep-3", "dep-4")
+
+    def test_even_distribution_keeps_sticky(self):
+        """When loads are evenly distributed, avg+min blend preserves stickiness."""
+        cache = DualCache()
+        handler = StickyLeastBusyRedisLoggingHandler(
+            router_cache=cache, imbalance_threshold=1.5
+        )
+        deployments = [_make_deployment(f"dep-{i}") for i in range(3)]
+        sticky_key = "even-test"
+
+        # Assign to dep-1
+        request_counts = {"dep-0": 5, "dep-1": 1, "dep-2": 5}
+        handler._select_deployment(MG, deployments, request_counts, sticky_key)
+
+        # Even: avg = 10, min = 10, reference = 10, threshold = 1.5 * 10 = 15
+        # dep-1 at 10 < 15 → sticky preserved
+        request_counts = {"dep-0": 10, "dep-1": 10, "dep-2": 10}
         result = handler._select_deployment(MG, deployments, request_counts, sticky_key)
         assert result["model_info"]["id"] == "dep-1"
 

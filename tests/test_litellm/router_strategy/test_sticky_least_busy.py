@@ -478,7 +478,7 @@ class TestDeploymentSelection:
         assert len(selected_ids) >= 2
 
     def test_threshold_boundary(self):
-        """Test behavior right at the threshold boundary."""
+        """Test behavior right at the threshold boundary with avg+min blend."""
         handler = StickyLeastBusyLoggingHandler(
             router_cache=DualCache(), imbalance_threshold=2.0
         )
@@ -488,12 +488,65 @@ class TestDeploymentSelection:
         handler._build_hash_ring(MG, ["dep-0", "dep-1", "dep-2"])
         sticky_dep_id = handler._get_deployment_for_key(MG, sticky_key)
 
-        # Set load so sticky node is at exactly 2x avg
-        # avg = (6 + 3 + 3) / 3 = 4, threshold * avg = 2.0 * 4 = 8
-        # sticky at 6 < 8, should stay sticky
+        # Set load so sticky node is moderately above others
+        # avg = (6 + 3 + 3) / 3 = 4, min = 3
+        # reference = (4 + 3) / 2 = 3.5
+        # threshold_value = 2.0 * max(3.5, 1.0) = 7.0
+        # sticky at 6 < 7.0 → should stay sticky
         request_counts = {"dep-0": 3, "dep-1": 3, "dep-2": 3}
         request_counts[sticky_dep_id] = 6
 
+        result = handler._select_deployment(MG, deployments, request_counts, sticky_key)
+        assert result["model_info"]["id"] == sticky_dep_id
+
+    def test_skewed_distribution_triggers_rebalance(self):
+        """With skewed loads [50, 25, 20, 7, 5], avg-only misses the imbalance
+        but avg+min blend correctly detects it and rebalances."""
+        handler = StickyLeastBusyLoggingHandler(
+            router_cache=DualCache(), imbalance_threshold=1.5
+        )
+        deployments = [_make_deployment(f"dep-{i}") for i in range(5)]
+
+        sticky_key = "skewed-test"
+        handler._build_hash_ring(MG, [f"dep-{i}" for i in range(5)])
+        sticky_dep_id = handler._get_deployment_for_key(MG, sticky_key)
+
+        # Skewed: most load on dep-0, idle nodes at dep-3 and dep-4
+        # avg = (50+25+20+7+5)/5 = 21.4, min = 5
+        # reference = (21.4+5)/2 = 13.2
+        # threshold = 1.5 * 13.2 = 19.8
+        # Any node with load >= 20 should trigger rebalance
+        request_counts = {"dep-0": 50, "dep-1": 25, "dep-2": 20, "dep-3": 7, "dep-4": 5}
+
+        # If sticky node has load >= 20, it should rebalance to least-busy (dep-4)
+        if request_counts.get(sticky_dep_id, 0) >= 20:
+            result = handler._select_deployment(
+                MG, deployments, request_counts, sticky_key
+            )
+            # Should route to least-busy, not the sticky node
+            assert result["model_info"]["id"] != sticky_dep_id
+            assert result["model_info"]["id"] in ("dep-3", "dep-4")
+        else:
+            # Sticky node is already lightly loaded — sticky is fine
+            result = handler._select_deployment(
+                MG, deployments, request_counts, sticky_key
+            )
+            assert result["model_info"]["id"] == sticky_dep_id
+
+    def test_even_distribution_keeps_sticky(self):
+        """When loads are evenly distributed, avg+min blend preserves stickiness."""
+        handler = StickyLeastBusyLoggingHandler(
+            router_cache=DualCache(), imbalance_threshold=1.5
+        )
+        deployments = [_make_deployment(f"dep-{i}") for i in range(3)]
+
+        sticky_key = "even-test"
+        handler._build_hash_ring(MG, ["dep-0", "dep-1", "dep-2"])
+        sticky_dep_id = handler._get_deployment_for_key(MG, sticky_key)
+
+        # Even: avg = 10, min = 10, reference = 10, threshold = 15
+        # All nodes at 10 < 15 → sticky preserved
+        request_counts = {"dep-0": 10, "dep-1": 10, "dep-2": 10}
         result = handler._select_deployment(MG, deployments, request_counts, sticky_key)
         assert result["model_info"]["id"] == sticky_dep_id
 

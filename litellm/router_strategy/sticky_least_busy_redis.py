@@ -11,10 +11,12 @@ deployments deterministically, this strategy stores the mapping in Redis:
   1. Hash the conversation identity (first user message + user identifier) to compute
      a sticky key that is constant across all turns.
   2. Look up the sticky key in Redis to find the previously assigned deployment.
-  3. If found and healthy and not overloaded, route there (sticky hit).
-  4. If not found, unhealthy, or overloaded, assign the least-busy deployment and
+  3. Compute reference load using avg+min blend: (avg_load + min_load) / 2.
+     This catches skewed distributions where avg alone is pulled up by outliers.
+  4. If found and healthy and not overloaded (load < threshold * reference), route there.
+  5. If not found, unhealthy, or overloaded, assign the least-busy deployment and
      store/update the mapping in Redis.
-  5. Track in-flight requests via Redis (atomic increment/decrement) with dedup
+  6. Track in-flight requests via Redis (atomic increment/decrement) with dedup
      to avoid the streaming bug where log_pre_api_call fires per SSE chunk.
 
 Advantages over consistent hash ring:
@@ -723,6 +725,14 @@ class StickyLeastBusyRedisLoggingHandler(CustomLogger):
 
         total_load = sum(request_counts.get(did, 0) for did in dep_ids)
         avg_load = total_load / len(dep_ids) if dep_ids else 0
+        min_load = min(
+            (request_counts.get(did, 0) for did in dep_ids), default=0
+        )
+
+        # Avg+min blend: catches skewed distributions where avg alone is pulled
+        # up by outliers. E.g. loads [50,25,20,7,5] → avg=21.4 but min=5,
+        # reference=(21.4+5)/2=13.2, so a node at 25 correctly triggers rebalance.
+        reference_load = (avg_load + min_load) / 2
 
         # --- Log node status overview ---
         node_summary = ", ".join(
@@ -733,6 +743,8 @@ class StickyLeastBusyRedisLoggingHandler(CustomLogger):
             f"healthy_nodes={len(dep_ids)}, "
             f"total_in_flight={total_load}, "
             f"avg_load={avg_load:.2f}, "
+            f"min_load={min_load}, "
+            f"reference_load={reference_load:.2f}, "
             f"threshold={self.imbalance_threshold}, "
             f"loads=[{node_summary}]"
         )
@@ -744,15 +756,16 @@ class StickyLeastBusyRedisLoggingHandler(CustomLogger):
             if stored_dep_id and stored_dep_id in dep_id_to_deployment:
                 # Key exists in Redis AND deployment is healthy
                 preferred_load = request_counts.get(stored_dep_id, 0)
-                effective_avg = max(avg_load, 1.0)
-                threshold_value = self.imbalance_threshold * effective_avg
+                effective_reference = max(reference_load, 1.0)
+                threshold_value = self.imbalance_threshold * effective_reference
 
                 verbose_router_logger.debug(
                     f"[StickyLeastBusyRedis STICKY-CHECK] "
                     f"stored_node={stored_dep_id}, "
                     f"preferred_load={preferred_load}, "
                     f"threshold_value={threshold_value:.2f} "
-                    f"(= {self.imbalance_threshold} * max({avg_load:.2f}, 1.0))"
+                    f"(= {self.imbalance_threshold} * "
+                    f"max(({avg_load:.2f}+{min_load})/2, 1.0))"
                 )
 
                 if preferred_load < threshold_value:
@@ -868,6 +881,12 @@ class StickyLeastBusyRedisLoggingHandler(CustomLogger):
 
         total_load = sum(request_counts.get(did, 0) for did in dep_ids)
         avg_load = total_load / len(dep_ids) if dep_ids else 0
+        min_load = min(
+            (request_counts.get(did, 0) for did in dep_ids), default=0
+        )
+
+        # Avg+min blend (same as sync version)
+        reference_load = (avg_load + min_load) / 2
 
         node_summary = ", ".join(
             f"{did}={request_counts.get(did, 0)}" for did in dep_ids
@@ -877,6 +896,8 @@ class StickyLeastBusyRedisLoggingHandler(CustomLogger):
             f"healthy_nodes={len(dep_ids)}, "
             f"total_in_flight={total_load}, "
             f"avg_load={avg_load:.2f}, "
+            f"min_load={min_load}, "
+            f"reference_load={reference_load:.2f}, "
             f"threshold={self.imbalance_threshold}, "
             f"loads=[{node_summary}]"
         )
@@ -888,15 +909,16 @@ class StickyLeastBusyRedisLoggingHandler(CustomLogger):
 
             if stored_dep_id and stored_dep_id in dep_id_to_deployment:
                 preferred_load = request_counts.get(stored_dep_id, 0)
-                effective_avg = max(avg_load, 1.0)
-                threshold_value = self.imbalance_threshold * effective_avg
+                effective_reference = max(reference_load, 1.0)
+                threshold_value = self.imbalance_threshold * effective_reference
 
                 verbose_router_logger.debug(
                     f"[StickyLeastBusyRedis STICKY-CHECK] "
                     f"stored_node={stored_dep_id}, "
                     f"preferred_load={preferred_load}, "
                     f"threshold_value={threshold_value:.2f} "
-                    f"(= {self.imbalance_threshold} * max({avg_load:.2f}, 1.0))"
+                    f"(= {self.imbalance_threshold} * "
+                    f"max(({avg_load:.2f}+{min_load})/2, 1.0))"
                 )
 
                 if preferred_load < threshold_value:
