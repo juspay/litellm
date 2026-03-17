@@ -398,7 +398,27 @@ async def check_tools_allowlist(
         )
 
 
-async def common_checks(  # noqa: PLR0915
+# Model info/listing routes exempt from budget checks.
+_MODEL_INFO_ROUTES = [
+    "/models",
+    "/v1/models",
+    "/model/info",
+    "/v1/model/info",
+    "/v2/model/info",
+    "/model_group/info",
+]
+
+
+def is_model_info_route(route: str) -> bool:
+    """Check if the route is a model info/listing route exempt from budget checks."""
+    if route in _MODEL_INFO_ROUTES:
+        return True
+    if route.startswith("/models/") or route.startswith("/v1/models/"):
+        return True
+    return False
+
+
+async def common_checks(
     request_body: dict,
     team_object: Optional[LiteLLM_TeamTable],
     user_object: Optional[LiteLLM_UserTable],
@@ -503,29 +523,35 @@ async def common_checks(  # noqa: PLR0915
             proxy_logging_obj=proxy_logging_obj,
         )
 
+    # Skip budget checks for model info/listing routes - these don't consume AI resources
+    _skip_budget_check = is_model_info_route(route)
+
     # 3. If team is in budget
-    await _team_max_budget_check(
-        team_object=team_object,
-        proxy_logging_obj=proxy_logging_obj,
-        valid_token=valid_token,
-    )
+    if not _skip_budget_check:
+        await _team_max_budget_check(
+            team_object=team_object,
+            proxy_logging_obj=proxy_logging_obj,
+            valid_token=valid_token,
+        )
 
     # 3.1. If organization is in budget
-    await _organization_max_budget_check(
-        valid_token=valid_token,
-        team_object=team_object,
-        prisma_client=prisma_client,
-        user_api_key_cache=user_api_key_cache,
-        proxy_logging_obj=proxy_logging_obj,
-    )
+    if not _skip_budget_check:
+        await _organization_max_budget_check(
+            valid_token=valid_token,
+            team_object=team_object,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+        )
 
-    await _tag_max_budget_check(
-        request_body=request_body,
-        prisma_client=prisma_client,
-        user_api_key_cache=user_api_key_cache,
-        proxy_logging_obj=proxy_logging_obj,
-        valid_token=valid_token,
-    )
+    if not _skip_budget_check:
+        await _tag_max_budget_check(
+            request_body=request_body,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+            valid_token=valid_token,
+        )
 
     # 4. If user is in budget
     ## 4.1 check user budget (for both personal and team keys)
@@ -614,12 +640,25 @@ async def common_checks(  # noqa: PLR0915
             else:
                 print(f"[BUDGET_CHECK_PASSED] Route: {route}, User: {user_object.user_id}, Model: {_model}, Spend: ${user_object.spend:.4f}, Budget: ${user_budget:.4f}")
 
-        # 3.0.5. If team is over soft budget (alert only, doesn't block)
-        with tracer.trace("litellm.proxy.auth.common_checks.team_soft_budget_check"):
-            await _team_soft_budget_check(
-                team_object=team_object,
-                proxy_logging_obj=proxy_logging_obj,
-                valid_token=valid_token,
+    ## 4.2 check team member budget, if team key
+    if not _skip_budget_check:
+        await _check_team_member_budget(
+            team_object=team_object,
+            user_object=user_object,
+            valid_token=valid_token,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+
+    # 5. If end_user ('user' passed to /chat/completions, /embeddings endpoint) is in budget
+    if not _skip_budget_check and end_user_object is not None and end_user_object.litellm_budget_table is not None:
+        end_user_budget = end_user_object.litellm_budget_table.max_budget
+        if end_user_budget is not None and end_user_object.spend > end_user_budget:
+            raise litellm.BudgetExceededError(
+                current_cost=end_user_object.spend,
+                max_budget=end_user_budget,
+                message=f"ExceededBudget: End User={end_user_object.user_id} over budget. Spend={end_user_object.spend}, Budget={end_user_budget}",
             )
 
         # 3.1. If organization is in budget

@@ -42,6 +42,7 @@ from litellm.proxy.auth.auth_checks import (
     get_project_object,
     get_team_object,
     get_user_object,
+    is_model_info_route,
     is_valid_fallback_model,
 )
 from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
@@ -1294,7 +1295,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                     )
 
             # Check 3. Check if user is in their team budget
-            if not skip_budget_checks and valid_token.team_member_spend is not None:
+            if valid_token.team_member_spend is not None and not is_model_info_route(route):
                 if prisma_client is not None:
                     _cache_key = f"{valid_token.team_id}_{valid_token.user_id}"
 
@@ -1370,15 +1371,16 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                         param=abbreviate_api_key(api_key=api_key),
                     )
 
-            if not skip_budget_checks:
-                with tracer.trace("litellm.proxy.auth.budget_checks"):
-                    # Check 4. Token Spend is under budget
-                    if RouteChecks.is_llm_api_route(route=route):
-                        await _virtual_key_max_budget_check(
-                            valid_token=valid_token,
-                            proxy_logging_obj=proxy_logging_obj,
-                            user_obj=user_obj,
-                        )
+            # Check 4. Token Spend is under budget
+            if RouteChecks.is_llm_api_route(route=route) and not is_model_info_route(route):
+                # Get model from request for free model bypass
+                current_model = request_data.get("model", None)
+                await _virtual_key_max_budget_check(
+                    valid_token=valid_token,
+                    proxy_logging_obj=proxy_logging_obj,
+                    user_obj=user_obj,
+                    model=current_model,
+                )
 
                     # Check 5. Max Budget Alert Check
                     await _virtual_key_max_budget_alert_check(
