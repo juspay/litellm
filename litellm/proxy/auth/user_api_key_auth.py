@@ -38,6 +38,7 @@ from litellm.proxy.auth.auth_checks import (
     get_key_object,
     get_team_object,
     get_user_object,
+    is_model_info_route,
     is_valid_fallback_model,
 )
 from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
@@ -993,7 +994,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                     user_obj = None
 
             # Check 3. Check if user is in their team budget
-            if valid_token.team_member_spend is not None:
+            if valid_token.team_member_spend is not None and not is_model_info_route(route):
                 if prisma_client is not None:
                     _cache_key = f"{valid_token.team_id}_{valid_token.user_id}"
 
@@ -1058,7 +1059,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                     )
 
             # Check 4. Token Spend is under budget
-            if RouteChecks.is_llm_api_route(route=route):
+            if RouteChecks.is_llm_api_route(route=route) and not is_model_info_route(route):
                 # Get model from request for free model bypass
                 current_model = request_data.get("model", None)
                 await _virtual_key_max_budget_check(
