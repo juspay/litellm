@@ -687,6 +687,9 @@ export default function SpendLogsTable({
                   options={logFilterOptions}
                   onApplyFilters={handleFilterChange}
                   onResetFilters={handleFilterReset}
+                  initialValues={filters}
+                  initialShowFilters={showFilters}
+                  onShowFiltersChange={setShowFilters}
                 />
                 <div className="bg-white rounded-lg shadow w-full max-w-full box-border">
                   <div className="border-b px-6 py-4 w-full max-w-full box-border">
