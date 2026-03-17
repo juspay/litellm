@@ -155,7 +155,18 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         for msg in messages:
             role = msg.get("role", "")
             if role == "user":
-                first_user_content = msg.get("content", "")
+                content = msg.get("content", "")
+                # Handle multimodal content (list of parts) — extract text parts
+                if isinstance(content, list):
+                    text_parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text_parts.append(part.get("text", ""))
+                        elif isinstance(part, str):
+                            text_parts.append(part)
+                    first_user_content = " ".join(text_parts) if text_parts else ""
+                else:
+                    first_user_content = str(content) if content is not None else ""
                 break
             elif role in ("system", "developer"):
                 continue
@@ -340,7 +351,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 return
 
             model_group = litellm_params["metadata"].get("model_group")
-            dep_id = litellm_params.get("model_info", {}).get("id")
+            dep_id = (litellm_params.get("model_info") or {}).get("id")
             if model_group is None or dep_id is None:
                 return
             if isinstance(dep_id, int):
@@ -379,7 +390,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if litellm_params is None or litellm_params.get("metadata") is None:
                 return
             model_group = litellm_params["metadata"].get("model_group")
-            dep_id = litellm_params.get("model_info", {}).get("id")
+            dep_id = (litellm_params.get("model_info") or {}).get("id")
             if model_group is None or dep_id is None:
                 return
             if isinstance(dep_id, int):
@@ -425,7 +436,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if litellm_params is None or litellm_params.get("metadata") is None:
                 return
             model_group = litellm_params["metadata"].get("model_group")
-            dep_id = litellm_params.get("model_info", {}).get("id")
+            dep_id = (litellm_params.get("model_info") or {}).get("id")
             if model_group is None or dep_id is None:
                 return
             if isinstance(dep_id, int):
