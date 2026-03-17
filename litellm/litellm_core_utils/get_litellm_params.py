@@ -64,6 +64,7 @@ def get_litellm_params(
     api_version: Optional[str] = None,
     max_retries: Optional[int] = None,
     litellm_request_debug: Optional[bool] = None,
+    is_centralized_redis_cache_incremented: Optional[bool] = None,
     **kwargs,
 ) -> dict:
     litellm_params = {
@@ -144,5 +145,6 @@ def get_litellm_params(
         "aws_bedrock_runtime_endpoint": kwargs.get("aws_bedrock_runtime_endpoint"),
         "tpm": kwargs.get("tpm"),
         "rpm": kwargs.get("rpm"),
+        "is_centralized_redis_cache_incremented": is_centralized_redis_cache_incremented,
     }
     return litellm_params
