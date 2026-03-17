@@ -1252,13 +1252,62 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                 raise Exception(
                     "Key is blocked. Update via `/key/unblock` if you're an admin."
                 )
-            await _enforce_key_and_fallback_model_access(
-                valid_token=valid_token,
-                request_data=request_data,
-                route=route,
-                llm_model_list=llm_model_list,
-                llm_router=llm_router,
-            )
+            config = valid_token.config
+
+            if config != {}:
+                model_list = config.get("model_list", [])
+                new_model_list = model_list
+                verbose_proxy_logger.debug(
+                    f"\n new llm router model list {new_model_list}"
+                )
+            elif (
+                isinstance(valid_token.models, list)
+                and "all-team-models" in valid_token.models
+            ):
+                # Do not do any validation at this step
+                # the validation will occur when checking the team has access to this model
+                pass
+            else:
+                model = get_model_from_request(request_data, route)
+                fallback_models = cast(
+                    Optional[List[ALL_FALLBACK_MODEL_VALUES]],
+                    request_data.get("fallbacks", None),
+                )
+
+                # Skip model access check for read-only spend logs endpoints
+                # These endpoints only filter logs, they don't call the model
+                _skip_model_check_for_routes = [
+                    "/spend/logs/ui",
+                    "/spend/logs/v2",
+                    "/spend/logs/error_stats",
+                    "/spend/logs/failure_logs_analytics_paginated",
+                    "/spend/logs/models",
+                ]
+                should_check_model = model is not None and not any(
+                    route.startswith(r) for r in _skip_model_check_for_routes
+                )
+
+                if should_check_model:
+                    await can_key_call_model(
+                        model=model,
+                        llm_model_list=llm_model_list,
+                        valid_token=valid_token,
+                        llm_router=llm_router,
+                    )
+
+                if fallback_models is not None:
+                    for m in fallback_models:
+                        await can_key_call_model(
+                            model=m["model"] if isinstance(m, dict) else m,
+                            llm_model_list=llm_model_list,
+                            valid_token=valid_token,
+                            llm_router=llm_router,
+                        )
+                        await is_valid_fallback_model(
+                            model=m["model"] if isinstance(m, dict) else m,
+                            llm_router=llm_router,
+                            user_model=None,
+                        )
 
             # Check 2. If user_id for this token is in budget - done in common_checks()
             if valid_token.user_id is not None:

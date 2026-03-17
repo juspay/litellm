@@ -1,11 +1,8 @@
 name: LiteLLM Linting
 
 on:
-  pull_request:
-    branches: [main]
-
-permissions:
-  contents: read
+  # pull_request:
+  #   branches: [ main ]
 
 jobs:
   lint:

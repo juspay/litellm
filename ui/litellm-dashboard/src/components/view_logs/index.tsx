@@ -4,14 +4,13 @@ import { useCallback, useDeferredValue, useEffect, useRef, useState } from "reac
 
 import dynamic from "next/dynamic";
 
-import { uiSpendLogsCall, keyInfoV1Call, sessionSpendLogsCall, keyListCall, allEndUsersCall, errorStatsCall, failureLogsAnalyticsPaginatedCall } from "../networking";
+import { uiSpendLogsCall, keyInfoV1Call, sessionSpendLogsCall, keyListCall, allEndUsersCall, errorStatsCall, failureLogsAnalyticsPaginatedCall, spendLogsModelsCall } from "../networking";
 import { Row } from "@tanstack/react-table";
 import { Switch, Tab, TabGroup, TabList, TabPanel, TabPanels, Title, Text } from "@tremor/react";
 import { Button, Tag, Tooltip } from "antd";
 import { SettingOutlined, SyncOutlined } from "@ant-design/icons";
 import { internalUserRoles } from "../../utils/roles";
 import { KeyResponse, Team } from "../key_team_helpers/key_list";
-import { fetchAllKeyAliases } from "../key_team_helpers/filter_helpers";
 import { PaginatedKeyAliasSelect } from "../KeyAliasSelect/PaginatedKeyAliasSelect/PaginatedKeyAliasSelect";
 import { PaginatedModelSelect } from "../ModelSelect/PaginatedModelSelect/PaginatedModelSelect";
 import KeyInfoView from "../templates/key_info_view";
@@ -31,7 +30,6 @@ import { ErrorViewer } from "./ErrorViewer";
 import { useLogFilterLogic } from "./log_filter_logic";
 import { LogDetailsDrawer } from "./LogDetailsDrawer";
 import { getTimeRangeDisplay } from "./logs_utils";
-import { prefetchLogDetails } from "./prefetch";
 import { RequestResponsePanel } from "./RequestResponsePanel";
 import SpendLogsSettingsModal from "./SpendLogsSettingsModal/SpendLogsSettingsModal";
 import { VectorStoreViewer } from "./VectorStoreViewer";
@@ -123,6 +121,18 @@ export default function SpendLogsTable({
   useEffect(() => {
     sessionStorage.setItem("isLiveTail", JSON.stringify(isLiveTail));
   }, [isLiveTail]);
+
+  // Timestamp for forcing FilterComponent remount during live tail
+  const [liveTailTimestamp, setLiveTailTimestamp] = useState<number>(Date.now());
+
+  useEffect(() => {
+    if (isLiveTail && !isCustomDate) {
+      const interval = setInterval(() => {
+        setLiveTailTimestamp(Date.now());
+      }, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [isLiveTail, isCustomDate]);
 
   const [selectedTimeInterval, setSelectedTimeInterval] = useState<{ value: number; unit: string }>({
     value: 24,
@@ -550,7 +560,22 @@ export default function SpendLogsTable({
     {
       name: "Model",
       label: "Model",
-      customComponent: PaginatedModelSelect,
+      isSearchable: true,
+      searchFn: async (searchText: string) => {
+        if (!accessToken) return [];
+        const formattedStartTime = moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss");
+        const formattedEndTime = isCustomDate
+          ? moment(endTime).utc().format("YYYY-MM-DD HH:mm:ss")
+          : moment().utc().format("YYYY-MM-DD HH:mm:ss");
+        const models = await spendLogsModelsCall(accessToken, formattedStartTime, formattedEndTime);
+        const filtered = models.filter((model: string) =>
+          model.toLowerCase().includes(searchText.toLowerCase())
+        );
+        return filtered.map((model: string) => ({
+          label: model,
+          value: model,
+        }));
+      },
     },
     {
       name: "Key Alias",
@@ -642,6 +667,7 @@ export default function SpendLogsTable({
             ) : (
               <>
                 <FilterComponent
+                  key={`${startTime}-${endTime}-${isLiveTail && !isCustomDate ? liveTailTimestamp : "static"}`}
                   options={logFilterOptions}
                   onApplyFilters={handleFilterChange}
                   onResetFilters={handleFilterReset}

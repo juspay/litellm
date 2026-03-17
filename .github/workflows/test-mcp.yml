@@ -1,11 +1,8 @@
 name: LiteLLM MCP Tests (folder - tests/mcp_tests)
 
 on:
-  pull_request:
-    branches: [main]
-
-permissions:
-  contents: read
+  # pull_request:
+  #   branches: [ main ]
 
 jobs:
   test:

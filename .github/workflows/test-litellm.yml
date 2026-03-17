@@ -4,12 +4,8 @@ name: LiteLLM Mock Tests (folder - tests/test_litellm)
 # the same tests in parallel across 10 jobs for faster CI times.
 # Kept for manual debugging only.
 on:
-  workflow_dispatch: # Manual trigger only
   # pull_request:
   #   branches: [ main ]
-
-permissions:
-  contents: read
 
 jobs:
   test:

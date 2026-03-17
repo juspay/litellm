@@ -715,6 +715,7 @@ class LiteLLMRoutes(enum.Enum):
         "/global/activity",
         "/global/activity/model",
         "/global/activity/cache_hits",
+        "/key/aliases",
     ] + info_routes
 
     # All routes accesible by an Org Admin

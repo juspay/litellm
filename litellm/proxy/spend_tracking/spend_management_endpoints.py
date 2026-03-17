@@ -4223,3 +4223,94 @@ async def ui_view_failure_logs_analytics_paginated(
     except Exception as e:
         verbose_proxy_logger.exception(f"Error in ui_view_failure_logs_analytics_paginated: {e}")
         raise handle_exception_on_proxy(e)
+    
+
+@router.get(
+    "/spend/logs/models",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
+)
+async def get_spend_logs_models(
+    start_date: Optional[str] = fastapi.Query(
+        default=None,
+        description="Start date in ISO format to filter models from logs",
+    ),
+    end_date: Optional[str] = fastapi.Query(
+        default=None,
+        description="End date in ISO format to filter models from logs",
+    ),
+):
+    """
+    Get distinct models from spend logs within a time range.
+
+    Example Request:
+    ```
+    curl -X GET "http://0.0.0.0:8000/spend/logs/models?start_date=2024-01-01T00:00:00&end_date=2024-01-31T23:59:59" \
+    -H "Authorization: Bearer sk-1234"
+    ```
+    """
+    from litellm.proxy.proxy_server import prisma_read_client
+
+    if prisma_read_client is None:
+        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+
+    # Validate date range is not more than 10 days
+    if start_date and end_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%dT%H:%M").replace(
+                tzinfo=timezone.utc
+            )
+
+        try:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            end_dt = datetime.strptime(end_date, "%Y-%m-%dT%H:%M").replace(
+                tzinfo=timezone.utc
+            )
+
+        time_diff_hours = (end_dt - start_dt).total_seconds() / 3600
+        if time_diff_hours > 240:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "Date range cannot exceed 10 days"},
+            )
+
+    try:
+        sql_query = """
+        SELECT DISTINCT model FROM "LiteLLM_SpendLogs"
+        WHERE model IS NOT NULL
+        """
+        params = []
+
+        if start_date:
+            sql_query += ' AND "startTime" >= $1::timestamptz'
+            params.append(start_date)
+        if end_date:
+            param_idx = len(params) + 1
+            sql_query += f' AND "startTime" <= ${param_idx}::timestamptz'
+            params.append(end_date)
+
+        sql_query += ' ORDER BY model ASC'
+
+        db_response = await asyncio.wait_for(
+            prisma_read_client.db.query_raw(sql_query, *params),
+            timeout=10.0
+        )
+        if db_response is None:
+            return {"models": []}
+
+        models = [row["model"] for row in db_response]
+
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": f"Failed to fetch models: {str(e)}"},
+        )
