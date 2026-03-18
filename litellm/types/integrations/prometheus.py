@@ -624,6 +624,9 @@ class NoOpMetric:
     def inc(self, *args, **kwargs):
         pass
 
+    def dec(self, *args, **kwargs):
+        pass
+
     def set(self, *args, **kwargs):
         pass
 
