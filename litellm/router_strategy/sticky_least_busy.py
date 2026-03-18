@@ -106,6 +106,53 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         # Value: (frozenset_of_deployment_ids, sorted_ring_list)
         self._rings: Dict[str, Tuple[frozenset, List[Tuple[int, str]]]] = {}
 
+        # Prometheus metrics (lazy init — no-op if prometheus_client not installed)
+        try:
+            from prometheus_client import Counter, Gauge
+
+            self._routing_decisions = Counter(
+                "litellm_sticky_routing_decisions_total",
+                "Routing decisions made by sticky-least-busy strategy",
+                ["model_group", "deployment_id", "decision", "strategy"],
+            )
+            self._routing_in_flight = Gauge(
+                "litellm_sticky_routing_in_flight",
+                "In-flight requests per deployment tracked by sticky routing",
+                ["model_group", "deployment_id"],
+            )
+            self._routing_fallback = Counter(
+                "litellm_sticky_routing_fallback_total",
+                "Fallback events in sticky routing",
+                ["model_group", "reason", "strategy"],
+            )
+        except ValueError:
+            # Already registered by another handler instance — reuse from registry
+            from prometheus_client import REGISTRY
+
+            self._routing_decisions = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_routing_decisions_total"
+            )
+            self._routing_in_flight = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_routing_in_flight"
+            )
+            self._routing_fallback = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_routing_fallback_total"
+            )
+            # Guard against partial registration — if any lookup returned None,
+            # fall back to NoOpMetric to avoid AttributeError on .labels().inc()
+            if not all([self._routing_decisions, self._routing_in_flight, self._routing_fallback]):
+                from litellm.types.integrations.prometheus import NoOpMetric
+
+                self._routing_decisions = self._routing_decisions or NoOpMetric()
+                self._routing_in_flight = self._routing_in_flight or NoOpMetric()
+                self._routing_fallback = self._routing_fallback or NoOpMetric()
+        except Exception:
+            from litellm.types.integrations.prometheus import NoOpMetric
+
+            self._routing_decisions = NoOpMetric()
+            self._routing_in_flight = NoOpMetric()
+            self._routing_fallback = NoOpMetric()
+
         verbose_router_logger.info(
             f"[StickyLeastBusy INIT] Initialized with "
             f"imbalance_threshold={imbalance_threshold}, "
@@ -368,6 +415,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 key=cache_key, value=1, ttl=self.cache_ttl
             )
             self._refresh_cache_ttl(cache_key)
+            self._routing_in_flight.labels(model_group, dep_id).inc()
             stream = kwargs.get("stream", False)
             verbose_router_logger.debug(
                 f"[StickyLeastBusy INCREMENT] "
@@ -401,6 +449,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 key=cache_key, value=-1, ttl=self.cache_ttl
             )
             self._refresh_cache_ttl(cache_key)
+            self._routing_in_flight.labels(model_group, dep_id).dec()
             verbose_router_logger.debug(
                 f"[StickyLeastBusy DECREMENT {callback_type}] "
                 f"deployment_id={dep_id}, "
@@ -447,6 +496,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 key=cache_key, value=-1, ttl=self.cache_ttl
             )
             await self._async_refresh_cache_ttl(cache_key)
+            self._routing_in_flight.labels(model_group, dep_id).dec()
             verbose_router_logger.debug(
                 f"[StickyLeastBusy DECREMENT {callback_type}] "
                 f"deployment_id={dep_id}, "
@@ -525,6 +575,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 "[StickyLeastBusy WARNING] Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
             )
+            self._routing_fallback.labels(
+                model_group, "redis_unavailable", "consistent_hashing"
+            ).inc()
         return result
 
     async def _async_get_request_counts(
@@ -550,6 +603,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 "[StickyLeastBusy WARNING] Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
             )
+            self._routing_fallback.labels(
+                model_group, "redis_unavailable", "consistent_hashing"
+            ).inc()
         return result
 
     # =========================================================================
@@ -664,6 +720,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                         f"{self._get_deployment_info(selected)} "
                         f"(load={preferred_load} < threshold={threshold_value:.2f})"
                     )
+                    self._routing_decisions.labels(
+                        model_group, preferred_id, "sticky", "consistent_hashing"
+                    ).inc()
                     return selected
                 else:
                     verbose_router_logger.debug(
@@ -673,6 +732,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                         f"(load={preferred_load} >= threshold={threshold_value:.2f}), "
                         f"falling back to least-busy"
                     )
+                    self._routing_decisions.labels(
+                        model_group, preferred_id, "override", "consistent_hashing"
+                    ).inc()
             else:
                 verbose_router_logger.debug(
                     f"[StickyLeastBusy STICKY-CHECK] "
@@ -702,6 +764,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             if min_deployments
             else random.choice(healthy_deployments)
         )
+        selected_dep_id = selected["model_info"]["id"]
+        if isinstance(selected_dep_id, int):
+            selected_dep_id = str(selected_dep_id)
         verbose_router_logger.debug(
             f"[StickyLeastBusy DECISION] LEAST-BUSY -> "
             f"{self._get_deployment_info(selected)} "
@@ -709,6 +774,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             f"candidates_with_min_load={len(min_deployments)}, "
             f"candidate_ids={min_dep_ids})"
         )
+        self._routing_decisions.labels(
+            model_group, selected_dep_id, "least_busy", "consistent_hashing"
+        ).inc()
         return selected
 
     # =========================================================================
@@ -726,12 +794,22 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             f"[StickyLeastBusy] get_available_deployments called "
             f"(SYNC) for model_group={model_group}"
         )
-        request_counts = self._get_request_counts(model_group, healthy_deployments)
-        user_id = self._extract_user_id(request_kwargs)
-        sticky_key = self.compute_sticky_key(messages, user_id=user_id)
-        return self._select_deployment(
-            model_group, healthy_deployments, request_counts, sticky_key
-        )
+        try:
+            request_counts = self._get_request_counts(model_group, healthy_deployments)
+            user_id = self._extract_user_id(request_kwargs)
+            sticky_key = self.compute_sticky_key(messages, user_id=user_id)
+            return self._select_deployment(
+                model_group, healthy_deployments, request_counts, sticky_key
+            )
+        except Exception as e:
+            verbose_router_logger.error(
+                f"[StickyLeastBusy ERROR] Routing failed, falling back to "
+                f"random selection: {e}"
+            )
+            self._routing_fallback.labels(
+                model_group, "error", "consistent_hashing"
+            ).inc()
+            return random.choice(healthy_deployments)
 
     async def async_get_available_deployments(
         self,
@@ -744,11 +822,21 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             f"[StickyLeastBusy] async_get_available_deployments called "
             f"(ASYNC) for model_group={model_group}"
         )
-        request_counts = await self._async_get_request_counts(
-            model_group, healthy_deployments
-        )
-        user_id = self._extract_user_id(request_kwargs)
-        sticky_key = self.compute_sticky_key(messages, user_id=user_id)
-        return self._select_deployment(
-            model_group, healthy_deployments, request_counts, sticky_key
-        )
+        try:
+            request_counts = await self._async_get_request_counts(
+                model_group, healthy_deployments
+            )
+            user_id = self._extract_user_id(request_kwargs)
+            sticky_key = self.compute_sticky_key(messages, user_id=user_id)
+            return self._select_deployment(
+                model_group, healthy_deployments, request_counts, sticky_key
+            )
+        except Exception as e:
+            verbose_router_logger.error(
+                f"[StickyLeastBusy ERROR] Async routing failed, falling back to "
+                f"random selection: {e}"
+            )
+            self._routing_fallback.labels(
+                model_group, "error", "consistent_hashing"
+            ).inc()
+            return random.choice(healthy_deployments)
