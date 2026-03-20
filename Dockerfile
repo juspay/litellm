@@ -24,7 +24,10 @@ COPY . .
 # Convert Windows line endings to Unix and make executable
 RUN sed -i 's/\r$//' docker/build_admin_ui.sh && chmod +x docker/build_admin_ui.sh && ./docker/build_admin_ui.sh
 
-# Build the package
+# Build litellm-proxy-extras from local directory first
+RUN cd litellm-proxy-extras && rm -rf dist/* && python -m build
+
+# Build the package (litellm main)
 RUN rm -rf dist/* && python -m build
 
 # There should be only one wheel file now, assume the build only creates one
@@ -85,9 +88,13 @@ WORKDIR /app
 COPY . .
 RUN ls -la /app
 
-# Copy the built wheel from the builder stage to the runtime stage; assumes only one wheel file is present
+# Copy the built wheels from the builder stage to the runtime stage
 COPY --from=builder /app/dist/*.whl .
+COPY --from=builder /app/litellm-proxy-extras/dist/*.whl /tmp/
 COPY --from=builder /wheels/ /wheels/
+
+# Install litellm-proxy-extras from local wheel first
+RUN pip install /tmp/*.whl && rm -f /tmp/*.whl
 
 # Install the built wheel using pip; again using a wildcard if it's the only file
 RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ --no-deps && rm -f *.whl && rm -rf /wheels
