@@ -157,7 +157,7 @@ jobs:
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
             pip install openai==1.100.1
-            pip install prisma==0.11.0
+            pip install prisma==0.15.0
             pip install "detect_secrets==1.5.0"
             pip install "httpx==0.24.1"
             pip install "respx==0.22.0"
@@ -285,7 +285,7 @@ jobs:
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
             pip install openai==1.100.1
-            pip install prisma==0.11.0
+            pip install prisma==0.15.0
             pip install "detect_secrets==1.5.0"
             pip install "httpx==0.24.1"
             pip install "respx==0.22.0"
@@ -413,7 +413,7 @@ jobs:
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
             pip install openai==1.100.1
-            pip install prisma==0.11.0
+            pip install prisma==0.15.0
             pip install "detect_secrets==1.5.0"
             pip install "httpx==0.24.1"
             pip install "respx==0.22.0"
@@ -520,7 +520,7 @@ jobs:
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
             pip install openai==1.100.1
-            pip install prisma==0.11.0
+            pip install prisma==0.15.0
             pip install "detect_secrets==1.5.0"
             pip install "httpx==0.24.1"
             pip install "respx==0.22.0"
@@ -912,7 +912,7 @@ jobs:
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
             pip install openai==1.100.1
-            pip install prisma==0.11.0
+            pip install prisma==0.15.0
             pip install "detect_secrets==1.5.0"
             pip install "httpx==0.24.1"
             pip install "respx==0.22.0"
@@ -1018,7 +1018,7 @@ jobs:
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
             pip install openai==1.100.1
-            pip install prisma==0.11.0
+            pip install prisma==0.15.0
             pip install "detect_secrets==1.5.0"
             pip install "httpx==0.24.1"
             pip install "respx==0.22.0"
@@ -1125,7 +1125,7 @@ jobs:
             pip install opentelemetry-sdk==1.25.0
             pip install opentelemetry-exporter-otlp==1.25.0
             pip install openai==1.100.1
-            pip install prisma==0.11.0
+            pip install prisma==0.15.0
             pip install "detect_secrets==1.5.0"
             pip install "httpx==0.24.1"
             pip install "respx==0.22.0"
