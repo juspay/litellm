@@ -897,33 +897,3 @@ model LiteLLM_PolicyAttachmentTable {
   updated_at       DateTime  @default(now()) @updatedAt
   updated_by       String?
 }
-
-// Aggregated spend logs for efficient historical queries
-model LiteLLM_AggregatedSpendLogs {
-  id                  Int      @id @default(autoincrement())
-
-  // Time dimension
-  spend_date          DateTime @client.Date
-
-  // Entity dimensions
-  user_id             String
-  model               String   @default("")
-  custom_llm_provider String   @default("")
-
-  // Aggregated metrics
-  total_spend         Float    @default(0.0)
-  total_tokens        BigInt   @default(0)
-  prompt_tokens       BigInt   @default(0)
-  completion_tokens   BigInt   @default(0)
-  total_requests      BigInt   @default(0)
-  total_duration_ms   BigInt   @default(0)
-
-  // Metadata
-  created_at          DateTime @default(now())
-  updated_at          DateTime @updatedAt
-
-  @@unique([spend_date, user_id, model, custom_llm_provider])
-  @@index([user_id])
-  @@index([model])
-  @@index([custom_llm_provider])
-}
