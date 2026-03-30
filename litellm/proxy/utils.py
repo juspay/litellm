@@ -3690,18 +3690,15 @@ class ProxyUpdateSpend:
                     else:
                         for j in range(0, len(logs_to_process), BATCH_SIZE):
                             batch = logs_to_process[j : j + BATCH_SIZE]
-                            batch_with_dates = [
-                                prisma_client.jsonify_object({**entry})
-                                for entry in batch
-                            ]
-                            await prisma_client.db.litellm_spendlogs.create_many(
-                                data=batch_with_dates, skip_duplicates=True
+                            await _insert_spend_logs_via_raw_sql(
+                                prisma_client=prisma_client,
+                                batch=batch,
                             )
                             verbose_proxy_logger.debug(
                                 f"Flushed {len(batch)} logs to the DB."
                             )
                             # Explicitly clear batch memory
-                            del batch, batch_with_dates
+                            del batch
 
                         # Items already removed from queue at start of function
                         async with prisma_client._spend_log_transactions_lock:
@@ -3879,6 +3876,103 @@ async def _monitor_spend_logs_queue(
             # Continue monitoring even if there's an error, with exponential backoff
             current_interval = min(current_interval * backoff_multiplier, max_backoff)
             await asyncio.sleep(current_interval)
+
+
+_SPEND_LOGS_COLUMNS = [
+    "request_id",
+    "call_type",
+    "api_key",
+    "spend",
+    "total_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "startTime",
+    "endTime",
+    "completionStartTime",
+    "model",
+    "model_id",
+    "model_group",
+    "custom_llm_provider",
+    "api_base",
+    "user",
+    "metadata",
+    "cache_hit",
+    "cache_key",
+    "request_tags",
+    "team_id",
+    "organization_id",
+    "end_user",
+    "requester_ip_address",
+    "messages",
+    "response",
+    "session_id",
+    "status",
+    "mcp_namespaced_tool_name",
+    "agent_id",
+    "proxy_server_request",
+]
+
+_SPEND_LOGS_JSON_COLUMNS = {
+    "metadata",
+    "request_tags",
+    "messages",
+    "response",
+    "proxy_server_request",
+}
+
+
+def _prepare_spend_log_value(entry: dict, col: str) -> Any:
+    """Prepare a single value from a spend log entry for raw SQL insertion."""
+    val = entry.get(col)
+    if val is None:
+        return None
+    if col in _SPEND_LOGS_JSON_COLUMNS:
+        if isinstance(val, dict) or isinstance(val, list):
+            return json.dumps(val)
+        return str(val)
+    if isinstance(val, datetime):
+        return val.isoformat()
+    if isinstance(val, dict):
+        return json.dumps(val)
+    return val
+
+
+async def _insert_spend_logs_via_raw_sql(
+    prisma_client: "PrismaClient",
+    batch: List[dict],
+) -> None:
+    """
+    Insert SpendLogs using raw SQL instead of Prisma's create_many.
+
+    Bypasses the Prisma query engine's JSON deserialization which causes
+    unbounded RSS growth (Prisma issue #21471).
+    """
+    if not batch:
+        return
+
+    col_names = ", ".join(f'"{c}"' for c in _SPEND_LOGS_COLUMNS)
+    num_cols = len(_SPEND_LOGS_COLUMNS)
+
+    # Build VALUES placeholders: ($1,$2,...,$31), ($32,$33,...,$62), ...
+    value_rows = []
+    params: List[Any] = []
+    for row_idx, entry in enumerate(batch):
+        placeholders = []
+        for col_idx, col in enumerate(_SPEND_LOGS_COLUMNS):
+            param_num = row_idx * num_cols + col_idx + 1
+            if col in _SPEND_LOGS_JSON_COLUMNS:
+                placeholders.append(f"${param_num}::jsonb")
+            elif col in ("startTime", "endTime", "completionStartTime"):
+                placeholders.append(f"${param_num}::timestamptz")
+            else:
+                placeholders.append(f"${param_num}")
+            params.append(_prepare_spend_log_value(entry, col))
+        value_rows.append(f"({', '.join(placeholders)})")
+
+    values_sql = ", ".join(value_rows)
+    sql = f'INSERT INTO "LiteLLM_SpendLogs" ({col_names}) VALUES {values_sql} ON CONFLICT ("request_id") DO NOTHING'
+
+    await prisma_client.db.execute_raw(sql, *params)
 
 
 def _raise_failed_update_spend_exception(
