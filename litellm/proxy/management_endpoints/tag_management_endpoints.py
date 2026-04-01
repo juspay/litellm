@@ -445,25 +445,23 @@ async def list_tags(
             list_of_tags.append(tag_dict)
 
         ## QUERY DYNAMIC TAGS ##
-        dynamic_tags = await prisma_client.db.litellm_dailytagspend.find_many(
-            distinct=["tag"],
+        # Use raw SQL to get distinct tags efficiently.
+        # Prisma's find_many(distinct=["tag"]) fetches ALL rows (3.5M+) into the
+        # query engine process before deduplicating, causing 10 GB RSS and OOM kills.
+        dynamic_tag_rows = await prisma_client.db.query_raw(
+            'SELECT DISTINCT "tag" FROM "LiteLLM_DailyTagSpend" WHERE "tag" IS NOT NULL'
         )
-
-        dynamic_tags_list = [
-            LiteLLM_DailyTagSpendTable(**dynamic_tag.model_dump())
-            for dynamic_tag in dynamic_tags
-        ]
 
         dynamic_tag_config = [
             {
-                "name": tag.tag,
+                "name": row["tag"],
                 "description": "This is just a spend tag that was passed dynamically in a request. It does not control any LLM models.",
                 "models": None,
-                "created_at": tag.created_at.isoformat(),
-                "updated_at": tag.updated_at.isoformat(),
+                "created_at": None,
+                "updated_at": None,
             }
-            for tag in dynamic_tags_list
-            if tag.tag not in stored_tag_names
+            for row in dynamic_tag_rows
+            if row["tag"] not in stored_tag_names
         ]
 
         return list_of_tags + dynamic_tag_config
