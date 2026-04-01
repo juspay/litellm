@@ -37,6 +37,7 @@ import { truncateString } from "@/utils/textUtils";
 import DeletedKeysPage from "../DeletedKeysPage/DeletedKeysPage";
 import DeletedTeamsPage from "../DeletedTeamsPage/DeletedTeamsPage";
 import NewBadge from "../common_components/NewBadge";
+import ConcurrentRequestLogs from "./concurrent_request_logs";
 
 interface SpendLogsTableProps {
   accessToken: string | null;
@@ -642,6 +643,7 @@ export default function SpendLogsTable({
           <Tab>Audit Logs</Tab>
           <Tab><>Deleted Keys <NewBadge /></></Tab>
           <Tab><>Deleted Teams <NewBadge /></></Tab>
+          <Tab>Concurrent Request Logs</Tab>
         </TabList>
         <TabPanels>
           <TabPanel>
@@ -956,6 +958,9 @@ export default function SpendLogsTable({
           </TabPanel>
           <TabPanel><DeletedKeysPage /></TabPanel>
           <TabPanel><DeletedTeamsPage /></TabPanel>
+          <TabPanel>
+            <ConcurrentRequestLogs accessToken={accessToken} />
+          </TabPanel>
         </TabPanels>
       </TabGroup>
     </div>

@@ -9274,3 +9274,63 @@ export const deleteClaudeCodePlugin = async (
     throw error;
   }
 };
+
+
+/**
+ * Fetch concurrent request logs (Prometheus + SpendLogs combined)
+ * @param accessToken - User access token
+ * @param isoTimestamp - Target timestamp in ISO 8601 format (with milliseconds)
+ * @param page - Page number (1-indexed)
+ * @param pageSize - Number of items per page
+ * @param apiKey - Optional API key filter
+ */
+export const concurrentRequestLogsPaginatedCall = async (
+  accessToken: string,
+  isoTimestamp: string,
+  page: number,
+  pageSize: number,
+  apiKey?: string
+): Promise<{ data: any[]; total: number }> => {
+  try {
+    const proxyBaseUrl = getProxyBaseUrl();
+    const params = new URLSearchParams({
+      timestamp: isoTimestamp,
+      page: page.toString(),
+      page_size: pageSize.toString(),
+    });
+
+    if (apiKey) {
+      params.append("api_key", apiKey);
+    }
+
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/concurrent_request_logs?${params.toString()}`
+      : `/concurrent_request_logs?${params.toString()}`;
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      const errorMessage = deriveErrorMessage(errorData);
+      handleError(errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    return {
+      data: data.data || [],
+      total: data.total || 0,
+    };
+  } catch (error) {
+    console.error("Failed to fetch concurrent request logs:", error);
+    throw error;
+  }
+};
+
+
