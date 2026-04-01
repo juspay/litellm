@@ -20,6 +20,7 @@ services:
       STORE_MODEL_IN_DB: "True" # allows adding models to proxy via UI
       LITELLM_REDIS_HOST: "redis" # Redis service hostname in Docker network
       LITELLM_REDIS_PASSWORD: "" # No password for local Redis
+      PROMETHEUS_URL: "http://prometheus:9090" # Prometheus URL for querying metrics
     env_file:
       - .env # Load local .env file
     depends_on:

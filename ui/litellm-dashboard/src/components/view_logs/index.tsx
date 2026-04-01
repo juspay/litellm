@@ -38,6 +38,8 @@ const ErrorStatsTable = dynamic(
   () => import("./ErrorStatsTable").then(mod => ({ default: mod.ErrorStatsTable })),
   { ssr: false }
 );
+import NewBadge from "../common_components/NewBadge";
+import ConcurrentRequestLogs from "./concurrent_request_logs";
 
 interface SpendLogsTableProps {
   accessToken: string | null;
@@ -643,8 +645,9 @@ export default function SpendLogsTable({
         <TabList>
           <Tab>Request Logs</Tab>
           <Tab>Audit Logs</Tab>
-          <Tab>Deleted Keys</Tab>
-          <Tab>Deleted Teams</Tab>
+          <Tab><>Deleted Keys <NewBadge /></></Tab>
+          <Tab><>Deleted Teams <NewBadge /></></Tab>
+          <Tab>Concurrent Request Logs</Tab>
         </TabList>
         <TabPanels>
           <TabPanel>
@@ -945,6 +948,9 @@ export default function SpendLogsTable({
           </TabPanel>
           <TabPanel><DeletedKeysPage /></TabPanel>
           <TabPanel><DeletedTeamsPage /></TabPanel>
+          <TabPanel>
+            <ConcurrentRequestLogs accessToken={accessToken} />
+          </TabPanel>
         </TabPanels>
       </TabGroup>
 
