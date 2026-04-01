@@ -450,15 +450,11 @@ async def list_tags(
             list_of_tags.append(tag_dict)
 
         ## QUERY DYNAMIC TAGS ##
-        # Use group_by instead of find_many(distinct=["tag"]).
-        # Prisma's distinct fetches all columns for all rows and deduplicates
-        # in application code, which is extremely slow on large tables.
-        # See: https://www.prisma.io/docs/orm/prisma-client/queries/aggregation-grouping-summarizing#distinct-under-the-hood
-        dynamic_tag_rows = await prisma_client.db.litellm_dailytagspend.group_by(
-            by=["tag"],
-            where={"tag": {"not": None}},
-            min={"created_at": True},
-            max={"updated_at": True},
+        # Use raw SQL to get distinct tags efficiently.
+        # Prisma's find_many(distinct=["tag"]) fetches ALL rows (3.5M+) into the
+        # query engine process before deduplicating, causing 10 GB RSS and OOM kills.
+        dynamic_tag_rows = await prisma_client.db.query_raw(
+            'SELECT DISTINCT "tag" FROM "LiteLLM_DailyTagSpend" WHERE "tag" IS NOT NULL'
         )
 
         dynamic_tag_config = [
@@ -466,8 +462,8 @@ async def list_tags(
                 "name": row["tag"],
                 "description": "This is just a spend tag that was passed dynamically in a request. It does not control any LLM models.",
                 "models": None,
-                "created_at": row["_min"]["created_at"],
-                "updated_at": row["_max"]["updated_at"],
+                "created_at": None,
+                "updated_at": None,
             }
             for row in dynamic_tag_rows
             if row["tag"] not in stored_tag_names
