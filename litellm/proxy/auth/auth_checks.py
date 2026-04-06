@@ -237,7 +237,7 @@ async def common_checks(
             if _deployments:
                 _litellm_model_name = (_deployments[0].get("litellm_params") or {}).get("model")
 
-        verbose_proxy_logger.info(
+        print(
             f"[USER_BUDGET_CHECK] alias={_model!r} resolved_litellm_model={_litellm_model_name!r} "
             f"free_providers={FREE_PROVIDERS} free_models_env={FREE_MODELS} "
             f"spend={user_object.spend:.4f} budget={user_object.max_budget:.4f}"
@@ -250,7 +250,7 @@ async def common_checks(
         # Skip budget check for free models (env list) or free providers (prefix)
         if _model and (_is_free_provider or (FREE_MODELS and _model in FREE_MODELS)):
             user_email = user_object.user_email if user_object.user_email else user_object.user_id
-            verbose_proxy_logger.info(
+            print(
                 f"[USER_BUDGET_CHECK] BYPASSED - reason={'free_provider' if _is_free_provider else 'free_model_env'} "
                 f"user={user_email} alias={_model!r} litellm_model={_litellm_model_name!r} "
                 f"spend={user_object.spend:.4f} budget={user_object.max_budget:.4f}"
@@ -2264,7 +2264,7 @@ async def _virtual_key_max_budget_check(
         if _deployments:
             _litellm_model_name = (_deployments[0].get("litellm_params") or {}).get("model")
 
-    verbose_proxy_logger.info(
+    print(
         f"[KEY_BUDGET_CHECK] alias={model!r} resolved_litellm_model={_litellm_model_name!r} "
         f"free_providers={FREE_PROVIDERS} free_models_env={FREE_MODELS} "
         f"key_spend={valid_token.spend} key_budget={valid_token.max_budget}"
@@ -2275,7 +2275,7 @@ async def _virtual_key_max_budget_check(
     )
     if model and (_is_free_provider or (FREE_MODELS and model in FREE_MODELS)):
         user_email = user_obj.user_email if user_obj and user_obj.user_email else (user_obj.user_id if user_obj else "unknown")
-        verbose_proxy_logger.info(
+        print(
             f"[KEY_BUDGET_CHECK] BYPASSED - reason={'free_provider' if _is_free_provider else 'free_model_env'} "
             f"user={user_email} alias={model!r} litellm_model={_litellm_model_name!r} "
             f"key_spend={valid_token.spend} key_budget={valid_token.max_budget}"

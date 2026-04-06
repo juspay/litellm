@@ -163,7 +163,7 @@ class DBSpendUpdateWriter:
                     matched_free_model = model_name
                     break
 
-            verbose_proxy_logger.info(
+            print(
                 f"[DB_SPEND_WRITER] payload_model={_payload_model!r} request_model={_request_model!r} "
                 f"litellm_model={_litellm_model!r} is_free_model={is_free_model} "
                 f"matched_on={matched_free_model!r}"

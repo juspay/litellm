@@ -187,7 +187,7 @@ class _ProxyDBLogger(CustomLogger):
                         matched_model = model_name
                         break
 
-                verbose_proxy_logger.info(
+                print(
                     f"[COST_CALLBACK] alias={_request_model!r} litellm_model={_litellm_model!r} "
                     f"is_free_model={is_free_model} matched_on={matched_model!r} "
                     f"response_cost={response_cost} user_id={user_id} team_id={team_id}"
