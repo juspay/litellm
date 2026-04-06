@@ -169,17 +169,29 @@ class _ProxyDBLogger(CustomLogger):
 
                 FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
                 FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+                FREE_PROVIDERS = ("hosted_vllm/", "openai/")
 
-                # Check if ANY of the model identifiers match (case-insensitive)
+                # Check if ANY of the model identifiers match (env list or provider prefix)
                 is_free_model = False
                 matched_model = None
-                if FREE_MODELS:
-                    FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS]
-                    for model_name in [_request_model, _litellm_model]:
-                        if model_name and model_name.lower() in FREE_MODELS_LOWER:
-                            is_free_model = True
-                            matched_model = model_name
-                            break
+                FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
+                for model_name in [_request_model, _litellm_model]:
+                    if not model_name:
+                        continue
+                    if model_name.lower().startswith(FREE_PROVIDERS):
+                        is_free_model = True
+                        matched_model = model_name
+                        break
+                    if FREE_MODELS_LOWER and model_name.lower() in FREE_MODELS_LOWER:
+                        is_free_model = True
+                        matched_model = model_name
+                        break
+
+                verbose_proxy_logger.info(
+                    f"[COST_CALLBACK] alias={_request_model!r} litellm_model={_litellm_model!r} "
+                    f"is_free_model={is_free_model} matched_on={matched_model!r} "
+                    f"response_cost={response_cost} user_id={user_id} team_id={team_id}"
+                )
 
                 
                 verbose_proxy_logger.debug(

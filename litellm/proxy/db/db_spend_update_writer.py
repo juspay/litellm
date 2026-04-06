@@ -144,18 +144,30 @@ class DBSpendUpdateWriter:
 
             FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
             FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+            FREE_PROVIDERS = ("hosted_vllm/", "openai/")
 
-            # Check if ANY of the model identifiers match (case-insensitive)
+            # Check if ANY of the model identifiers match (env list or provider prefix)
             is_free_model = False
             _model_to_log = _payload_model or _request_model or _litellm_model
             matched_free_model = None
-            if FREE_MODELS:
-                FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS]
-                for model_name in [_payload_model, _request_model, _litellm_model]:
-                    if model_name and model_name.lower() in FREE_MODELS_LOWER:
-                        is_free_model = True
-                        matched_free_model = model_name
-                        break
+            FREE_MODELS_LOWER = [m.lower() for m in FREE_MODELS] if FREE_MODELS else []
+            for model_name in [_payload_model, _request_model, _litellm_model]:
+                if not model_name:
+                    continue
+                if model_name.lower().startswith(FREE_PROVIDERS):
+                    is_free_model = True
+                    matched_free_model = model_name
+                    break
+                if FREE_MODELS_LOWER and model_name.lower() in FREE_MODELS_LOWER:
+                    is_free_model = True
+                    matched_free_model = model_name
+                    break
+
+            verbose_proxy_logger.info(
+                f"[DB_SPEND_WRITER] payload_model={_payload_model!r} request_model={_request_model!r} "
+                f"litellm_model={_litellm_model!r} is_free_model={is_free_model} "
+                f"matched_on={matched_free_model!r}"
+            )
 
             # Get user info for debugging
             user_email = "unknown"

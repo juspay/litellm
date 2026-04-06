@@ -1080,6 +1080,7 @@ async def _user_api_key_auth_builder(  # noqa: PLR0915
                     proxy_logging_obj=proxy_logging_obj,
                     user_obj=user_obj,
                     model=current_model,
+                    llm_router=llm_router,
                 )
 
             # Check 5. Max Budget Alert Check

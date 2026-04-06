@@ -227,12 +227,34 @@ async def common_checks(
         import os
         FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
         FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+        FREE_PROVIDERS = ("hosted_vllm/", "openai/")
 
-        # Skip budget check for free models
-        if _model and FREE_MODELS and _model in FREE_MODELS:
+        # Resolve the actual litellm model name via router for provider-prefix check
+        _litellm_model_name: Optional[str] = None
+        if _model and llm_router:
+            _str_model = _model if isinstance(_model, str) else _model[0]
+            _deployments = llm_router.get_model_list(model_name=_str_model)
+            if _deployments:
+                _litellm_model_name = (_deployments[0].get("litellm_params") or {}).get("model")
+
+        verbose_proxy_logger.info(
+            f"[USER_BUDGET_CHECK] alias={_model!r} resolved_litellm_model={_litellm_model_name!r} "
+            f"free_providers={FREE_PROVIDERS} free_models_env={FREE_MODELS} "
+            f"spend={user_object.spend:.4f} budget={user_object.max_budget:.4f}"
+        )
+
+        _is_free_provider = bool(
+            _litellm_model_name and _litellm_model_name.lower().startswith(FREE_PROVIDERS)
+        )
+
+        # Skip budget check for free models (env list) or free providers (prefix)
+        if _model and (_is_free_provider or (FREE_MODELS and _model in FREE_MODELS)):
             user_email = user_object.user_email if user_object.user_email else user_object.user_id
-            # print(f"[FREE_MODELS] Budget check BYPASSED - Route: {route}, User: {user_email}, Model: {_model}, UserSpend: ${user_object.spend:.4f}, Budget: ${user_object.max_budget:.4f}")
-            verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {_model}")
+            verbose_proxy_logger.info(
+                f"[USER_BUDGET_CHECK] BYPASSED - reason={'free_provider' if _is_free_provider else 'free_model_env'} "
+                f"user={user_email} alias={_model!r} litellm_model={_litellm_model_name!r} "
+                f"spend={user_object.spend:.4f} budget={user_object.max_budget:.4f}"
+            )
         else:
             user_budget = user_object.max_budget
             if user_budget < user_object.spend:
@@ -2218,6 +2240,7 @@ async def _virtual_key_max_budget_check(
     proxy_logging_obj: ProxyLogging,
     user_obj: Optional[LiteLLM_UserTable] = None,
     model: Optional[str] = None,
+    llm_router: Optional[Router] = None,
 ):
     """
     Raises:
@@ -2225,16 +2248,38 @@ async def _virtual_key_max_budget_check(
         Triggers a budget alert if the token is over it's max budget.
 
     Args:
-        model: The model being requested. If it's a free model, budget check is skipped.
+        model: The model being requested (request alias). If it's a free model, budget check is skipped.
+        llm_router: Used to resolve the alias to the actual litellm_params model name for provider-prefix check.
     """
     # Check if model is in free models list (bypass budget check for internal models)
     import os
     FREE_MODELS_ENV = os.getenv('FREE_MODELS', '')
     FREE_MODELS = [m.strip() for m in FREE_MODELS_ENV.split(',') if m.strip()]
+    FREE_PROVIDERS = ("hosted_vllm/", "openai/")
 
-    if model and FREE_MODELS and model in FREE_MODELS:
+    # model here is the request alias (e.g. "private-large"), resolve to actual litellm model name
+    _litellm_model_name: Optional[str] = None
+    if model and llm_router:
+        _deployments = llm_router.get_model_list(model_name=model)
+        if _deployments:
+            _litellm_model_name = (_deployments[0].get("litellm_params") or {}).get("model")
+
+    verbose_proxy_logger.info(
+        f"[KEY_BUDGET_CHECK] alias={model!r} resolved_litellm_model={_litellm_model_name!r} "
+        f"free_providers={FREE_PROVIDERS} free_models_env={FREE_MODELS} "
+        f"key_spend={valid_token.spend} key_budget={valid_token.max_budget}"
+    )
+
+    _is_free_provider = bool(
+        _litellm_model_name and _litellm_model_name.lower().startswith(FREE_PROVIDERS)
+    )
+    if model and (_is_free_provider or (FREE_MODELS and model in FREE_MODELS)):
         user_email = user_obj.user_email if user_obj and user_obj.user_email else (user_obj.user_id if user_obj else "unknown")
-        verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {model}, Key: {valid_token.token[:10]}...")
+        verbose_proxy_logger.info(
+            f"[KEY_BUDGET_CHECK] BYPASSED - reason={'free_provider' if _is_free_provider else 'free_model_env'} "
+            f"user={user_email} alias={model!r} litellm_model={_litellm_model_name!r} "
+            f"key_spend={valid_token.spend} key_budget={valid_token.max_budget}"
+        )
         return  # Skip budget check for free models
 
     if valid_token.spend is not None and valid_token.max_budget is not None:
