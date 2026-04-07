@@ -34,6 +34,21 @@ else:
 router = APIRouter()
 
 
+def _get_read_prisma_client():
+    """Get the read replica Prisma client, falling back to primary if not configured."""
+    from litellm.proxy.proxy_server import prisma_client, prisma_read_client
+
+    client = prisma_read_client if prisma_read_client is not None else prisma_client
+    if client is None:
+        raise ProxyException(
+            message="Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys",
+            type="internal_error",
+            param="None",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    return client
+
+
 @router.get(
     "/spend/keys",
     tags=["Budget & Spend Tracking"],
@@ -51,14 +66,9 @@ async def spend_key_fn():
     ```
     """
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         key_info = await prisma_client.get_data(table_name="key", query_type="find_all")
         return key_info
 
@@ -105,14 +115,9 @@ async def spend_user_fn(
 -H "Authorization: Bearer sk-1234"
     ```
     """
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         if user_id is not None:
             user_info = await prisma_client.get_data(
                 table_name="user", query_type="find_unique", user_id=user_id
@@ -168,14 +173,9 @@ async def view_spend_tags(
     ```
     """
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         # run the following SQL query on prisma
         """
         SELECT
@@ -211,10 +211,7 @@ async def view_spend_tags(
 async def get_global_activity_internal_user(
     user_api_key_dict: UserAPIKeyAuth, start_date: datetime, end_date: datetime
 ):
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_client = _get_read_prisma_client()
 
     user_id = user_api_key_dict.user_id
     if user_id is None:
@@ -291,14 +288,9 @@ async def get_global_activity(
     )
     end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         if (
             user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
             or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
@@ -357,10 +349,7 @@ async def get_global_activity(
 async def get_global_activity_model_internal_user(
     user_api_key_dict: UserAPIKeyAuth, start_date: datetime, end_date: datetime
 ):
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_client = _get_read_prisma_client()
 
     user_id = user_api_key_dict.user_id
     if user_id is None:
@@ -461,14 +450,9 @@ async def get_global_activity_model(
     )
     end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         if (
             user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
             or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
@@ -616,14 +600,9 @@ async def get_global_activity_exceptions_per_deployment(
     )
     end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         sql_query = """
         SELECT
             api_base,
@@ -751,14 +730,9 @@ async def get_global_activity_exceptions(
     )
     end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         sql_query = """
         SELECT
             date_trunc('day', "startTime")::date AS date,
@@ -859,14 +833,11 @@ async def get_global_spend_provider(
     )
     end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    from litellm.proxy.proxy_server import llm_router, prisma_client
+    from litellm.proxy.proxy_server import llm_router
+
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         if (
             user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
             or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
@@ -1023,14 +994,11 @@ async def get_global_spend_report(
     )
     end_date_obj = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
 
-    from litellm.proxy.proxy_server import premium_user, prisma_client
+    from litellm.proxy.proxy_server import premium_user
+
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         if premium_user is not True:
             verbose_proxy_logger.debug("accessing /spend/report but not a premium user")
             raise ValueError(
@@ -1324,12 +1292,7 @@ async def get_global_spend_report(
 )
 async def global_get_all_tag_names():
     try:
-        from litellm.proxy.proxy_server import prisma_client
-
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
+        prisma_client = _get_read_prisma_client()
 
         sql_query = """
         SELECT DISTINCT
@@ -1404,14 +1367,9 @@ async def global_view_spend_tags(
     """
     import traceback
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
-
         if end_date is None or start_date is None:
             raise ProxyException(
                 message="Please provide start_date and end_date",
@@ -1451,9 +1409,9 @@ async def _get_spend_report_for_time_range(
     start_date: str,
     end_date: str,
 ):
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
+    try:
+        prisma_client = _get_read_prisma_client()
+    except Exception:
         verbose_proxy_logger.error(
             "Database not connected. Connect a database to your proxy for weekly, monthly spend reports"
         )
@@ -1776,15 +1734,7 @@ async def ui_view_spend_logs(  # noqa: PLR0915
 -H "Authorization: Bearer sk-1234"
     ```
     """
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise ProxyException(
-            message="Prisma Client is not initialized",
-            type="internal_error",
-            param="None",
-            code=status.HTTP_401_UNAUTHORIZED,
-        )
+    prisma_client = _get_read_prisma_client()
 
     if start_date is None or end_date is None:
         raise ProxyException(
@@ -2259,7 +2209,7 @@ async def view_spend_logs(  # noqa: PLR0915
 -H "Authorization: Bearer sk-1234"
     ```
     """
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     if (
         user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
@@ -2269,10 +2219,6 @@ async def view_spend_logs(  # noqa: PLR0915
 
     try:
         verbose_proxy_logger.debug("inside view_spend_logs")
-        if prisma_client is None:
-            raise Exception(
-                "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
-            )
         spend_logs = []
         if (
             start_date is not None
@@ -2564,15 +2510,7 @@ async def global_spend_for_internal_user(
     api_key: Optional[str] = None,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise ProxyException(
-            message="Prisma Client is not initialized",
-            type="internal_error",
-            param="None",
-            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+    prisma_client = _get_read_prisma_client()
     try:
         user_id = user_api_key_dict.user_id
         if user_id is None:
@@ -2624,17 +2562,10 @@ async def global_spend_logs(
         get_daily_spend_from_prometheus,
         is_prometheus_connected,
     )
-    from litellm.proxy.proxy_server import prisma_client
+
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise ProxyException(
-                message="Prisma Client is not initialized",
-                type="internal_error",
-                param="None",
-                code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
-
         if (
             user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
             or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
@@ -2703,13 +2634,11 @@ async def global_spend():
     """
     import traceback
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
         total_spend = 0.0
 
-        if prisma_client is None:
-            raise HTTPException(status_code=500, detail={"error": "No db connected"})
         sql_query = """SELECT SUM(spend) as total_spend FROM "MonthlyGlobalSpend";"""
         response = await prisma_client.db.query_raw(query=sql_query)
         if response is not None:
@@ -2740,10 +2669,7 @@ async def global_spend():
 async def global_spend_key_internal_user(
     user_api_key_dict: UserAPIKeyAuth, limit: int = 10
 ):
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_client = _get_read_prisma_client()
 
     user_id = user_api_key_dict.user_id
     if user_id is None:
@@ -2801,7 +2727,7 @@ async def global_spend_keys(
 
     Use this to get the top 'n' keys with the highest spend, ordered by spend.
     """
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     if (
         user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
@@ -2812,8 +2738,6 @@ async def global_spend_keys(
         )
 
         return response
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
     sql_query = """SELECT * FROM "Last30dKeysBySpend";"""
 
     if limit is None:
@@ -2845,10 +2769,8 @@ async def global_spend_per_team():
 
     Use this to get daily spend, grouped by `team_id` and `date`
     """
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
     sql_query = """
         SELECT
             t.team_alias as team_alias,
@@ -2938,10 +2860,7 @@ async def global_view_all_end_users():
 
     Use this to just get all the unique `end_users`
     """
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_client = _get_read_prisma_client()
 
     sql_query = """
     SELECT DISTINCT end_user FROM "LiteLLM_SpendLogs"
@@ -2970,10 +2889,7 @@ async def global_spend_end_users(data: Optional[GlobalEndUsersSpend] = None):
 
     Use this to get the top 'n' keys with the highest spend, ordered by spend.
     """
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_client = _get_read_prisma_client()
 
     """
     Gets the top 100 end-users for a given api key
@@ -3014,10 +2930,7 @@ LIMIT 100
 async def global_spend_models_internal_user(
     user_api_key_dict: UserAPIKeyAuth, limit: int = 10
 ):
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_client = _get_read_prisma_client()
 
     user_id = user_api_key_dict.user_id
     if user_id is None:
@@ -3062,7 +2975,7 @@ async def global_spend_models(
 
     Use this to get the top 'n' models with the highest spend, ordered by spend.
     """
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     if (
         user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
@@ -3072,9 +2985,6 @@ async def global_spend_models(
             user_api_key_dict=user_api_key_dict, limit=limit
         )
         return response
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
 
     sql_query = """SELECT * FROM "Last30dModelsBySpend" LIMIT $1 ;"""
 
@@ -3326,15 +3236,9 @@ async def ui_view_session_spend_logs(
             "total_pages": int,
         }
     """
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
-        if prisma_client is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Database not connected",
-            )
-
         # Build query conditions
         where_conditions = {"session_id": session_id}
 
@@ -3710,15 +3614,7 @@ async def ui_view_error_stats(
             ...
         ]
     """
-    from litellm.proxy.proxy_server import prisma_read_client
-
-    if prisma_read_client is None:
-        raise ProxyException(
-            message="Prisma Client is not initialized",
-            type="internal_error",
-            param="None",
-            code=status.HTTP_401_UNAUTHORIZED,
-        )
+    prisma_read_client = _get_read_prisma_client()
 
     if start_date is None or end_date is None:
         raise ProxyException(
@@ -3998,15 +3894,7 @@ async def ui_view_failure_logs_analytics_paginated(
 
     Only returns logs where metadata.error_information.error_class is set.
     """
-    from litellm.proxy.proxy_server import prisma_read_client
-
-    if prisma_read_client is None:
-        raise ProxyException(
-            message="Prisma Read Client is not initialized",
-            type="internal_error",
-            param="None",
-            code=status.HTTP_401_UNAUTHORIZED,
-        )
+    prisma_read_client = _get_read_prisma_client()
 
     if start_date is None or end_date is None:
         raise ProxyException(
@@ -4250,10 +4138,7 @@ async def get_spend_logs_models(
     -H "Authorization: Bearer sk-1234"
     ```
     """
-    from litellm.proxy.proxy_server import prisma_read_client
-
-    if prisma_read_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_read_client = _get_read_prisma_client()
 
     # Validate date range is not more than 10 days
     if start_date and end_date:
@@ -4351,18 +4236,14 @@ async def concurrent_request_logs(
     2. For each key found in Prometheus, query SpendLogs for concurrency count
     3. Return combined data with both Prometheus metrics and SpendLogs data
     """
-    from litellm.proxy.proxy_server import prisma_client
     from litellm.integrations.prometheus_helpers.prometheus_api import (
         PROMETHEUS_URL,
         async_http_handler,
     )
 
+    prisma_client = _get_read_prisma_client()
+
     try:
-        if prisma_client is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": "Database not connected"},
-            )
 
         # Parse ISO timestamp and convert to Unix timestamp
         try:

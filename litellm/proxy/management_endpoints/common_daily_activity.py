@@ -754,6 +754,92 @@ async def get_daily_activity(
         )
 
 
+def _build_aggregated_sql(
+    table_name: str,
+    entity_id_field: str,
+    entity_id: Optional[Union[str, List[str]]],
+    start_date: str,
+    end_date: str,
+    model: Optional[str],
+    api_key: Optional[str],
+    exclude_entity_ids: Optional[List[str]] = None,
+) -> tuple:
+    """Build a GROUP BY SQL query that pre-aggregates rows at the DB level.
+
+    Returns (sql_string, params_list). Uses $1, $2, ... placeholders for Prisma query_raw.
+    """
+    # Map Prisma table names to actual Postgres table names
+    pg_table_map = {
+        "litellm_dailyuserspend": "LiteLLM_DailyUserSpend",
+        "litellm_dailytagspend": "LiteLLM_DailyTagSpend",
+    }
+    pg_table = pg_table_map.get(table_name, table_name)
+
+    # Map entity_id_field to the actual DB column
+    entity_col = entity_id_field  # e.g. "user_id", "tag"
+
+    group_cols = [
+        "date", "model", "model_group", "custom_llm_provider",
+        "mcp_namespaced_tool_name", "endpoint", "api_key", entity_col,
+    ]
+    select_group = ", ".join(f'"{c}"' for c in group_cols)
+    group_by = ", ".join(f'"{c}"' for c in group_cols)
+
+    sum_cols = [
+        "prompt_tokens", "completion_tokens", "cache_read_input_tokens",
+        "cache_creation_input_tokens", "spend", "api_requests",
+        "successful_requests", "failed_requests",
+    ]
+    select_sums = ", ".join(f'COALESCE(SUM("{c}"), 0) AS "{c}"' for c in sum_cols)
+
+    # Build WHERE clause
+    params: list = []
+    conditions = []
+
+    params.append(start_date)
+    conditions.append(f'"date" >= ${len(params)}')
+    params.append(end_date)
+    conditions.append(f'"date" <= ${len(params)}')
+
+    if model:
+        params.append(model)
+        conditions.append(f'"model" = ${len(params)}')
+
+    if api_key:
+        params.append(api_key)
+        conditions.append(f'"api_key" = ${len(params)}')
+
+    if entity_id is not None:
+        if isinstance(entity_id, list):
+            placeholders = ", ".join(
+                f"${len(params) + i + 1}" for i in range(len(entity_id))
+            )
+            params.extend(entity_id)
+            conditions.append(f'"{entity_col}" IN ({placeholders})')
+        else:
+            params.append(entity_id)
+            conditions.append(f'"{entity_col}" = ${len(params)}')
+
+    if exclude_entity_ids:
+        placeholders = ", ".join(
+            f"${len(params) + i + 1}" for i in range(len(exclude_entity_ids))
+        )
+        params.extend(exclude_entity_ids)
+        conditions.append(f'"{entity_col}" NOT IN ({placeholders})')
+
+    where_clause = " AND ".join(conditions)
+
+    sql = (
+        f'SELECT {select_group}, {select_sums} '
+        f'FROM "{pg_table}" '
+        f'WHERE {where_clause} '
+        f'GROUP BY {group_by} '
+        f'ORDER BY "date" DESC'
+    )
+
+    return sql, params
+
+
 async def get_daily_activity_aggregated(
     prisma_client: Optional[PrismaClient],
     table_name: str,
@@ -769,11 +855,13 @@ async def get_daily_activity_aggregated(
 ) -> SpendAnalyticsPaginatedResponse:
     """Aggregated variant that returns the full result set (no pagination).
 
-    Uses SQL GROUP BY to aggregate rows in the database rather than fetching
-    all individual rows into Python. This collapses rows across entities
-    (users/teams/orgs), reducing ~150k rows to ~2-3k grouped rows.
+    Uses SQL GROUP BY to pre-aggregate at the DB level instead of fetching all
+    raw rows. This reduces 1.5M+ rows to ~10-50K grouped rows, preventing
+    the Prisma query engine from buffering gigabytes of data and OOM-killing
+    the pod.
 
-    Matches the response model of the paginated endpoint so the UI does not need to transform.
+    Matches the response model of the paginated endpoint so the UI does not
+    need to transform.
     """
     if prisma_client is None:
         raise HTTPException(
@@ -788,7 +876,7 @@ async def get_daily_activity_aggregated(
         )
 
     try:
-        sql_query, sql_params = _build_aggregated_sql_query(
+        sql, params = _build_aggregated_sql(
             table_name=table_name,
             entity_id_field=entity_id_field,
             entity_id=entity_id,
@@ -800,10 +888,33 @@ async def get_daily_activity_aggregated(
             timezone_offset_minutes=timezone_offset_minutes,
         )
 
-        # Execute GROUP BY query — returns pre-aggregated dicts
-        rows = await prisma_client.db.query_raw(sql_query, *sql_params)
-        if rows is None:
-            rows = []
+        raw_rows = await prisma_client.db.query_raw(sql, *params)
+
+        # Convert dicts to SimpleNamespace objects so the existing
+        # _aggregate_spend_records code can use attribute access (record.model, etc.)
+        daily_spend_data = []
+        for row in raw_rows:
+            # query_raw returns date as string; keep it as-is since
+            # _aggregate_spend_records uses record.date as a string key
+            ns = SimpleNamespace(**{
+                "date": str(row.get("date", "")),
+                "model": row.get("model"),
+                "model_group": row.get("model_group"),
+                "custom_llm_provider": row.get("custom_llm_provider"),
+                "mcp_namespaced_tool_name": row.get("mcp_namespaced_tool_name"),
+                "endpoint": row.get("endpoint"),
+                "api_key": row.get("api_key"),
+                entity_id_field: row.get(entity_id_field),
+                "prompt_tokens": int(row.get("prompt_tokens", 0)),
+                "completion_tokens": int(row.get("completion_tokens", 0)),
+                "cache_read_input_tokens": int(row.get("cache_read_input_tokens", 0)),
+                "cache_creation_input_tokens": int(row.get("cache_creation_input_tokens", 0)),
+                "spend": float(row.get("spend", 0)),
+                "api_requests": int(row.get("api_requests", 0)),
+                "successful_requests": int(row.get("successful_requests", 0)),
+                "failed_requests": int(row.get("failed_requests", 0)),
+            })
+            daily_spend_data.append(ns)
 
         # Convert dicts to objects for compatibility with _aggregate_spend_records
         records = [SimpleNamespace(**row) for row in rows]
