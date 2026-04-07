@@ -50,10 +50,8 @@ class LeastBusyLoggingHandler(CustomLogger):
                 cache_key = self._get_request_count_cache_key(model_group, id)
                 # Atomic increment - no race condition possible
                 # Use 10-minute TTL to handle long-running LLM requests
-                new_value = self.router_cache.increment_cache(key=cache_key, value=1, ttl=600)
-                print(f"[Least-Busy INCREMENT] deployment_id={id}, model_group={model_group}, new_count={new_value}, stream={kwargs.get('stream', False)}")
-        except Exception as e:
-            print(f"[Least-Busy ERROR] log_pre_api_call failed: {e}")
+                self.router_cache.increment_cache(key=cache_key, value=1, ttl=600)
+        except Exception:
             pass
 
     def _sync_decrement_request_count(self, model_group: str, deployment_id: str):
@@ -64,11 +62,9 @@ class LeastBusyLoggingHandler(CustomLogger):
         # Use atomic increment with -1 to decrement
         # Maintain 10-minute TTL to handle long-running requests
         new_value = self.router_cache.increment_cache(key=cache_key, value=-1, ttl=600)
-        print(f"[Least-Busy DECREMENT SYNC] deployment_id={deployment_id}, model_group={model_group}, new_count={new_value}")
         # If we went negative due to a race condition (e.g., decrement before increment was visible),
         # reset to 0 to avoid negative counts affecting routing
         if new_value < 0:
-            print(f"[Least-Busy WARNING] Negative count detected for deployment_id={deployment_id}, resetting to 0")
             self.router_cache.set_cache(key=cache_key, value=0, ttl=600)
 
     async def _async_decrement_request_count(self, model_group: str, deployment_id: str):
@@ -79,18 +75,14 @@ class LeastBusyLoggingHandler(CustomLogger):
         # Use atomic increment with -1 to decrement
         # Maintain 10-minute TTL to handle long-running requests
         new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1, ttl=600)
-        print(f"[Least-Busy DECREMENT ASYNC] deployment_id={deployment_id}, model_group={model_group}, new_count={new_value}")
         # If we went negative due to a race condition, reset to 0
         if new_value < 0:
-            print(f"[Least-Busy WARNING] Negative count detected for deployment_id={deployment_id}, resetting to 0")
             await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=600)
 
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:
-            print(f"[Least-Busy CALLBACK] log_success_event (SYNC) called")
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] log_success_event skipped - no metadata")
                 pass
             else:
                 model_group = litellm_params["metadata"].get(
@@ -99,7 +91,6 @@ class LeastBusyLoggingHandler(CustomLogger):
 
                 id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] log_success_event skipped - model_group={model_group}, id={id}")
                     return
                 elif isinstance(id, int):
                     id = str(id)
@@ -109,16 +100,13 @@ class LeastBusyLoggingHandler(CustomLogger):
                 ### TESTING ###
                 if self.test_flag:
                     self.logged_success += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] log_success_event (SYNC) failed: {e}")
+        except Exception:
             pass
 
     def log_failure_event(self, kwargs, response_obj, start_time, end_time):
         try:
-            print(f"[Least-Busy CALLBACK] log_failure_event (SYNC) called")
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] log_failure_event skipped - no metadata")
                 pass
             else:
                 model_group = litellm_params["metadata"].get(
@@ -126,7 +114,6 @@ class LeastBusyLoggingHandler(CustomLogger):
                 )
                 id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] log_failure_event skipped - model_group={model_group}, id={id}")
                     return
                 elif isinstance(id, int):
                     id = str(id)
@@ -136,16 +123,13 @@ class LeastBusyLoggingHandler(CustomLogger):
                 ### TESTING ###
                 if self.test_flag:
                     self.logged_failure += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] log_failure_event (SYNC) failed: {e}")
+        except Exception:
             pass
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         try:
-            print(f"[Least-Busy CALLBACK] async_log_success_event (ASYNC) called")
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] async_log_success_event skipped - no metadata")
                 pass
             else:
                 model_group = litellm_params["metadata"].get(
@@ -154,7 +138,6 @@ class LeastBusyLoggingHandler(CustomLogger):
 
                 id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] async_log_success_event skipped - model_group={model_group}, id={id}")
                     return
                 elif isinstance(id, int):
                     id = str(id)
@@ -164,16 +147,13 @@ class LeastBusyLoggingHandler(CustomLogger):
                 ### TESTING ###
                 if self.test_flag:
                     self.logged_success += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] async_log_success_event (ASYNC) failed: {e}")
+        except Exception:
             pass
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         try:
-            print(f"[Least-Busy CALLBACK] async_log_failure_event (ASYNC) called")
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
-                print(f"[Least-Busy CALLBACK] async_log_failure_event skipped - no metadata")
                 pass
             else:
                 model_group = litellm_params["metadata"].get(
@@ -181,7 +161,6 @@ class LeastBusyLoggingHandler(CustomLogger):
                 )
                 id = litellm_params.get("model_info", {}).get("id", None)
                 if model_group is None or id is None:
-                    print(f"[Least-Busy CALLBACK] async_log_failure_event skipped - model_group={model_group}, id={id}")
                     return
                 elif isinstance(id, int):
                     id = str(id)
@@ -191,8 +170,7 @@ class LeastBusyLoggingHandler(CustomLogger):
                 ### TESTING ###
                 if self.test_flag:
                     self.logged_failure += 1
-        except Exception as e:
-            print(f"[Least-Busy ERROR] async_log_failure_event (ASYNC) failed: {e}")
+        except Exception:
             pass
 
     def _get_request_counts_for_deployments(
@@ -222,8 +200,6 @@ class LeastBusyLoggingHandler(CustomLogger):
             # Default to 0 if not in cache, ensure non-negative
             result[deployment_id] = max(0, int(count)) if count is not None else 0
 
-        if none_count == len(healthy_deployments) and none_count > 0:
-            print("[Least-Busy WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to random routing.")
         return result
 
     async def _async_get_request_counts_for_deployments(
@@ -253,8 +229,6 @@ class LeastBusyLoggingHandler(CustomLogger):
             # Default to 0 if not in cache, ensure non-negative
             result[deployment_id] = max(0, int(count)) if count is not None else 0
 
-        if none_count == len(healthy_deployments) and none_count > 0:
-            print("[Least-Busy WARNING] Redis returned None for all deployments - Redis may be unavailable. Falling back to random routing.")
         return result
 
     def _get_available_deployments(
@@ -268,12 +242,6 @@ class LeastBusyLoggingHandler(CustomLogger):
         When multiple deployments have the same minimum traffic count,
         randomly select among them to ensure fair distribution.
         """
-        # Extract healthy deployment IDs for logging
-        healthy_ids = [d["model_info"]["id"] for d in healthy_deployments]
-
-        print(f"[Least-Busy DEBUG] Cached all_deployments: {all_deployments}")
-        print(f"[Least-Busy DEBUG] Healthy deployment IDs: {healthy_ids}")
-
         # First pass: find the minimum traffic count
         min_traffic = float("inf")
         for d in healthy_deployments:
@@ -297,12 +265,9 @@ class LeastBusyLoggingHandler(CustomLogger):
 
         # Randomly select among deployments with equal minimum traffic
         if min_deployments:
-            selected = random.choice(min_deployments)
-            print(f"[Least-Busy DEBUG] Selected deployment ID: {selected['model_info']['id']} with traffic={min_traffic} (from {len(min_deployments)} candidates)")
-            return selected
+            return random.choice(min_deployments)
         else:
             # Fallback: should not happen if healthy_deployments is non-empty
-            print("[Least-Busy DEBUG] WARNING: No deployment found, falling back to RANDOM choice")
             return random.choice(healthy_deployments)
 
     def get_available_deployments(
