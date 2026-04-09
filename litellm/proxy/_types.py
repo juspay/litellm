@@ -4140,8 +4140,17 @@ class PlaygroundAllocationsTonightResponse(LiteLLMPydanticObjectBase):
 
 class ActivationStatusReportItem(LiteLLMPydanticObjectBase):
     booking_id: str
-    status: PlaygroundBookingStatus
+    # Restricted subset of PlaygroundBookingStatus — activate.sh only ever
+    # reports success or failure. This prevents the cron (or a compromised
+    # cron key) from flipping a booking back to "allocated" or "cancelled",
+    # which would confuse the next night's allocator.
+    status: Literal["active", "activation_failed"]
     container_id: Optional[str] = None
+    # Optional free-text error context populated by activate.sh on failed
+    # bookings ("missing_user_email", "ssh_rc_255", "container_start_failed",
+    # etc). Pydantic's default extra="ignore" would silently drop this but
+    # we want it in the log line at line-of-sight, so accept it explicitly.
+    error: Optional[str] = None
 
 
 class ActivationStatusReportRequest(LiteLLMPydanticObjectBase):

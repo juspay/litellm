@@ -31,7 +31,7 @@ import base64
 import binascii
 import hashlib
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -49,6 +49,7 @@ from litellm.proxy._types import (
     PlaygroundAllocationBooking,
     PlaygroundAllocationNode,
     PlaygroundAllocationsTonightResponse,
+    PlaygroundBookingPhase,
     PlaygroundBookingResponse,
     PlaygroundNodeResponse,
     PlaygroundSlotNode,
@@ -130,7 +131,7 @@ def _is_overflow_window() -> bool:
     return overflow_start <= now_ist < cutoff
 
 
-def _booking_phase() -> str:
+def _booking_phase() -> PlaygroundBookingPhase:
     is_open, _ = _is_booking_open()
     if not is_open:
         return "closed"
@@ -197,36 +198,91 @@ def _get_prisma():
     return prisma_client
 
 
-def _is_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+def _role_value(user_api_key_dict: UserAPIKeyAuth) -> Optional[str]:
     role = user_api_key_dict.user_role
     if role is None:
-        return False
-    value = role.value if hasattr(role, "value") else role
-    return value in (
+        return None
+    return role.value if hasattr(role, "value") else role
+
+
+def _is_admin_read(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    """True if the caller can read admin-scoped data. Both PROXY_ADMIN and
+    PROXY_ADMIN_VIEW_ONLY satisfy this — view-only admins should be able to
+    observe state (list nodes, view bookings) but not mutate it."""
+    return _role_value(user_api_key_dict) in (
         LitellmUserRoles.PROXY_ADMIN.value,
         LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
     )
 
 
-def _require_admin(user_api_key_dict: UserAPIKeyAuth) -> None:
-    if not _is_admin(user_api_key_dict):
+def _is_admin_write(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    """True if the caller can mutate admin-scoped data. PROXY_ADMIN only —
+    PROXY_ADMIN_VIEW_ONLY is explicitly excluded from write paths, matching
+    the convention in litellm's key_management_endpoints."""
+    return _role_value(user_api_key_dict) == LitellmUserRoles.PROXY_ADMIN.value
+
+
+# Back-compat alias — retain the short name for `_is_admin_read` callers.
+# Prefer the explicit _is_admin_read / _is_admin_write at call sites.
+_is_admin = _is_admin_read
+
+
+def _require_admin_read(user_api_key_dict: UserAPIKeyAuth) -> None:
+    if not _is_admin_read(user_api_key_dict):
         raise HTTPException(status_code=403, detail="admin role required")
 
 
-def _effective_user_id(
+def _require_admin_write(user_api_key_dict: UserAPIKeyAuth) -> None:
+    if not _is_admin_write(user_api_key_dict):
+        raise HTTPException(
+            status_code=403,
+            detail="admin write role required (PROXY_ADMIN_VIEW_ONLY cannot mutate)",
+        )
+
+
+# Back-compat alias for the read gate — existing call sites stay unchanged.
+_require_admin = _require_admin_read
+
+
+def _effective_user_id_for_read(
     user_api_key_dict: UserAPIKeyAuth,
     target_user_id: Optional[str],
 ) -> str:
-    """Resolve the effective user_id for a playground mutation.
+    """Resolve the effective user_id for a playground READ.
 
-    Non-admin callers always act as themselves. Admin callers may override
-    the acting user by passing `target_user_id` in the request body (§4 of
-    the integration plan). This is the grid-as-admin forwarding path — grid
-    resolves user email -> litellm user_id on its side, then passes it here.
+    Non-admin callers always act as themselves. Admin callers (including
+    view-only) may override the acting user by passing `target_user_id`.
+    This is the grid-as-admin forwarding path for listing bookings / keys.
     """
-    if target_user_id and _is_admin(user_api_key_dict):
+    if target_user_id and _is_admin_read(user_api_key_dict):
         return target_user_id
+    return _caller_user_id(user_api_key_dict)
 
+
+def _effective_user_id_for_write(
+    user_api_key_dict: UserAPIKeyAuth,
+    target_user_id: Optional[str],
+) -> str:
+    """Resolve the effective user_id for a playground WRITE.
+
+    Non-admin callers always act as themselves. Only PROXY_ADMIN (not
+    view-only) may override the acting user by passing `target_user_id`.
+    View-only admins cannot create bookings or ssh keys on behalf of other
+    users — they'd fall through to acting as themselves, which this helper
+    blocks explicitly so the caller gets a clear 403 instead of silently
+    writing under the wrong user_id.
+    """
+    if target_user_id:
+        if not _is_admin_write(user_api_key_dict):
+            raise HTTPException(
+                status_code=403,
+                detail="target_user_id requires PROXY_ADMIN role",
+            )
+        return target_user_id
+    return _caller_user_id(user_api_key_dict)
+
+
+def _caller_user_id(user_api_key_dict: UserAPIKeyAuth) -> str:
     caller_id = user_api_key_dict.user_id
     if not caller_id:
         raise HTTPException(
@@ -234,6 +290,13 @@ def _effective_user_id(
             detail="calling key has no user_id — cannot attribute playground operation",
         )
     return caller_id
+
+
+# Back-compat alias — some call sites still use _effective_user_id. It maps
+# to the read variant because every current caller that uses it is either a
+# read path (list_my_playground_bookings, list_playground_ssh_keys) OR a
+# write path that's being migrated below.
+_effective_user_id = _effective_user_id_for_read
 
 
 # ---------------------------------------------------------------------------
@@ -249,10 +312,13 @@ async def _user_has_ssh_key(user_id: str) -> bool:
 
 async def _user_weekly_booking_count(user_id: str) -> int:
     """Count of bookings this user has made in the last 7 days (excluding
-    cancelled)."""
+    cancelled). Uses UTC for the created_at comparison to match the rest
+    of litellm's management endpoints. Prisma emits `TIMESTAMP(3)` (naive)
+    for our created_at columns and stores the wall clock in UTC by
+    convention, so comparing against a UTC-aware `now - 7d` is the
+    consistent choice."""
     prisma = _get_prisma()
-    week_ago = datetime.now(IST) - timedelta(days=7)
-    # Prisma DATE columns compare against date, not datetime, for `night_of`
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     count = await prisma.db.litellm_playgroundbooking.count(
         where={
             "user_id": user_id,
@@ -263,6 +329,20 @@ async def _user_weekly_booking_count(user_id: str) -> int:
     return count
 
 
+async def _user_has_booking_tonight(user_id: str) -> bool:
+    """True if the user already has a non-cancelled booking for tonight —
+    used to prevent double-booking even during the overflow window."""
+    prisma = _get_prisma()
+    existing = await prisma.db.litellm_playgroundbooking.count(
+        where={
+            "user_id": user_id,
+            "night_of": _tonight_date(),
+            "status": {"not": "cancelled"},
+        }
+    )
+    return existing > 0
+
+
 async def _can_user_book(user_id: str) -> Tuple[bool, str]:
     if not await _user_has_ssh_key(user_id):
         return False, "Register an SSH key before booking"
@@ -271,6 +351,15 @@ async def _can_user_book(user_id: str) -> Tuple[bool, str]:
     if not is_open:
         return False, msg
 
+    # One booking per user per night, always. Overflow relaxes the weekly
+    # limit below but does NOT let a user claim a second slot the same night.
+    if await _user_has_booking_tonight(user_id):
+        return False, "You already have a booking for tonight"
+
+    # Weekly limit only enforced outside the overflow window. During overflow
+    # (22:00–22:30 IST) users who've hit their weekly count can still claim
+    # unclaimed slots — that's the whole point of overflow — but the per-
+    # night uniqueness check above still applies.
     if not _is_overflow_window():
         count = await _user_weekly_booking_count(user_id)
         if count >= PLAYGROUND_WEEKLY_BOOKING_LIMIT:
@@ -288,6 +377,18 @@ async def _allocate_gpus(
     """Find a node with enough free GPUs tonight.
 
     Returns (node_ip, "0,1,2") or (None, None) when no node has capacity.
+
+    KNOWN LIMITATION — TOCTOU race: the read-then-write sequence
+    (`find_many` -> `create`) is not serialized at the DB level, so two
+    concurrent booking requests can both see the same free GPU indices
+    and create overlapping booking rows for the same `(allocated_node,
+    night_of, allocated_gpus)`. The per-user-per-night uniqueness check
+    in `_can_user_book` protects the common case (one user spamming),
+    but two distinct users racing for the last slot is still possible.
+    Mitigations to add in a follow-up: (a) a Postgres advisory lock
+    keyed on `(allocated_node, night_of)` around the read-and-write,
+    or (b) a `@@unique([allocated_node, allocated_gpus, night_of])`
+    constraint and a catch-retry loop on unique violation.
     """
     prisma = _get_prisma()
     tonight = _tonight_date()
@@ -378,7 +479,7 @@ async def get_playground_slots(
 
     return PlaygroundSlotsResponse(
         night_of=tonight,
-        booking_phase=_booking_phase(),  # type: ignore[arg-type]
+        booking_phase=_booking_phase(),
         nodes=slot_nodes,
     )
 
@@ -400,7 +501,7 @@ async def create_playground_booking(
 ) -> PlaygroundBookingResponse:
     """Create a booking for tonight. See _can_user_book / _allocate_gpus."""
     prisma = _get_prisma()
-    user_id = _effective_user_id(user_api_key_dict, data.target_user_id)
+    user_id = _effective_user_id_for_write(user_api_key_dict, data.target_user_id)
 
     if data.gpu_count > PLAYGROUND_MAX_GPUS_PER_USER:
         raise HTTPException(
@@ -451,8 +552,8 @@ async def list_my_playground_bookings(
 ) -> List[PlaygroundBookingResponse]:
     """Current user's recent bookings (last 30 days, newest first)."""
     prisma = _get_prisma()
-    user_id = _effective_user_id(user_api_key_dict, target_user_id)
-    since = datetime.now(IST) - timedelta(days=30)
+    user_id = _effective_user_id_for_read(user_api_key_dict, target_user_id)
+    since = datetime.now(timezone.utc) - timedelta(days=30)
 
     rows = await prisma.db.litellm_playgroundbooking.find_many(
         where={"user_id": user_id, "created_at": {"gte": since}},
@@ -475,9 +576,10 @@ async def cancel_playground_booking(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> PlaygroundBookingResponse:
     """Cancel an allocated (not yet active) booking. Only the owner or a
-    proxy admin may cancel."""
+    PROXY_ADMIN may cancel. target_user_id is accepted for admin-on-behalf-of
+    consistency with the create path but is not required — admins can cancel
+    any booking by id alone."""
     prisma = _get_prisma()
-    effective_user_id = _effective_user_id(user_api_key_dict, target_user_id)
 
     booking = await prisma.db.litellm_playgroundbooking.find_unique(
         where={"booking_id": booking_id}
@@ -485,9 +587,13 @@ async def cancel_playground_booking(
     if booking is None:
         raise HTTPException(status_code=404, detail="booking not found")
 
-    # Ownership check — admins can cancel anyone's, users only their own
-    if booking.user_id != effective_user_id and not _is_admin(user_api_key_dict):
-        raise HTTPException(status_code=403, detail="not your booking")
+    # Admins skip the ownership check entirely. Non-admins can only cancel
+    # their own bookings — target_user_id is ignored for non-admin callers
+    # (same contract as _effective_user_id_for_write).
+    if not _is_admin_write(user_api_key_dict):
+        caller_id = _caller_user_id(user_api_key_dict)
+        if booking.user_id != caller_id:
+            raise HTTPException(status_code=403, detail="not your booking")
 
     if booking.status != "allocated":
         raise HTTPException(
@@ -518,7 +624,7 @@ async def list_playground_ssh_keys(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> List[PlaygroundSSHKeyResponse]:
     prisma = _get_prisma()
-    user_id = _effective_user_id(user_api_key_dict, target_user_id)
+    user_id = _effective_user_id_for_read(user_api_key_dict, target_user_id)
     rows = await prisma.db.litellm_usersshkey.find_many(
         where={"user_id": user_id},
         order={"created_at": "desc"},
@@ -539,7 +645,7 @@ async def add_playground_ssh_key(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> PlaygroundSSHKeyResponse:
     prisma = _get_prisma()
-    user_id = _effective_user_id(user_api_key_dict, data.target_user_id)
+    user_id = _effective_user_id_for_write(user_api_key_dict, data.target_user_id)
 
     public_key = data.public_key.strip()
     name = data.name.strip()
@@ -586,16 +692,20 @@ async def delete_playground_ssh_key(
     target_user_id: Optional[str] = None,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> Dict[str, Any]:
+    """Delete an SSH key. Only the owner or PROXY_ADMIN may delete."""
     prisma = _get_prisma()
-    effective_user_id = _effective_user_id(user_api_key_dict, target_user_id)
 
     key_row = await prisma.db.litellm_usersshkey.find_unique(
         where={"ssh_key_id": ssh_key_id}
     )
     if key_row is None:
         raise HTTPException(status_code=404, detail="SSH key not found")
-    if key_row.user_id != effective_user_id and not _is_admin(user_api_key_dict):
-        raise HTTPException(status_code=403, detail="not your SSH key")
+
+    # Admins skip the ownership check; non-admins can only delete their own.
+    if not _is_admin_write(user_api_key_dict):
+        caller_id = _caller_user_id(user_api_key_dict)
+        if key_row.user_id != caller_id:
+            raise HTTPException(status_code=403, detail="not your SSH key")
 
     await prisma.db.litellm_usersshkey.delete(where={"ssh_key_id": ssh_key_id})
     return {"success": True}
@@ -635,10 +745,12 @@ async def admin_create_playground_node(
     data: CreatePlaygroundNodeRequest,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> PlaygroundNodeResponse:
-    _require_admin(user_api_key_dict)
+    _require_admin_write(user_api_key_dict)
     prisma = _get_prisma()
+    # exclude_unset=True so DB defaults apply for fields the caller omitted,
+    # matching the update path's semantics.
     created = await prisma.db.litellm_playgroundnode.create(
-        data=data.model_dump(exclude_unset=False)
+        data=data.model_dump(exclude_unset=True)
     )
     verbose_proxy_logger.info(
         f"playground: node {created.node_id} registered ({created.ip_address})"
@@ -659,7 +771,7 @@ async def admin_update_playground_node(
     data: UpdatePlaygroundNodeRequest,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> PlaygroundNodeResponse:
-    _require_admin(user_api_key_dict)
+    _require_admin_write(user_api_key_dict)
     prisma = _get_prisma()
     update_fields = data.model_dump(exclude_unset=True, exclude_none=True)
     if not update_fields:
@@ -684,7 +796,7 @@ async def admin_delete_playground_node(
     node_id: str,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> Dict[str, Any]:
-    _require_admin(user_api_key_dict)
+    _require_admin_write(user_api_key_dict)
     prisma = _get_prisma()
     existing = await prisma.db.litellm_playgroundnode.find_unique(
         where={"node_id": node_id}
@@ -721,8 +833,13 @@ async def admin_playground_status(
     nodes = await prisma.db.litellm_playgroundnode.find_many(
         order={"ip_address": "asc"}
     )
+    # Exclude cancelled bookings from dashboard totals — a cancelled row
+    # is not a capacity reservation and shouldn't contaminate the metric.
     bookings = await prisma.db.litellm_playgroundbooking.find_many(
-        where={"night_of": tonight}
+        where={
+            "night_of": tonight,
+            "status": {"not": "cancelled"},
+        }
     )
 
     by_node: Dict[str, int] = {}
@@ -731,7 +848,7 @@ async def admin_playground_status(
 
     return PlaygroundAdminStatusResponse(
         night_of=tonight,
-        booking_phase=_booking_phase(),  # type: ignore[arg-type]
+        booking_phase=_booking_phase(),
         total_bookings_tonight=len(bookings),
         nodes=[PlaygroundNodeResponse(**n.model_dump()) for n in nodes],
         bookings_by_node=by_node,
@@ -768,7 +885,29 @@ async def get_playground_allocations_tonight(
     node_rows = await prisma.db.litellm_playgroundnode.find_many()
     node_by_ip = {n.ip_address: n for n in node_rows}
 
-    # Group by node, resolve SSH pubkey for each user (first key they registered)
+    # Batch-fetch SSH keys + user rows up-front so the per-booking loop
+    # doesn't issue 2×N round-trips (was an N+1 that scaled badly as
+    # booking count grew).
+    distinct_user_ids = list({b.user_id for b in bookings})
+    first_ssh_key_by_user: Dict[str, str] = {}
+    user_email_by_id: Dict[str, Optional[str]] = {}
+
+    if distinct_user_ids:
+        all_keys = await prisma.db.litellm_usersshkey.find_many(
+            where={"user_id": {"in": distinct_user_ids}},
+            order={"created_at": "asc"},
+        )
+        # `order asc` means the first key seen per user is the earliest one.
+        for k in all_keys:
+            first_ssh_key_by_user.setdefault(k.user_id, k.public_key)
+
+        user_rows = await prisma.db.litellm_usertable.find_many(
+            where={"user_id": {"in": distinct_user_ids}},
+        )
+        for u in user_rows:
+            user_email_by_id[u.user_id] = getattr(u, "user_email", None)
+
+    # Group by node
     grouped: Dict[str, PlaygroundAllocationNode] = {}
     for b in bookings:
         node = node_by_ip.get(b.allocated_node)
@@ -788,27 +927,13 @@ async def get_playground_allocations_tonight(
                 bookings=[],
             )
 
-        ssh_keys = await prisma.db.litellm_usersshkey.find_many(
-            where={"user_id": b.user_id},
-            order={"created_at": "asc"},
-        )
-
-        # Resolve user_email for the cron's --json payload (best-effort; cron
-        # passes it verbatim to manage-users.sh add)
-        user_email: Optional[str] = None
-        user_row = await prisma.db.litellm_usertable.find_unique(
-            where={"user_id": b.user_id}
-        )
-        if user_row is not None:
-            user_email = getattr(user_row, "user_email", None)
-
         grouped[b.allocated_node].bookings.append(
             PlaygroundAllocationBooking(
                 booking_id=b.booking_id,
                 user_id=b.user_id,
-                user_email=user_email,
+                user_email=user_email_by_id.get(b.user_id),
                 gpu_devices=b.allocated_gpus,
-                ssh_public_key=ssh_keys[0].public_key if ssh_keys else "",
+                ssh_public_key=first_ssh_key_by_user.get(b.user_id, ""),
             )
         )
 
@@ -831,7 +956,7 @@ async def report_playground_activation_status(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> ActivationStatusReportResponse:
     """Cron reports activation results — one entry per booking it attempted."""
-    _require_admin(user_api_key_dict)
+    _require_admin_write(user_api_key_dict)
     prisma = _get_prisma()
 
     updated_rows: List[PlaygroundBookingResponse] = []
@@ -839,6 +964,14 @@ async def report_playground_activation_status(
         update_data: Dict[str, Any] = {"status": item.status}
         if item.container_id is not None:
             update_data["container_id"] = item.container_id
+
+        # Surface the cron's error field in the logs so ops can see why
+        # a specific booking failed without trawling the k8s job output.
+        if item.status == "activation_failed":
+            verbose_proxy_logger.warning(
+                f"playground: activation_failed for booking {item.booking_id}"
+                f" — error={item.error or 'unspecified'}"
+            )
 
         try:
             row = await prisma.db.litellm_playgroundbooking.update(
@@ -873,14 +1006,23 @@ async def report_playground_teardown_status(
     request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> TeardownStatusResponse:
-    """Cron reports teardown completion — all `active` bookings for tonight
-    are marked `terminated`."""
-    _require_admin(user_api_key_dict)
+    """Cron reports teardown completion — every `active` booking is marked
+    `terminated`, regardless of `night_of`.
+
+    Why no night_of filter: the teardown cron fires at 09:00 IST on the
+    morning *after* the activation night. At that moment `_tonight_date()`
+    returns the next calendar day, but the bookings carry `night_of =
+    previous day`, so filtering by `night_of = _tonight_date()` would match
+    zero rows every single run and active bookings would accumulate
+    indefinitely. It is safe to terminate all `active` rows because only
+    one night's worth of bookings can ever be `active` at a time (the
+    previous day's allocator is the only writer of that status).
+    """
+    _require_admin_write(user_api_key_dict)
     prisma = _get_prisma()
-    tonight = _tonight_date()
 
     active = await prisma.db.litellm_playgroundbooking.find_many(
-        where={"night_of": tonight, "status": "active"}
+        where={"status": "active"}
     )
 
     terminated: List[PlaygroundBookingResponse] = []
@@ -899,10 +1041,17 @@ async def report_playground_teardown_status(
         if row is not None:
             terminated.append(PlaygroundBookingResponse(**row.model_dump()))
 
+    # Report the most recent night_of among terminated rows so the response
+    # still carries a meaningful date. Default to today if no rows.
+    night_of_reported = (
+        max((b.night_of for b in terminated), default=_tonight_date())
+    )
     verbose_proxy_logger.info(
         f"playground: teardown complete — {len(terminated)} bookings terminated "
-        f"for night_of={tonight}"
+        f"(most recent night_of={night_of_reported})"
     )
     return TeardownStatusResponse(
-        night_of=tonight, terminated_count=len(terminated), bookings=terminated
+        night_of=night_of_reported,
+        terminated_count=len(terminated),
+        bookings=terminated,
     )
