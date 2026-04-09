@@ -95,6 +95,15 @@ def _tonight() -> date:
     return datetime.now(IST).date()
 
 
+def _tonight_dt() -> datetime:
+    # Prisma-client-py can't serialize bare datetime.date into queries
+    # (see prisma/_builder.py — only datetime.datetime has a serializer),
+    # so every prisma query that filters or sets `night_of` must pass a
+    # datetime. The DB column is DATE, so the time component is discarded;
+    # use midnight UTC for a stable, unambiguous value.
+    return datetime.combine(_tonight(), datetime.min.time(), tzinfo=timezone.utc)
+
+
 def _booking_phase() -> PlaygroundBookingPhase:
     now = datetime.now(IST)
     cutoff = now.replace(hour=CUTOFF_HOUR, minute=CUTOFF_MINUTE, second=0, microsecond=0)
@@ -167,7 +176,7 @@ async def _can_book(user_id: str) -> Tuple[bool, str]:
     if await prisma.db.litellm_playgroundbooking.count(
         where={
             "user_id": user_id,
-            "night_of": _tonight(),
+            "night_of": _tonight_dt(),
             "status": {"not": "cancelled"},
         }
     ):
@@ -199,7 +208,7 @@ async def _allocate(
     user count; add an advisory lock if it ever bites.
     """
     prisma = _prisma()
-    tonight = _tonight()
+    tonight_dt = _tonight_dt()
 
     nodes = await prisma.db.litellm_playgroundnode.find_many(
         where={"is_playground_eligible": True, "is_healthy": True},
@@ -210,7 +219,7 @@ async def _allocate(
         existing = await prisma.db.litellm_playgroundbooking.find_many(
             where={
                 "allocated_node": node.ip_address,
-                "night_of": tonight,
+                "night_of": tonight_dt,
                 "status": {"in": ["allocated", "active"]},
             }
         )
@@ -239,12 +248,13 @@ async def get_playground_slots(
     """Available GPUs per eligible node tonight + booking phase."""
     prisma = _prisma()
     tonight = _tonight()
+    tonight_dt = _tonight_dt()
 
     nodes = await prisma.db.litellm_playgroundnode.find_many(
         where={"is_playground_eligible": True, "is_healthy": True},
     )
     bookings = await prisma.db.litellm_playgroundbooking.find_many(
-        where={"night_of": tonight, "status": {"in": ["allocated", "active"]}}
+        where={"night_of": tonight_dt, "status": {"in": ["allocated", "active"]}}
     )
     used_by_node: Dict[str, int] = {}
     for b in bookings:
@@ -306,7 +316,7 @@ async def create_playground_booking(
             "preferred_node": data.preferred_node,
             "allocated_node": node_ip,
             "allocated_gpus": gpu_ids,
-            "night_of": _tonight(),
+            "night_of": _tonight_dt(),
             "is_overflow": _booking_phase() == "overflow",
         }
     )
@@ -569,7 +579,7 @@ async def admin_playground_status(
     tonight = _tonight()
     nodes = await prisma.db.litellm_playgroundnode.find_many(order={"ip_address": "asc"})
     bookings = await prisma.db.litellm_playgroundbooking.find_many(
-        where={"night_of": tonight, "status": {"not": "cancelled"}}
+        where={"night_of": _tonight_dt(), "status": {"not": "cancelled"}}
     )
     by_node: Dict[str, int] = {}
     for b in bookings:
@@ -603,7 +613,7 @@ async def get_playground_allocations_tonight(
     tonight = _tonight()
 
     bookings = await prisma.db.litellm_playgroundbooking.find_many(
-        where={"night_of": tonight, "status": "allocated"},
+        where={"night_of": _tonight_dt(), "status": "allocated"},
         order={"created_at": "asc"},
     )
     if not bookings:
