@@ -30,6 +30,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from prisma.errors import RecordNotFoundError
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import (
@@ -531,10 +532,11 @@ async def admin_update_playground_node(
     fields = data.model_dump(exclude_unset=True, exclude_none=True)
     if not fields:
         raise HTTPException(400, "no update fields provided")
-    updated = await _prisma().db.litellm_playgroundnode.update(
-        where={"node_id": node_id}, data=fields
-    )
-    if updated is None:
+    try:
+        updated = await _prisma().db.litellm_playgroundnode.update(
+            where={"node_id": node_id}, data=fields
+        )
+    except RecordNotFoundError:
         raise HTTPException(404, "node not found")
     return PlaygroundNodeResponse(**updated.model_dump())
 
@@ -559,7 +561,10 @@ async def admin_delete_playground_node(
     try:
         await prisma.db.litellm_playgroundnode.delete(where={"node_id": node_id})
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(409, f"cannot delete node with existing bookings: {e}")
+        verbose_proxy_logger.exception(
+            "playground: failed to delete node %s: %s", node_id, e
+        )
+        raise HTTPException(409, "cannot delete node with existing bookings")
     return {"success": True}
 
 
@@ -689,11 +694,15 @@ async def report_playground_activation_status(
                 f"playground: activation_failed booking={item.booking_id} "
                 f"error={item.error or 'unspecified'}"
             )
-        row = await prisma.db.litellm_playgroundbooking.update(
-            where={"booking_id": item.booking_id}, data=payload
-        )
-        if row:
+        try:
+            row = await prisma.db.litellm_playgroundbooking.update(
+                where={"booking_id": item.booking_id}, data=payload
+            )
             updated.append(PlaygroundBookingResponse(**row.model_dump()))
+        except RecordNotFoundError:
+            verbose_proxy_logger.warning(
+                f"playground: activation-status skipped unknown booking={item.booking_id}"
+            )
 
     verbose_proxy_logger.info(
         f"playground: activation-status updated {len(updated)} bookings"
