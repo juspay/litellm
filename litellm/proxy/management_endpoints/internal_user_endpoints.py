@@ -55,6 +55,19 @@ if TYPE_CHECKING:
 router = APIRouter()
 
 
+def _get_read_prisma_client():
+    """Get the read replica Prisma client, falling back to primary if not configured."""
+    from litellm.proxy.proxy_server import prisma_client, prisma_read_client
+
+    client = prisma_read_client if prisma_read_client is not None else prisma_client
+    if client is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": CommonProxyErrors.db_not_connected_error.value},
+        )
+    return client
+
+
 def _update_internal_new_user_params(data_json: dict, data: NewUserRequest) -> dict:
     if "user_id" in data_json and data_json["user_id"] is None:
         data_json["user_id"] = str(uuid.uuid4())
@@ -598,7 +611,7 @@ async def user_info(
     --header 'Authorization: Bearer sk-1234'
     ```
     """
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     try:
         # Handle URL encoding properly by getting user_id from the original request
@@ -726,10 +739,10 @@ async def _get_user_info_for_proxy_admin():
         - To get Faster UI load times, get all teams and virtual keys in 1 query
     """
 
-    from litellm.proxy.proxy_server import prisma_client
+    prisma_client = _get_read_prisma_client()
 
     sql_query = """
-        SELECT 
+        SELECT
             (SELECT json_agg(t.*) FROM "LiteLLM_TeamTable" t) as teams,
             (SELECT json_agg(k.*) FROM "LiteLLM_VerificationToken" k WHERE k.team_id != 'litellm-dashboard' OR k.team_id IS NULL) as keys
     """
@@ -1703,13 +1716,7 @@ async def get_users(
         sort_order: Optional[str]
             Sort order ('asc' or 'desc')
     """
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": f"No db connected. prisma client={prisma_client}"},
-        )
+    prisma_client = _get_read_prisma_client()
 
     # Calculate skip and take for pagination
     skip = (page - 1) * page_size
@@ -2030,10 +2037,7 @@ async def ui_view_users(
     Returns:
         List[LiteLLM_SpendLogs]: Paginated list of matching user records
     """
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    prisma_client = _get_read_prisma_client()
 
     try:
         # Calculate offset for pagination
@@ -2125,13 +2129,7 @@ async def get_user_daily_activity(
     - api_requests
     - breakdown by model, api_key, provider
     """
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": CommonProxyErrors.db_not_connected_error.value},
-        )
+    prisma_client = _get_read_prisma_client()
 
     if start_date is None or end_date is None:
         raise HTTPException(
@@ -2198,13 +2196,7 @@ async def get_user_daily_activity_aggregated(
     Aggregated analytics for a user's daily activity without pagination.
     Returns the same response shape as the paginated endpoint with page metadata set to single-page.
     """
-    from litellm.proxy.proxy_server import prisma_client
-
-    if prisma_client is None:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": CommonProxyErrors.db_not_connected_error.value},
-        )
+    prisma_client = _get_read_prisma_client()
 
     if start_date is None or end_date is None:
         raise HTTPException(

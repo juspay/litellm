@@ -1263,6 +1263,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         self,
         user_api_key_dict: UserAPIKeyAuth,
         current_count: int,
+        previous_count: Optional[int] = None,
+        operation: Optional[str] = None,
     ) -> None:
         """Emit Prometheus gauge metrics for current parallel requests with timestamp."""
         try:
@@ -1286,11 +1288,13 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
             current_ts = time.time()
 
-            verbose_proxy_logger.info(
+            print(
                 f"[METRICS] Emitting parallel_requests metric: "
                 f"token={user_api_key_dict.token}, "
                 f"key_alias={user_api_key_dict.key_alias}, "
+                f"previous_count={previous_count}, "
                 f"current_count={current_count}, "
+                f"operation={operation}, "
                 f"timestamp={current_ts}"
             )
 
@@ -1352,6 +1356,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     await self._emit_parallel_requests_metric(
                         user_api_key_dict=user_api_key_dict,
                         current_count=current_count,
+                        previous_count=previous_count,
+                        operation="increment",
                     )
 
                 if was_incremented == 0:
@@ -1359,7 +1365,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     raise HTTPException(
                         status_code=429,
                         detail=(
-                            f"Rate limit exceeded for api_key. "
+                            f"Rate limit exceeded for api_key: {api_key}. "
                             f"Limit type: max_parallel_requests. "
                             f"Current limit: {max_parallel_requests}, Current: {current_count}."
                         ),
@@ -1420,6 +1426,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 await self._emit_parallel_requests_metric(
                     user_api_key_dict=user_api_key_dict,
                     current_count=new_count,
+                    previous_count=current_count,
+                    operation="increment_fallback",
                 )
             # Return (previous, new) count (approximate since fallback is non-atomic)
             return (current_count, new_count)
@@ -1465,6 +1473,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     await self._emit_parallel_requests_metric(
                         user_api_key_dict=user_api_key_dict,
                         current_count=current_count,
+                        previous_count=previous_count,
+                        operation="decrement",
                     )
                 return (previous_count, current_count)
             except Exception as e:
@@ -1493,6 +1503,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             await self._emit_parallel_requests_metric(
                 user_api_key_dict=user_api_key_dict,
                 current_count=current_count,
+                previous_count=previous_count,
+                operation="decrement_fallback",
             )
 
         return (previous_count, current_count)

@@ -6,8 +6,6 @@ on:
       - main
       - hotfix/**
       - sync/v*
-      - feature/*
-      - feat/*
   workflow_dispatch:  # allows manual trigger for testing
 
 env:
