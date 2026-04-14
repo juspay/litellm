@@ -13,9 +13,11 @@ interface ConcurrentRequestData {
   key_alias: string;
   key_token: string;
   spend_logs_concurrency: number | string;  // number when available, "—" when cannot query
-  metrics_concurrency: number;
-  scrape_timestamp?: number;
+  redis_concurrency: number;
+  is_match: boolean;  // True if Redis and SpendLogs concurrency values match
 }
+
+type MatchFilter = "all" | "matching" | "mismatching";
 
 const PAGE_SIZE = 10;
 
@@ -49,14 +51,17 @@ export default function ConcurrentRequestLogs({
 }: ConcurrentRequestLogsProps) {
   const [targetTimestamp, setTargetTimestamp] = useState<string>(getNowIST());
   const [apiKey, setApiKey] = useState<string>("");
+  const [keyAlias, setKeyAlias] = useState<string>("");
+  const [matchFilter, setMatchFilter] = useState<MatchFilter>("all");
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Fetch concurrent request logs (Prometheus + SpendLogs combined)
+  // Fetch concurrent request logs (GCP Logs + SpendLogs combined)
+  // Server-side filtering for matchStatus - filtered server-side for proper pagination
   const logsData = useQuery<{
     data: ConcurrentRequestData[];
     total: number;
   }>({
-    queryKey: ["concurrentRequestLogs", targetTimestamp, currentPage, apiKey],
+    queryKey: ["concurrentRequestLogs", targetTimestamp, currentPage, apiKey, keyAlias, matchFilter],
     queryFn: async () => {
       if (!accessToken) return { data: [], total: 0 };
       const isoTimestamp = istToISO(targetTimestamp);
@@ -65,12 +70,15 @@ export default function ConcurrentRequestLogs({
         isoTimestamp,
         currentPage,
         PAGE_SIZE,
-        apiKey || undefined
+        apiKey || undefined,
+        keyAlias || undefined,
+        matchFilter !== "all" ? matchFilter : undefined
       );
     },
     enabled: !!accessToken,
   });
 
+  // Use data directly from server (match filtering is now server-side)
   const convertedData = logsData.data?.data || [];
   const totalItems = logsData.data?.total || 0;
 
@@ -84,6 +92,7 @@ export default function ConcurrentRequestLogs({
   };
 
   const formattedTimestamp = formatIST(targetTimestamp);
+  // Total from server already accounts for filters
   const totalPages = Math.ceil(totalItems / PAGE_SIZE);
 
   if (!accessToken) {
@@ -133,6 +142,40 @@ export default function ConcurrentRequestLogs({
             />
           </div>
 
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-gray-700">
+              Key Alias (optional)
+            </label>
+            <input
+              type="text"
+              value={keyAlias}
+              onChange={(e) => {
+                setKeyAlias(e.target.value);
+                setCurrentPage(1);
+              }}
+              placeholder="e.g., production-key"
+              className="px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-48"
+            />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label className="text-sm font-medium text-gray-700">
+              Match Status
+            </label>
+            <select
+              value={matchFilter}
+              onChange={(e) => {
+                setMatchFilter(e.target.value as MatchFilter);
+                setCurrentPage(1);
+              }}
+              className="px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 w-40"
+            >
+              <option value="all">All</option>
+              <option value="matching">Matching</option>
+              <option value="mismatching">Mismatching</option>
+            </select>
+          </div>
+
           <button
             onClick={handleResetToNow}
             className="px-3 py-2 text-sm border rounded-md hover:bg-gray-50"
@@ -166,7 +209,8 @@ export default function ConcurrentRequestLogs({
           Querying at: <span className="font-mono">{formattedTimestamp}</span>
           {totalItems > 0 && (
             <span className="ml-4">
-              ({totalItems} keys with active requests)
+              ({totalItems} keys with active requests
+              {matchFilter !== "all" && ` - ${matchFilter} only`})
             </span>
           )}
         </div>
@@ -194,10 +238,10 @@ export default function ConcurrentRequestLogs({
                 Spend Logs Concurrency
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Metrics Concurrency
+                Redis Concurrency
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Scrape Timestamp
+                Match Status
               </th>
             </tr>
           </thead>
@@ -256,18 +300,24 @@ export default function ConcurrentRequestLogs({
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     <span
                       className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        row.metrics_concurrency > 0
+                        row.redis_concurrency > 0
                           ? "bg-green-100 text-green-800"
                           : "bg-gray-100 text-gray-800"
                       }`}
                     >
-                      {row.metrics_concurrency}
+                      {row.redis_concurrency}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 font-mono">
-                    {row.scrape_timestamp
-                      ? moment.unix(row.scrape_timestamp).utc().add(5, 'hours').add(30, 'minutes').format("HH:mm:ss.SSS [IST]")
-                      : "—"}
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    <span
+                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        row.is_match
+                          ? "bg-green-100 text-green-800"
+                          : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      {row.is_match ? "Match" : "Mismatch"}
+                    </span>
                   </td>
                 </tr>
               ))
@@ -305,12 +355,13 @@ export default function ConcurrentRequestLogs({
       <div className="mt-4 text-sm text-gray-500">
         <p>
           <strong>Spend Logs Concurrency:</strong> Count of requests in SpendLogs
-          table that were active at the scrape timestamp (started within 5 min
+          table that were active at the target timestamp (started within 60 min
           before and not yet ended).
         </p>
         <p className="mt-1">
-          <strong>Metrics Concurrency:</strong> Value from Prometheus metrics at
-          the scrape timestamp within ±10 seconds of target time.
+          <strong>Redis Concurrency:</strong> Value from Redis parallel request
+          counters logged to GCP Cloud Logging within the last 5 seconds before
+          the target timestamp.
         </p>
       </div>
     </div>

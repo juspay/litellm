@@ -110,6 +110,7 @@ extra_proxy = [
     "azure-keyvault-secrets",
     "google-cloud-kms",
     "google-cloud-iam",
+    "google-cloud-logging",
     "resend",
     "redisvl",
     "a2a-sdk"
