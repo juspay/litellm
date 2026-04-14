@@ -9277,19 +9277,23 @@ export const deleteClaudeCodePlugin = async (
 
 
 /**
- * Fetch concurrent request logs (Prometheus + SpendLogs combined)
+ * Fetch concurrent request logs (GCP Logs + SpendLogs combined)
  * @param accessToken - User access token
  * @param isoTimestamp - Target timestamp in ISO 8601 format (with milliseconds)
  * @param page - Page number (1-indexed)
  * @param pageSize - Number of items per page
  * @param apiKey - Optional API key filter
+ * @param keyAlias - Optional key alias filter (partial match)
+ * @param matchStatus - Optional match status filter: 'matching', 'mismatching', or undefined for all
  */
 export const concurrentRequestLogsPaginatedCall = async (
   accessToken: string,
   isoTimestamp: string,
   page: number,
   pageSize: number,
-  apiKey?: string
+  apiKey?: string,
+  keyAlias?: string,
+  matchStatus?: string
 ): Promise<{ data: any[]; total: number }> => {
   try {
     const proxyBaseUrl = getProxyBaseUrl();
@@ -9301,6 +9305,14 @@ export const concurrentRequestLogsPaginatedCall = async (
 
     if (apiKey) {
       params.append("api_key", apiKey);
+    }
+
+    if (keyAlias) {
+      params.append("key_alias", keyAlias);
+    }
+
+    if (matchStatus) {
+      params.append("match_status", matchStatus);
     }
 
     const url = proxyBaseUrl
