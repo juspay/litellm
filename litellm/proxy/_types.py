@@ -619,6 +619,7 @@ class LiteLLMRoutes(enum.Enum):
         "/model/update",
         "/model/delete",
         "/user/daily/activity",
+        "/user/delete",
         "/model/{model_id}/update",
         "/prompt/list",
         "/prompt/info",
