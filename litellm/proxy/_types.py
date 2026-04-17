@@ -4012,7 +4012,6 @@ class CreatePlaygroundNodeRequest(LiteLLMPydanticObjectBase):
     is_playground_eligible: bool = True
     is_healthy: bool = True
     ssh_user: str = "orchestrator"
-    vllm_container_name: str = "vllm-server"
 
 
 class UpdatePlaygroundNodeRequest(LiteLLMPydanticObjectBase):
@@ -4024,7 +4023,6 @@ class UpdatePlaygroundNodeRequest(LiteLLMPydanticObjectBase):
     is_playground_eligible: Optional[bool] = None
     is_healthy: Optional[bool] = None
     ssh_user: Optional[str] = None
-    vllm_container_name: Optional[str] = None
 
 
 class PlaygroundNodeResponse(LiteLLMPydanticObjectBase):
@@ -4036,7 +4034,6 @@ class PlaygroundNodeResponse(LiteLLMPydanticObjectBase):
     is_playground_eligible: bool
     is_healthy: bool
     ssh_user: str
-    vllm_container_name: str
     model_path: str
     created_at: datetime
     updated_at: datetime
@@ -4128,7 +4125,6 @@ class PlaygroundAllocationBooking(LiteLLMPydanticObjectBase):
 class PlaygroundAllocationNode(LiteLLMPydanticObjectBase):
     node_ip: str
     ssh_user: str
-    vllm_container_name: str
     model_path: str
     bookings: List[PlaygroundAllocationBooking]
 

@@ -8,7 +8,6 @@ CREATE TABLE "LiteLLM_PlaygroundNode" (
     "is_playground_eligible" BOOLEAN NOT NULL DEFAULT false,
     "is_healthy" BOOLEAN NOT NULL DEFAULT true,
     "ssh_user" TEXT NOT NULL DEFAULT 'orchestrator',
-    "vllm_container_name" TEXT NOT NULL DEFAULT 'vllm-server',
     "model_path" TEXT NOT NULL,
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -66,4 +65,3 @@ CREATE INDEX "LiteLLM_UserSSHKey_user_id_idx" ON "LiteLLM_UserSSHKey"("user_id")
 
 -- AddForeignKey
 ALTER TABLE "LiteLLM_PlaygroundBooking" ADD CONSTRAINT "LiteLLM_PlaygroundBooking_allocated_node_fkey" FOREIGN KEY ("allocated_node") REFERENCES "LiteLLM_PlaygroundNode"("ip_address") ON DELETE RESTRICT ON UPDATE CASCADE;
-

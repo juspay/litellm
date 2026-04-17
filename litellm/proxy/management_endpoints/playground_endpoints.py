@@ -649,7 +649,6 @@ async def get_playground_allocations_tonight(
             grouped[b.allocated_node] = PlaygroundAllocationNode(
                 node_ip=node.ip_address,
                 ssh_user=node.ssh_user,
-                vllm_container_name=node.vllm_container_name,
                 model_path=node.model_path,
                 bookings=[],
             )

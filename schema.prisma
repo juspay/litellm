@@ -909,7 +909,6 @@ model LiteLLM_PlaygroundNode {
   is_playground_eligible Boolean   @default(false)
   is_healthy             Boolean   @default(true)
   ssh_user               String    @default("orchestrator")
-  vllm_container_name    String    @default("vllm-server")
   model_path             String
   created_at             DateTime  @default(now())
   updated_at             DateTime  @default(now()) @updatedAt
