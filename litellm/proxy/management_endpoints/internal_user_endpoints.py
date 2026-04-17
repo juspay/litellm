@@ -35,6 +35,7 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
     generate_key_helper_fn,
     prepare_metadata_fields,
 )
+from litellm.proxy.management_helpers.audit_logs import write_audit_log
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
 from litellm.proxy.utils import handle_exception_on_proxy
 from litellm.types.proxy.management_endpoints.common_daily_activity import (
@@ -507,6 +508,16 @@ async def new_user(
         #########################################################
         ########## END USER CREATED HOOK ################
         #########################################################
+
+        asyncio.create_task(
+            write_audit_log(
+                object_id=new_user_response.user_id or "",
+                action="created",
+                user_api_key_dict=user_api_key_dict,
+                table_name=LitellmTableNames.USER_TABLE_NAME,
+                after_value=new_user_response.model_dump_json(exclude_none=True),
+            )
+        )
 
         return new_user_response
     except Exception as e:
@@ -1099,6 +1110,17 @@ async def user_update(
             user_request=data,
             user_api_key_dict=user_api_key_dict,
         )
+
+        asyncio.create_task(
+            write_audit_log(
+                object_id=data.user_id or "",
+                action="updated",
+                user_api_key_dict=user_api_key_dict,
+                table_name=LitellmTableNames.USER_TABLE_NAME,
+                after_value=data.model_dump_json(exclude_none=True),
+            )
+        )
+
         return response
     except Exception as e:
         verbose_proxy_logger.exception(
@@ -1969,6 +1991,16 @@ async def delete_user(
     deleted_users = await prisma_client.db.litellm_usertable.delete_many(
         where={"user_id": {"in": data.user_ids}}
     )
+
+    for user_id in data.user_ids:
+        asyncio.create_task(
+            write_audit_log(
+                object_id=user_id,
+                action="deleted",
+                user_api_key_dict=user_api_key_dict,
+                table_name=LitellmTableNames.USER_TABLE_NAME,
+            )
+        )
 
     return deleted_users
 
