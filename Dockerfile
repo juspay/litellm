@@ -65,13 +65,6 @@ COPY --from=builder /wheels/ /wheels/
 # Install the built wheel using pip; again using a wildcard if it's the only file
 RUN pip install *.whl /wheels/* --no-index --find-links=/wheels/ && rm -f *.whl && rm -rf /wheels
 
-# Overlay the fork's local litellm-proxy-extras on top of the PyPI version
-# pinned in requirements.txt. The PyPI wheel (pulled into /wheels during the
-# builder stage) lags the fork's schema.prisma + migrations; without this
-# line, every schema change in /app/litellm-proxy-extras is invisible at
-# runtime and `prisma migrate deploy` silently does nothing.
-RUN pip install --no-deps --force-reinstall /app/litellm-proxy-extras/
-
 # Remove test files and keys from dependencies
 RUN find /usr/lib -type f -path "*/tornado/test/*" -delete && \
     find /usr/lib -type d -path "*/tornado/test" -delete
