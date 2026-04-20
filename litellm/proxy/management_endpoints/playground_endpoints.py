@@ -16,6 +16,7 @@ Admin (PROXY_ADMIN):
 
 Cron (PROXY_ADMIN virtual key):
   GET    /playground/internal/allocations-tonight
+  GET    /playground/internal/pending-teardowns
   POST   /playground/internal/activation-status
   POST   /playground/internal/teardown-status
 
@@ -47,9 +48,13 @@ from litellm.proxy._types import (
     PlaygroundBookingPhase,
     PlaygroundBookingResponse,
     PlaygroundNodeResponse,
+    PlaygroundPendingTeardownBooking,
+    PlaygroundPendingTeardownNode,
+    PlaygroundPendingTeardownsResponse,
     PlaygroundSlotNode,
     PlaygroundSlotsResponse,
     PlaygroundSSHKeyResponse,
+    TeardownStatusReportRequest,
     TeardownStatusResponse,
     UpdatePlaygroundNodeRequest,
     UserAPIKeyAuth,
@@ -638,9 +643,14 @@ async def admin_create_playground_node(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> PlaygroundNodeResponse:
     _require_admin(user_api_key_dict)
-    created = await _prisma().db.litellm_playgroundnode.create(
-        data=data.model_dump(exclude_unset=True)
-    )
+    payload = data.model_dump(exclude_unset=True)
+    # Whitespace in ip_address silently breaks downstream SSH targets
+    # (saw ' 103.48.42.12' registered once from a manual admin call).
+    # Strip here so the gateway cron and authkeys command= entries always
+    # see a clean address.
+    if "ip_address" in payload and isinstance(payload["ip_address"], str):
+        payload["ip_address"] = payload["ip_address"].strip()
+    created = await _prisma().db.litellm_playgroundnode.create(data=payload)
     verbose_proxy_logger.info(
         f"playground: node {created.node_id} registered ({created.ip_address})"
     )
@@ -664,6 +674,8 @@ async def admin_update_playground_node(
     fields = data.model_dump(exclude_unset=True, exclude_none=True)
     if not fields:
         raise HTTPException(400, "no update fields provided")
+    if "ip_address" in fields and isinstance(fields["ip_address"], str):
+        fields["ip_address"] = fields["ip_address"].strip()
     try:
         updated = await _prisma().db.litellm_playgroundnode.update(
             where={"node_id": node_id}, data=fields
@@ -850,25 +862,63 @@ async def report_playground_activation_status(
 @management_endpoint_wrapper
 async def report_playground_teardown_status(
     request: Request,
+    data: Optional[TeardownStatusReportRequest] = None,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> TeardownStatusResponse:
-    """Flip every `active` booking to `terminated`. No night_of filter — the
-    cron runs the morning after activation so today's date won't match the
-    booking's night_of, and only one night of bookings can be active at once."""
+    """Two modes:
+
+    - Sweep (nightly cron, no body or `results=None`): flip every `active`
+      booking AND every `cancelled` booking with a container_id set to
+      `terminated`, clearing container_id. Covers both normal overnight
+      bookings and user-cancelled bookings whose container survived until
+      the nightly wipe.
+    - Per-booking (spark-activator worker, `results=[...]`): for each item,
+      if status is `terminated`, flip that booking to `terminated` and
+      clear container_id. `teardown_failed` is logged and left as-is so
+      the worker retries next cycle.
+
+    No night_of filter on sweep — only one night of bookings can be
+    `active` at a time, and cancelled-with-container rows are orthogonal
+    to any notion of "tonight".
+    """
     _require_admin(user_api_key_dict)
     prisma = _prisma()
-
-    active = await prisma.db.litellm_playgroundbooking.find_many(
-        where={"status": "active"}
-    )
     terminated: List[PlaygroundBookingResponse] = []
-    for b in active:
-        row = await prisma.db.litellm_playgroundbooking.update(
-            where={"booking_id": b.booking_id},
-            data={"status": "terminated"},
+
+    if data is None or not data.results:
+        sweep = await prisma.db.litellm_playgroundbooking.find_many(
+            where={
+                "OR": [
+                    {"status": "active"},
+                    {"status": "cancelled", "container_id": {"not": None}},
+                ]
+            }
         )
-        if row:
-            terminated.append(PlaygroundBookingResponse(**row.model_dump()))
+        for b in sweep:
+            row = await prisma.db.litellm_playgroundbooking.update(
+                where={"booking_id": b.booking_id},
+                data={"status": "terminated", "container_id": None},
+            )
+            if row:
+                terminated.append(PlaygroundBookingResponse(**row.model_dump()))
+    else:
+        for item in data.results:
+            if item.status == "teardown_failed":
+                verbose_proxy_logger.warning(
+                    f"playground: teardown_failed booking={item.booking_id} "
+                    f"error={item.error or 'unspecified'}"
+                )
+                continue
+            try:
+                row = await prisma.db.litellm_playgroundbooking.update(
+                    where={"booking_id": item.booking_id},
+                    data={"status": "terminated", "container_id": None},
+                )
+                terminated.append(PlaygroundBookingResponse(**row.model_dump()))
+            except RecordNotFoundError:
+                verbose_proxy_logger.warning(
+                    f"playground: teardown-status skipped unknown booking={item.booking_id}"
+                )
 
     night = max((b.night_of for b in terminated), default=_tonight())
     verbose_proxy_logger.info(
@@ -878,3 +928,70 @@ async def report_playground_teardown_status(
     return TeardownStatusResponse(
         night_of=night, terminated_count=len(terminated), bookings=terminated
     )
+
+
+@router.get(
+    "/playground/internal/pending-teardowns",
+    tags=_TAGS,
+    dependencies=_DEPS,
+    response_model=PlaygroundPendingTeardownsResponse,
+)
+@management_endpoint_wrapper
+async def get_playground_pending_teardowns(
+    request: Request,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> PlaygroundPendingTeardownsResponse:
+    """Cancelled bookings whose container is still up. The spark-activator
+    worker polls this and runs manage-users.sh remove for each, then POSTs
+    teardown-status with the booking_ids to finalize (status=terminated,
+    container_id=NULL). Grouped by allocated_node to match the shape of
+    allocations-tonight so the worker can reuse its SSH plumbing."""
+    _require_admin(user_api_key_dict)
+    prisma = _prisma()
+
+    bookings = await prisma.db.litellm_playgroundbooking.find_many(
+        where={"status": "cancelled", "container_id": {"not": None}},
+        order={"created_at": "asc"},
+    )
+    if not bookings:
+        return PlaygroundPendingTeardownsResponse(nodes=[])
+
+    user_ids = list({b.user_id for b in bookings})
+    node_by_ip = {
+        n.ip_address: n for n in await prisma.db.litellm_playgroundnode.find_many()
+    }
+    email_by_id = {
+        u.user_id: getattr(u, "user_email", None)
+        for u in await prisma.db.litellm_usertable.find_many(
+            where={"user_id": {"in": user_ids}}
+        )
+    }
+
+    grouped: Dict[str, PlaygroundPendingTeardownNode] = {}
+    for b in bookings:
+        node = node_by_ip.get(b.allocated_node)
+        if node is None:
+            # Node was deleted after the booking was cancelled — nothing to SSH
+            # into. Skip and let a future cleanup task drop the orphan row.
+            verbose_proxy_logger.warning(
+                f"playground: pending-teardowns skipped booking={b.booking_id} "
+                f"— allocated_node={b.allocated_node} no longer registered"
+            )
+            continue
+        if b.allocated_node not in grouped:
+            grouped[b.allocated_node] = PlaygroundPendingTeardownNode(
+                node_ip=node.ip_address,
+                ssh_user=node.ssh_user,
+                bookings=[],
+            )
+        grouped[b.allocated_node].bookings.append(
+            PlaygroundPendingTeardownBooking(
+                booking_id=b.booking_id,
+                user_id=b.user_id,
+                user_email=email_by_id.get(b.user_id),
+                gpu_devices=b.allocated_gpus or "",
+                container_id=b.container_id or "",
+            )
+        )
+
+    return PlaygroundPendingTeardownsResponse(nodes=list(grouped.values()))
