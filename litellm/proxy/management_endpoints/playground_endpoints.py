@@ -199,23 +199,31 @@ async def _can_book(user_id: str, night_of: date) -> Tuple[bool, str]:
     if is_tonight and phase == "closed":
         return False, "Booking cutoff has passed for tonight"
 
+    # A booking "holds a seat" only while it's allocated or active; cancelled,
+    # terminated, and activation_failed bookings have released their seat and
+    # must not block a fresh booking for the same night. Using a positive
+    # allowlist so any new terminal status added in the future doesn't
+    # accidentally gate retries.
     if await prisma.db.litellm_playgroundbooking.count(
         where={
             "user_id": user_id,
             "night_of": _night_of_dt(night_of),
-            "status": {"not": "cancelled"},
+            "status": {"in": ["allocated", "active"]},
         }
     ):
         return False, f"You already have a booking for {night_of.isoformat()}"
 
     # Overflow window relaxes the weekly limit but not the per-night unique check.
+    # Weekly count measures actual GPU usage, so terminated (successful nightly
+    # wipe) counts while cancelled / activation_failed do not — a user who was
+    # never provisioned shouldn't burn a slot.
     if phase == "open":
         week_ago = datetime.now(timezone.utc) - timedelta(days=7)
         recent = await prisma.db.litellm_playgroundbooking.count(
             where={
                 "user_id": user_id,
                 "created_at": {"gte": week_ago},
-                "status": {"not": "cancelled"},
+                "status": {"in": ["allocated", "active", "terminated"]},
             }
         )
         if recent >= WEEKLY_LIMIT:
