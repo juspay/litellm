@@ -283,11 +283,18 @@ async def _reserve_seats(night_of: date, node_name: str, gpu_indices_str: str):
             f"'{node_name}' (valid: 0..{node.total_gpus - 1})",
         )
 
+    # A seat is occupied if a live booking holds it (allocated/active) OR if
+    # a cancelled booking still has a container_id — the physical container
+    # lives on until the next teardown cycle, so activating a new booking on
+    # those GPUs would collide.
     existing = await prisma.db.litellm_playgroundbooking.find_many(
         where={
             "allocated_node": node.ip_address,
             "night_of": _night_of_dt(night_of),
-            "status": {"in": ["allocated", "active"]},
+            "OR": [
+                {"status": {"in": ["allocated", "active"]}},
+                {"status": "cancelled", "container_id": {"not": None}},
+            ],
         }
     )
     already_booked = {
@@ -349,10 +356,16 @@ async def get_playground_slots(
     nodes = await prisma.db.litellm_playgroundnode.find_many(
         where={"is_playground_eligible": True, "is_healthy": True},
     )
+    # Mirror _reserve_seats's occupancy logic: cancelled-with-container
+    # bookings still hold their seat until the container is actually torn
+    # down, so the UI must render those GPUs as booked.
     bookings = await prisma.db.litellm_playgroundbooking.find_many(
         where={
             "night_of": _night_of_dt(night),
-            "status": {"in": ["allocated", "active"]},
+            "OR": [
+                {"status": {"in": ["allocated", "active"]}},
+                {"status": "cancelled", "container_id": {"not": None}},
+            ],
         }
     )
 
@@ -487,11 +500,18 @@ async def cancel_playground_booking(
     if booking.user_id != _effective_user_id(user_api_key_dict, target_user_id):
         raise HTTPException(403, "not your booking")
 
-    if booking.status != "allocated":
+    if booking.status not in ("allocated", "active"):
         raise HTTPException(
             409, f"cannot cancel booking in status '{booking.status}'"
         )
 
+    # Cancelling an `active` booking flips the DB row immediately but leaves
+    # the running container on the node — the nightly teardown cron (or the
+    # targeted teardown worker, once implemented) will deprovision it. The
+    # conflict check in _reserve_seats treats cancelled-with-container as
+    # still holding the seat so no one can rebook those GPUs tonight and
+    # crash the activator when it tries to add them on top of the stale
+    # container.
     updated = await prisma.db.litellm_playgroundbooking.update(
         where={"booking_id": booking_id},
         data={"status": "cancelled"},
