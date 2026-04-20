@@ -1465,6 +1465,7 @@ async def update_team(   # noqa: PLR0915
                 action="updated",
                 user_api_key_dict=user_api_key_dict,
                 table_name=LitellmTableNames.TEAM_TABLE_NAME,
+                before_value=existing_team_row.model_dump_json(exclude_none=True) if existing_team_row else None,
                 after_value=data.model_dump_json(exclude_none=True),
             )
         )
@@ -1889,6 +1890,7 @@ async def team_member_add(
             action="updated",
             user_api_key_dict=user_api_key_dict,
             table_name=LitellmTableNames.TEAM_TABLE_NAME,
+            before_value=complete_team_data.model_dump_json(exclude_none=True),
             after_value=data.model_dump_json(exclude_none=True),
         )
     )
@@ -2094,6 +2096,7 @@ async def team_member_delete(
             action="updated",
             user_api_key_dict=user_api_key_dict,
             table_name=LitellmTableNames.TEAM_TABLE_NAME,
+            before_value=existing_team_row.model_dump_json(exclude_none=True),
             after_value=data.model_dump_json(exclude_none=True),
         )
     )
@@ -2563,6 +2566,11 @@ async def delete_team(
         team_id_list=data.team_ids, table_name="team"
     )
 
+    _team_before_map = {
+        tr.team_id: tr.model_dump_json(exclude_none=True)
+        for tr in team_rows
+        if tr.team_id
+    }
     for team_id in data.team_ids:
         asyncio.create_task(
             write_audit_log(
@@ -2570,6 +2578,7 @@ async def delete_team(
                 action="deleted",
                 user_api_key_dict=user_api_key_dict,
                 table_name=LitellmTableNames.TEAM_TABLE_NAME,
+                before_value=_team_before_map.get(team_id),
             )
         )
 

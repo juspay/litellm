@@ -1134,7 +1134,7 @@ async def generate_key_fn(
 
         asyncio.create_task(
             write_audit_log(
-                object_id=result.get("token", "") if isinstance(result, dict) else "",
+                object_id=getattr(result, "token", None) or "",
                 action="created",
                 user_api_key_dict=user_api_key_dict,
                 table_name=LitellmTableNames.KEY_TABLE_NAME,
@@ -1678,6 +1678,7 @@ async def update_key_fn(
                 action="updated",
                 user_api_key_dict=user_api_key_dict,
                 table_name=LitellmTableNames.KEY_TABLE_NAME,
+                before_value=existing_key_row.model_dump_json(exclude_none=True),
                 after_value=data.model_dump_json(exclude_none=True),
             )
         )
@@ -1883,6 +1884,11 @@ async def delete_key_fn(
             )
         )
 
+        _key_before_map = {
+            k.token: k.model_dump_json(exclude_none=True)
+            for k in (_keys_being_deleted or [])
+            if k.token
+        }
         for _key in deleted_keys:
             asyncio.create_task(
                 write_audit_log(
@@ -1890,6 +1896,7 @@ async def delete_key_fn(
                     action="deleted",
                     user_api_key_dict=user_api_key_dict,
                     table_name=LitellmTableNames.KEY_TABLE_NAME,
+                    before_value=_key_before_map.get(_key),
                 )
             )
 
@@ -3689,18 +3696,18 @@ async def block_key(
     else:
         hashed_token = data.key
 
-    if litellm.store_audit_logs is True:
-        # make an audit log for key update
-        record = await prisma_client.db.litellm_verificationtoken.find_unique(
-            where={"token": hashed_token}
+    _record_before_block = await prisma_client.db.litellm_verificationtoken.find_unique(
+        where={"token": hashed_token}
+    )
+    if _record_before_block is None:
+        raise ProxyException(
+            message=f"Key {data.key} not found",
+            type=ProxyErrorTypes.bad_request_error,
+            param="key",
+            code=status.HTTP_404_NOT_FOUND,
         )
-        if record is None:
-            raise ProxyException(
-                message=f"Key {data.key} not found",
-                type=ProxyErrorTypes.bad_request_error,
-                param="key",
-                code=status.HTTP_404_NOT_FOUND,
-            )
+
+    if litellm.store_audit_logs is True:
         asyncio.create_task(
             create_audit_log_for_update(
                 request_data=LiteLLM_AuditLogs(
@@ -3714,7 +3721,7 @@ async def block_key(
                     object_id=hashed_token,
                     action="blocked",
                     updated_values="{}",
-                    before_value=record.model_dump_json(),
+                    before_value=_record_before_block.model_dump_json(),
                 )
             )
         )
@@ -3751,6 +3758,7 @@ async def block_key(
             action="updated",
             user_api_key_dict=user_api_key_dict,
             table_name=LitellmTableNames.KEY_TABLE_NAME,
+            before_value=_record_before_block.model_dump_json(exclude_none=True),
             after_value='{"blocked": true}',
         )
     )
@@ -3813,18 +3821,18 @@ async def unblock_key(
     else:
         hashed_token = data.key
 
-    if litellm.store_audit_logs is True:
-        # make an audit log for key update
-        record = await prisma_client.db.litellm_verificationtoken.find_unique(
-            where={"token": hashed_token}
+    _record_before_unblock = await prisma_client.db.litellm_verificationtoken.find_unique(
+        where={"token": hashed_token}
+    )
+    if _record_before_unblock is None:
+        raise ProxyException(
+            message=f"Key {data.key} not found",
+            type=ProxyErrorTypes.bad_request_error,
+            param="key",
+            code=status.HTTP_404_NOT_FOUND,
         )
-        if record is None:
-            raise ProxyException(
-                message=f"Key {data.key} not found",
-                type=ProxyErrorTypes.bad_request_error,
-                param="key",
-                code=status.HTTP_404_NOT_FOUND,
-            )
+
+    if litellm.store_audit_logs is True:
         asyncio.create_task(
             create_audit_log_for_update(
                 request_data=LiteLLM_AuditLogs(
@@ -3838,7 +3846,7 @@ async def unblock_key(
                     object_id=hashed_token,
                     action="blocked",
                     updated_values="{}",
-                    before_value=record.model_dump_json(),
+                    before_value=_record_before_unblock.model_dump_json(),
                 )
             )
         )
@@ -3853,6 +3861,7 @@ async def unblock_key(
             action="updated",
             user_api_key_dict=user_api_key_dict,
             table_name=LitellmTableNames.KEY_TABLE_NAME,
+            before_value=_record_before_unblock.model_dump_json(exclude_none=True),
             after_value='{"blocked": false}',
         )
     )

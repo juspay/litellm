@@ -1151,6 +1151,11 @@ async def update_model(
                     action="updated",
                     user_api_key_dict=user_api_key_dict,
                     table_name=LitellmTableNames.PROXY_MODEL_TABLE_NAME,
+                    before_value=(
+                        _existing_litellm_params.model_dump_json(exclude_none=True)
+                        if isinstance(_existing_litellm_params, BaseModel)
+                        else None
+                    ),
                     after_value=(
                         model_response.model_dump_json(exclude_none=True)
                         if isinstance(model_response, BaseModel)
