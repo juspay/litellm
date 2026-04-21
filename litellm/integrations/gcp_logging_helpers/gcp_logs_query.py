@@ -280,13 +280,17 @@ async def get_concurrent_requests_from_gcp_logs(
         )
         return [], False
 
-    # Query last 5 seconds and get latest entry per token
+    # Query last N seconds and get latest entry per token
+    # Default: 60 seconds (1 minute), configurable via GCP_LOG_QUERY_TIME_WINDOW_SECONDS
+    time_window = int(
+        os.environ.get("GCP_LOG_QUERY_TIME_WINDOW_SECONDS", "60")
+    )
     metrics = await query_parallel_requests_metrics_last_n_seconds(
         target_timestamp=target_timestamp,
         project_id=project_id,
         api_key_filter=api_key_filter,
         key_alias_filter=key_alias_filter,
-        time_window_seconds=5,
+        time_window_seconds=time_window,
     )
 
     if not metrics:

@@ -360,8 +360,7 @@ export default function ConcurrentRequestLogs({
         </p>
         <p className="mt-1">
           <strong>Redis Concurrency:</strong> Value from Redis parallel request
-          counters logged to GCP Cloud Logging within the last 5 seconds before
-          the target timestamp.
+          counters logged to GCP Cloud Logging recently.
         </p>
       </div>
     </div>
