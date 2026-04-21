@@ -175,17 +175,20 @@ def _night_of_dt(night: date) -> datetime:
     return datetime.combine(night, datetime.min.time(), tzinfo=timezone.utc)
 
 
-async def _can_book(user_id: str, night_of: date) -> Tuple[bool, str]:
+async def _can_book(user_id: str, night_of: date, db=None) -> Tuple[bool, str]:
     """Gate booking creation for a specific night:
       - SSH key required
       - night_of within [today, today + BOOKING_HORIZON_DAYS]
       - for same-day bookings, tonight's cutoff hasn't passed
       - user doesn't already hold a (non-cancelled) booking for night_of
       - weekly limit honored, except during tonight's overflow window
-    """
-    prisma = _prisma()
 
-    if not await prisma.db.litellm_usersshkey.count(where={"user_id": user_id}):
+    Pass `db` to run inside a transaction; defaults to the global client.
+    """
+    if db is None:
+        db = _prisma().db
+
+    if not await db.litellm_usersshkey.count(where={"user_id": user_id}):
         return False, "Register an SSH key before booking"
 
     today = _tonight()
@@ -208,12 +211,18 @@ async def _can_book(user_id: str, night_of: date) -> Tuple[bool, str]:
     # terminated, and activation_failed bookings have released their seat and
     # must not block a fresh booking for the same night. Using a positive
     # allowlist so any new terminal status added in the future doesn't
-    # accidentally gate retries.
-    if await prisma.db.litellm_playgroundbooking.count(
+    # accidentally gate retries. Exception: a `cancelled` booking whose
+    # `container_id` is still set is a live container awaiting the teardown
+    # reconciler — it still holds the user's per-night slot, matching
+    # _reserve_seats's occupancy rule.
+    if await db.litellm_playgroundbooking.count(
         where={
             "user_id": user_id,
             "night_of": _night_of_dt(night_of),
-            "status": {"in": ["allocated", "active"]},
+            "OR": [
+                {"status": {"in": ["allocated", "active"]}},
+                {"status": "cancelled", "container_id": {"not": None}},
+            ],
         }
     ):
         return False, f"You already have a booking for {night_of.isoformat()}"
@@ -224,7 +233,7 @@ async def _can_book(user_id: str, night_of: date) -> Tuple[bool, str]:
     # never provisioned shouldn't burn a slot.
     if phase == "open":
         week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-        recent = await prisma.db.litellm_playgroundbooking.count(
+        recent = await db.litellm_playgroundbooking.count(
             where={
                 "user_id": user_id,
                 "created_at": {"gte": week_ago},
@@ -256,21 +265,22 @@ def _parse_gpu_indices(raw: str) -> List[int]:
     return parsed
 
 
-async def _reserve_seats(night_of: date, node_name: str, gpu_indices_str: str):
+async def _reserve_seats(night_of: date, node_name: str, gpu_indices_str: str, db=None):
     """Resolve node_name, validate gpu_indices against node capacity and
     existing bookings for night_of. Returns (node, sorted_indices) on success,
     raises HTTPException on any collision or validation failure.
 
-    Known race: the overlap check and the subsequent INSERT are not in a
-    single DB transaction, so two concurrent callers requesting overlapping
-    seats could both succeed. Acceptable at current user count; if it bites,
-    wrap with a pg advisory lock keyed on (node_id, night_of).
+    Pass `db` (a `tx` handle) to run the overlap check inside the same
+    transaction as the caller's INSERT; callers that do so get collision
+    detection with snapshot-isolation semantics, closing the
+    concurrent-double-book window.
     """
-    prisma = _prisma()
+    if db is None:
+        db = _prisma().db
 
     indices = _parse_gpu_indices(gpu_indices_str)
 
-    node = await prisma.db.litellm_playgroundnode.find_first(
+    node = await db.litellm_playgroundnode.find_first(
         where={"name": node_name}
     )
     if node is None:
@@ -292,7 +302,7 @@ async def _reserve_seats(night_of: date, node_name: str, gpu_indices_str: str):
     # a cancelled booking still has a container_id — the physical container
     # lives on until the next teardown cycle, so activating a new booking on
     # those GPUs would collide.
-    existing = await prisma.db.litellm_playgroundbooking.find_many(
+    existing = await db.litellm_playgroundbooking.find_many(
         where={
             "allocated_node": node.ip_address,
             "night_of": _night_of_dt(night_of),
@@ -427,29 +437,40 @@ async def create_playground_booking(
     prisma = _prisma()
     user_id = _effective_user_id(user_api_key_dict, data.target_user_id)
 
-    ok, reason = await _can_book(user_id, data.night_of)
-    if not ok:
-        raise HTTPException(409, reason)
-
-    node, indices = await _reserve_seats(data.night_of, data.node_name, data.gpu_indices)
-
+    # Serialize can_book + reserve_seats + create inside one transaction so
+    # two concurrent booking attempts from the same user (double-click, mobile
+    # retry) can't both pass the uniqueness checks before either INSERT
+    # commits. Postgres snapshot isolation gives the second transaction a
+    # view that includes the first's INSERT once it commits, so the second's
+    # count-based checks in _can_book / _reserve_seats will correctly observe
+    # the new row and reject.
     # `is_overflow` is a same-day-after-OVERFLOW_HOUR distinction; future-night
     # bookings are never overflow regardless of the wall clock.
     is_overflow = (
         data.night_of == _tonight() and _booking_phase() == "overflow"
     )
 
-    booking = await prisma.db.litellm_playgroundbooking.create(
-        data={
-            "user_id": user_id,
-            "gpu_count": len(indices),
-            "preferred_node": None,
-            "allocated_node": node.ip_address,
-            "allocated_gpus": ",".join(str(i) for i in indices),
-            "night_of": _night_of_dt(data.night_of),
-            "is_overflow": is_overflow,
-        }
-    )
+    async with prisma.db.tx() as tx:
+        ok, reason = await _can_book(user_id, data.night_of, db=tx)
+        if not ok:
+            raise HTTPException(409, reason)
+
+        node, indices = await _reserve_seats(
+            data.night_of, data.node_name, data.gpu_indices, db=tx
+        )
+
+        booking = await tx.litellm_playgroundbooking.create(
+            data={
+                "user_id": user_id,
+                "gpu_count": len(indices),
+                "preferred_node": None,
+                "allocated_node": node.ip_address,
+                "allocated_gpus": ",".join(str(i) for i in indices),
+                "night_of": _night_of_dt(data.night_of),
+                "is_overflow": is_overflow,
+            }
+        )
+
     verbose_proxy_logger.info(
         f"playground: booking {booking.booking_id} user={user_id} "
         f"gpus={indices} node={node.ip_address} night={data.night_of.isoformat()}"
