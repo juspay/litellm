@@ -42,7 +42,7 @@ async def write_audit_log(
     if prisma_client is None:
         return
 
-    _changed_by = litellm_changed_by or user_api_key_dict.user_id or ""
+    _changed_by = litellm_changed_by or user_api_key_dict.user_email or user_api_key_dict.user_id or ""
     _changed_by_api_key = user_api_key_dict.api_key or ""
 
     from prisma import Json as PrismaJson
