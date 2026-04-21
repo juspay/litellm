@@ -171,8 +171,10 @@ async def query_parallel_requests_metrics_last_n_seconds(
         )
 
         # Execute the query using Client API
-        # Limit to 500 entries max for performance (we only need latest per token)
-        MAX_ENTRIES = 500
+        # Limit entries for performance (we only need latest per token)
+        MAX_ENTRIES = int(
+            os.environ.get("GCP_LOG_QUERY_MAX_ENTRIES", "15000")
+        )
         all_entries = []
         for entry in client.list_entries(
             filter_=filter_str,
