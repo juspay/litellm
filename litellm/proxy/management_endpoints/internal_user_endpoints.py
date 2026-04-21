@@ -750,6 +750,9 @@ async def user_info(  # noqa: PLR0915
     user_id: Optional[str] = fastapi.Query(
         default=None, description="User ID in the request parameters"
     ),
+    user_email: Optional[str] = fastapi.Query(
+        default=None, description="User email to look up user by email"
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -774,6 +777,19 @@ async def user_info(  # noqa: PLR0915
             raise Exception(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
+
+        # Resolve user_id from user_email if provided
+        if user_id is None and user_email is not None:
+            user_row = await prisma_client.db.litellm_usertable.find_first(
+                where={"user_email": user_email}
+            )
+            if user_row is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"User with email {user_email} not found",
+                )
+            user_id = user_row.user_id
+
         if (
             user_id is None
             and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
