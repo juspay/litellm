@@ -6,7 +6,7 @@ on:
       - main
       - hotfix/**
       - sync/v*
-  workflow_dispatch:  # allows manual trigger for testing
+  workflow_dispatch:  #git allows manual trigger for testing
 
 env:
   IMAGE_NAME: litellm
