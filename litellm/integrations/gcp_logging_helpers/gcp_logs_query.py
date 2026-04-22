@@ -179,7 +179,7 @@ async def query_parallel_requests_metrics_last_n_seconds(
         for entry in client.list_entries(
             filter_=filter_str,
             order_by="timestamp desc",  # Most recent first (by receipt time)
-            page_size=100,  # Request 100 entries per page
+            page_size=1000,  # Max page size to minimize API calls and avoid 429 rate limits
         ):
             all_entries.append(entry)
             if len(all_entries) >= MAX_ENTRIES:
