@@ -9278,19 +9278,16 @@ export const deleteClaudeCodePlugin = async (
 
 /**
  * Fetch concurrent request logs (GCP Logs + SpendLogs combined)
+ * Returns ALL data for client-side pagination (to avoid repeated GCP API calls on page changes).
  * @param accessToken - User access token
  * @param isoTimestamp - Target timestamp in ISO 8601 format (with milliseconds)
- * @param page - Page number (1-indexed)
- * @param pageSize - Number of items per page
  * @param apiKey - Optional API key filter
  * @param keyAlias - Optional key alias filter (partial match)
  * @param matchStatus - Optional match status filter: 'matching', 'mismatching', or undefined for all
  */
-export const concurrentRequestLogsPaginatedCall = async (
+export const concurrentRequestLogsCall = async (
   accessToken: string,
   isoTimestamp: string,
-  page: number,
-  pageSize: number,
   apiKey?: string,
   keyAlias?: string,
   matchStatus?: string
@@ -9299,8 +9296,6 @@ export const concurrentRequestLogsPaginatedCall = async (
     const proxyBaseUrl = getProxyBaseUrl();
     const params = new URLSearchParams({
       timestamp: isoTimestamp,
-      page: page.toString(),
-      page_size: pageSize.toString(),
     });
 
     if (apiKey) {
