@@ -159,10 +159,9 @@ end
 """
 
 # Lua script for atomic decrement of max_parallel_requests
-# This resets TTL to keep the counter alive for active keys
+# Note: Does NOT set/modify TTL - TTL is only set during increment
 MAX_PARALLEL_REQUESTS_DECREMENT_SCRIPT = """
 local counter_key = KEYS[1]
-local ttl_seconds = tonumber(ARGV[1])
 
 -- Get current counter value
 local current = redis.call('GET', counter_key)
@@ -175,8 +174,8 @@ end
 local previous_count = current_count
 current_count = redis.call('DECR', counter_key)
 
--- Always refresh TTL after decrement (key now exists)
-redis.call('EXPIRE', counter_key, ttl_seconds)
+-- Note: We do NOT set TTL here. TTL should only be set during increment.
+-- This allows the counter to naturally expire when all requests complete.
 
 -- Return: previous_count, current_count
 return {previous_count, current_count}
