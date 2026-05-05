@@ -180,9 +180,9 @@ class ProductionGCSLogger(CustomLogger):
                 "model": {
                     "requested": kwargs.get("model"),
                     "used": getattr(response_obj, "model", None),
-                    "deployment": metadata.get("deployment"),
-                    "model_group": metadata.get("model_group"),
-                    "mode": metadata.get("model_info", {}).get("mode"),
+                    "deployment": combined_metadata.get("deployment"),
+                    "model_group": combined_metadata.get("model_group"),
+                    "mode": combined_metadata.get("model_info", {}).get("mode"),
                 },
                 "conversation": {
                     "messages": kwargs.get("input", kwargs.get("messages", [])),
@@ -200,17 +200,11 @@ class ProductionGCSLogger(CustomLogger):
                 "timing": {
                     "start_time": str(start_time),
                     "end_time": str(end_time),
-                    "duration_seconds": (
-                        (end_time - start_time).total_seconds()
-                        if start_time and end_time
-                        else None
-                    ),
-                    "llm_api_duration_ms": metadata.get("llm_api_duration_ms"),
+                    "duration_seconds": ((end_time - start_time).total_seconds() if start_time and end_time else None),
+                    "llm_api_duration_ms": combined_metadata.get("llm_api_duration_ms"),
                 },
                 "headers": {
-                    key: data
-                    for key, data in metadata.get("headers", {}).items()
-                    if key not in ["x-api-key"]
+                    key: data for key, data in combined_metadata.get("headers", {}).items() if key not in ["x-api-key"]
                 },
             }
 
@@ -258,13 +252,6 @@ class ProductionGCSLogger(CustomLogger):
                     "total_tokens": getattr(usage, "total_tokens", 0),
                 }
 
-            try:
-                success_log["cost"] = litellm.completion_cost(
-                    completion_response=response_obj
-                )
-            except Exception:
-                success_log["cost"] = 0
-
             if self.success_bucket_name:
                 await self._upload_to_gcs_async(
                     success_log, self.success_bucket_name, "success"
@@ -282,9 +269,9 @@ class ProductionGCSLogger(CustomLogger):
         try:
             correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
             litellm_params = kwargs.get("litellm_params", {})
-            metadata = litellm_params.get(
-                "metadata", litellm_params.get("litellm_metadata", {})
-            ) or litellm_params.get("litellm_metadata", {})
+            metadata = litellm_params.get("metadata", litellm_params.get("litellm_metadata", {})) or litellm_params.get(
+                "litellm_metadata", {}
+            )
             # Extract date and session_id for queryability
             log_date = datetime.utcnow().strftime("%Y-%m-%d")
             session_id = self._get_session_id(kwargs, litellm_params, metadata)
@@ -299,9 +286,7 @@ class ProductionGCSLogger(CustomLogger):
                     "email": metadata.get("user_api_key_user_email"),
                     "user_id": metadata.get("user_api_key_user_id"),
                     "team_alias": metadata.get("user_api_key_team_alias"),
-                    "department": (metadata.get("user_api_key_metadata") or {}).get(
-                        "department"
-                    ),
+                    "department": (metadata.get("user_api_key_metadata") or {}).get("department"),
                 },
                 "model": {
                     "requested": kwargs.get("model"),
