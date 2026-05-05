@@ -145,12 +145,25 @@ class ProductionGCSLogger(CustomLogger):
         try:
             correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
             litellm_params = kwargs.get("litellm_params", {})
-            metadata = litellm_params.get(
-                "metadata", litellm_params.get("litellm_metadata", {})
-            ) or litellm_params.get("litellm_metadata", {})
+            metadata = litellm_params.get("metadata", {})
+            litellm_metadata = litellm_params.get("litellm_metadata", {})
+            # Try metadata first, then litellm_metadata for email and user_id
+            email = (
+                metadata.get("user_api_key_user_email")
+                or litellm_metadata.get("user_api_key_user_email")
+                or metadata.get("user_api_key_user_id")
+                or litellm_metadata.get("user_api_key_user_id")
+            )
+            user_id = metadata.get("user_api_key_user_id") or litellm_metadata.get("user_api_key_user_id")
+            team_alias = metadata.get("user_api_key_team_alias") or litellm_metadata.get("user_api_key_team_alias")
+            department = (
+                metadata.get("user_api_key_metadata") or litellm_metadata.get("user_api_key_metadata") or {}
+            ).get("department", "unknown")
             # Extract date and session_id for queryability
             log_date = datetime.utcnow().strftime("%Y-%m-%d")
-            session_id = self._get_session_id(kwargs, litellm_params, metadata)
+            # Combine metadata for _get_session_id
+            combined_metadata = {**(litellm_metadata or {}), **(metadata or {})}
+            session_id = self._get_session_id(kwargs, litellm_params, combined_metadata)
 
             success_log = {
                 "correlation_id": correlation_id,
@@ -159,12 +172,10 @@ class ProductionGCSLogger(CustomLogger):
                 "litellm_session_id": session_id,
                 "type": "SUCCESS",
                 "user": {
-                    "email": metadata.get("user_api_key_user_email"),
-                    "user_id": metadata.get("user_api_key_user_id"),
-                    "team_alias": metadata.get("user_api_key_team_alias"),
-                    "department": (metadata.get("user_api_key_metadata") or {}).get(
-                        "department", "unknown"
-                    ),
+                    "email": email,
+                    "user_id": user_id,
+                    "team_alias": team_alias,
+                    "department": department,
                 },
                 "model": {
                     "requested": kwargs.get("model"),
@@ -203,9 +214,13 @@ class ProductionGCSLogger(CustomLogger):
                 },
             }
 
-            if metadata.get("user_api_key_user_email") is None:
+            if email is None:
                 try:
-                    success_log["litellm_kwargs"] = kwargs  # For debugging when user info is missing
+                    # Filter out keys containing 'api' or 'key' to avoid logging sensitive data
+                    filtered_kwargs = {
+                        k: v for k, v in kwargs.items() if "api" not in k.lower() and "key" not in k.lower()
+                    }
+                    success_log["litellm_kwargs"] = filtered_kwargs  # For debugging when user info is missing
                 except Exception:
                     success_log["description"] = "Could not include kwargs for debugging"
                     pass  # Don't fail logging if we can't include kwargs
