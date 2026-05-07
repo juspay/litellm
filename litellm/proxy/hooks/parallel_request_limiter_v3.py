@@ -1594,6 +1594,11 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 f"timestamp={current_ts}"
             )
 
+            # DEBUG: Track caller after METRICS
+            import traceback
+            stack = "".join(traceback.format_stack()[-30:-1])
+            print(f"[DEBUG INCREMENT] key={descriptor_key}:{descriptor_value[:8]}..., key_alias={key_alias}, caller stack:\n{stack}\n{'='*40}")
+
             verbose_proxy_logger.debug(
                 f"Max parallel requests increment: key={descriptor_key}:{descriptor_value}, "
                 f"previous={previous_count}, new={new_count}"
@@ -1671,6 +1676,11 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 f"operation=decrement, "
                 f"timestamp={current_ts}"
             )
+
+            # DEBUG: Track caller after METRICS
+            import traceback
+            stack = "".join(traceback.format_stack()[-30:-1])
+            print(f"[DEBUG DECREMENT] key={descriptor_key}:{descriptor_value[:8]}..., key_alias={metric_key_alias}, caller stack:\n{stack}\n{'='*40}")
 
             verbose_proxy_logger.debug(
                 f"Max parallel requests decrement: key={descriptor_key}:{descriptor_value}, "
