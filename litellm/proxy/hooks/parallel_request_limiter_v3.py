@@ -1594,6 +1594,17 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 f"timestamp={current_ts}"
             )
 
+            # DEBUG: Track caller after METRICS
+            try:
+                import traceback
+                full_stack = traceback.format_stack()
+                stack_len = len(full_stack)
+                start_idx = max(0, stack_len - 30)
+                stack = "".join(full_stack[start_idx:-1]) if stack_len > 1 else "".join(full_stack)
+                print(f"[DEBUG INCREMENT] key={descriptor_key}:{descriptor_value[:8]}..., key_alias={key_alias}, stack_frames={stack_len}, caller_stack:\n{stack}\n{'='*40}")
+            except Exception as e:
+                print(f"[DEBUG INCREMENT] key={descriptor_key}:{descriptor_value[:8]}..., key_alias={key_alias}, stack_error={str(e)}")
+
             verbose_proxy_logger.debug(
                 f"Max parallel requests increment: key={descriptor_key}:{descriptor_value}, "
                 f"previous={previous_count}, new={new_count}"
@@ -1671,6 +1682,17 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 f"operation=decrement, "
                 f"timestamp={current_ts}"
             )
+
+            # DEBUG: Track caller after METRICS
+            try:
+                import traceback
+                full_stack = traceback.format_stack()
+                stack_len = len(full_stack)
+                start_idx = max(0, stack_len - 30)
+                stack = "".join(full_stack[start_idx:-1]) if stack_len > 1 else "".join(full_stack)
+                print(f"[DEBUG DECREMENT] key={descriptor_key}:{descriptor_value[:8]}..., key_alias={metric_key_alias}, stack_frames={stack_len}, caller_stack:\n{stack}\n{'='*40}")
+            except Exception as e:
+                print(f"[DEBUG DECREMENT] key={descriptor_key}:{descriptor_value[:8]}..., key_alias={metric_key_alias}, stack_error={str(e)}")
 
             verbose_proxy_logger.debug(
                 f"Max parallel requests decrement: key={descriptor_key}:{descriptor_value}, "
