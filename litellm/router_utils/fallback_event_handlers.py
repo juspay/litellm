@@ -119,6 +119,17 @@ async def run_async_fallback(
 
     error_from_fallbacks = original_exception
 
+    print(
+        f"[GLM_FB_DEBUG][FALLBACK_TRIGGERED] "
+        f"original_model_group={original_model_group} "
+        f"fallback_model_group={fallback_model_group} "
+        f"fallback_depth={fallback_depth}/{max_fallbacks} "
+        f"call_id={kwargs.get('litellm_call_id')!r} "
+        f"original_exception_type={type(original_exception).__name__} "
+        f"original_exception_status={getattr(original_exception, 'status_code', None)} "
+        f"original_exception_msg={str(original_exception)[:300]!r}"
+    )
+
     for mg in fallback_model_group:
         if mg == original_model_group:
             continue

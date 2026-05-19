@@ -1363,6 +1363,15 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     f"Limit resets at: {reset_time_formatted}"
                 )
 
+                print(
+                    f"[GLM_FB_DEBUG][MPR_429] descriptor_key={descriptor_key} "
+                    f"descriptor_value={descriptor_value} "
+                    f"rate_limit_type={rate_limit_type} "
+                    f"current_limit={current_limit} "
+                    f"remaining={remaining_display} "
+                    f"reset_at={reset_time_formatted}"
+                )
+
                 raise HTTPException(
                     status_code=429,
                     detail=detail,
@@ -1993,6 +2002,14 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         exhausted), whereas async_log_failure_event fires for each individual
         deployment attempt.
         """
+        print(
+            f"[GLM_FB_DEBUG][MPR_POST_CALL_FAILURE] model={request_data.get('model')!r} "
+            f"call_id={request_data.get('litellm_call_id')!r} "
+            f"api_key_present={bool(user_api_key_dict and user_api_key_dict.api_key)} "
+            f"original_exception_type={type(original_exception).__name__} "
+            f"original_exception_status={getattr(original_exception, 'status_code', None)} "
+            f"original_exception_msg={str(original_exception)[:200]!r}"
+        )
         try:
             if user_api_key_dict and user_api_key_dict.api_key:
                 await self._execute_max_parallel_requests_decrement(

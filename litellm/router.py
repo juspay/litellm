@@ -2296,6 +2296,16 @@ class Router:
                 "litellm_params", {}
             ).get("timeout", None)
             e.message += f"\n\nDeployment Info: request_timeout: {deployment_request_timeout_param}\ntimeout: {deployment_timeout_param}"
+            print(
+                f"[GLM_FB_DEBUG][DEPLOYMENT_TIMEOUT] "
+                f"deployment_id={(deployment or {}).get('model_info', {}).get('id') if deployment else None} "
+                f"model={(deployment or {}).get('litellm_params', {}).get('model') if deployment else None} "
+                f"api_base={(deployment or {}).get('litellm_params', {}).get('api_base') if deployment else None} "
+                f"request_timeout={deployment_request_timeout_param} "
+                f"timeout={deployment_timeout_param} "
+                f"call_id={kwargs.get('litellm_call_id')!r} "
+                f"error={str(e)[:200]!r}"
+            )
             # Set per-deployment num_retries on exception for retry logic
             if deployment is not None:
                 self._set_deployment_num_retries_on_exception(e, deployment)
@@ -2303,6 +2313,17 @@ class Router:
         except Exception as e:
             verbose_router_logger.info(
                 f"litellm.acompletion(model={model_name})\033[31m Exception {str(e)}\033[0m"
+            )
+            print(
+                f"[GLM_FB_DEBUG][DEPLOYMENT_EXCEPTION] "
+                f"deployment_id={(deployment or {}).get('model_info', {}).get('id') if deployment else None} "
+                f"model={(deployment or {}).get('litellm_params', {}).get('model') if deployment else None} "
+                f"api_base={(deployment or {}).get('litellm_params', {}).get('api_base') if deployment else None} "
+                f"model_name={model_name!r} "
+                f"call_id={kwargs.get('litellm_call_id')!r} "
+                f"exception_type={type(e).__name__} "
+                f"exception_status={getattr(e, 'status_code', None)} "
+                f"exception_msg={str(e)[:300]!r}"
             )
             if model_name is not None:
                 self.fail_calls[model_name] += 1

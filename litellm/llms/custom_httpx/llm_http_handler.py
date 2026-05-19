@@ -150,6 +150,108 @@ else:
     LiteLLMLoggingObj = Any
 
 
+# ----- [GLM_FB_DEBUG] outbound wire capture (temporary; tag for easy removal) -----
+def _glm_fb_debug_log_outbound(
+    direction: str,
+    api_base: Optional[str],
+    headers: Optional[dict],
+    data: Optional[dict] = None,
+    response: Optional[httpx.Response] = None,
+    error: Optional[BaseException] = None,
+    signed_json_body: Optional[bytes] = None,
+    stream: bool = False,
+    attempt: int = 0,
+) -> None:
+    """Log outbound HTTP wire data when target looks like GLM/sglang. Safe-no-op otherwise.
+
+    Only fires for upstreams that look like our GLM sglang nodes — keyed off
+    api_base substring or model name in body — to avoid log spam from every
+    upstream call. Redacts Authorization/x-api-key headers. Truncates response
+    body to first 1KB. Skips full body capture for streaming responses
+    (the upstream POST response is the raw SSE stream — slurping it would
+    deadlock the request).
+    """
+    try:
+        api_base_str = str(api_base or "")
+        model_str = (data or {}).get("model", "") if isinstance(data, dict) else ""
+        # Heuristic match: only capture for sglang/glm-shaped traffic. Tighten as needed.
+        if not (
+            "glm" in api_base_str.lower()
+            or "GLM" in str(model_str)
+            or "glm" in str(model_str).lower()
+            or "8000" in api_base_str  # sglang default port in our config
+            or "8080" in api_base_str
+        ):
+            return
+
+        redacted_headers = None
+        if isinstance(headers, dict):
+            redacted_headers = {
+                k: (
+                    "<redacted>"
+                    if k.lower() in {"authorization", "x-api-key", "api-key", "cookie"}
+                    else v
+                )
+                for k, v in headers.items()
+            }
+
+        if direction == "REQUEST":
+            body_repr: str
+            if signed_json_body is not None:
+                body_repr = f"<signed_json_body len={len(signed_json_body)}>"
+            else:
+                try:
+                    body_repr = json.dumps(data, default=str)
+                except Exception:
+                    body_repr = repr(data)
+            print(
+                f"[GLM_FB_DEBUG][OUTBOUND_REQUEST] attempt={attempt} stream={stream} "
+                f"url={api_base_str} headers={redacted_headers} body={body_repr}"
+            )
+        elif direction == "RESPONSE":
+            status = getattr(response, "status_code", None)
+            resp_headers = (
+                dict(getattr(response, "headers", {}) or {}) if response else None
+            )
+            # Don't read the body for streaming responses — that would consume the stream.
+            body_repr = "<stream>" if stream else "<unavailable>"
+            if response is not None and not stream:
+                try:
+                    body_repr = response.text[:1024]
+                except Exception as e:
+                    body_repr = f"<failed to read body: {type(e).__name__}: {e}>"
+            print(
+                f"[GLM_FB_DEBUG][OUTBOUND_RESPONSE] attempt={attempt} stream={stream} "
+                f"url={api_base_str} status={status} resp_headers={resp_headers} "
+                f"body={body_repr!r}"
+            )
+        elif direction == "RESPONSE_HTTPSTATUSERROR":
+            status = getattr(response, "status_code", None) if response is not None else None
+            body_repr = "<unavailable>"
+            if response is not None:
+                try:
+                    body_repr = response.text[:1024]
+                except Exception as e:
+                    body_repr = f"<failed: {type(e).__name__}: {e}>"
+            print(
+                f"[GLM_FB_DEBUG][OUTBOUND_HTTPSTATUSERROR] attempt={attempt} stream={stream} "
+                f"url={api_base_str} status={status} error={str(error)[:300]!r} "
+                f"body={body_repr!r}"
+            )
+        elif direction == "RESPONSE_EXCEPTION":
+            print(
+                f"[GLM_FB_DEBUG][OUTBOUND_EXCEPTION] attempt={attempt} stream={stream} "
+                f"url={api_base_str} error_type={type(error).__name__} "
+                f"error={str(error)[:300]!r}"
+            )
+    except Exception as _log_err:
+        # Never let the debug logger itself break the request path.
+        try:
+            print(f"[GLM_FB_DEBUG][LOGGER_BUG] {type(_log_err).__name__}: {_log_err}")
+        except Exception:
+            pass
+
+
 class BaseLLMHTTPHandler:
     async def _make_common_async_call(
         self,
@@ -171,6 +273,15 @@ class BaseLLMHTTPHandler:
 
         response: Optional[httpx.Response] = None
         for i in range(max(max_retry_on_unprocessable_entity_error, 1)):
+            _glm_fb_debug_log_outbound(
+                direction="REQUEST",
+                api_base=api_base,
+                headers=headers,
+                data=data,
+                signed_json_body=signed_json_body,
+                stream=stream,
+                attempt=i,
+            )
             try:
                 response = await async_httpx_client.post(
                     url=api_base,
@@ -184,7 +295,26 @@ class BaseLLMHTTPHandler:
                     stream=stream,
                     logging_obj=logging_obj,
                 )
+                _glm_fb_debug_log_outbound(
+                    direction="RESPONSE",
+                    api_base=api_base,
+                    headers=headers,
+                    data=data,
+                    response=response,
+                    stream=stream,
+                    attempt=i,
+                )
             except httpx.HTTPStatusError as e:
+                _glm_fb_debug_log_outbound(
+                    direction="RESPONSE_HTTPSTATUSERROR",
+                    api_base=api_base,
+                    headers=headers,
+                    data=data,
+                    response=getattr(e, "response", None),
+                    error=e,
+                    stream=stream,
+                    attempt=i,
+                )
                 hit_max_retry = i + 1 == max_retry_on_unprocessable_entity_error
                 should_retry = provider_config.should_retry_llm_api_inside_llm_translation_on_http_error(
                     e=e, litellm_params=litellm_params
@@ -199,6 +329,15 @@ class BaseLLMHTTPHandler:
                 else:
                     raise self._handle_error(e=e, provider_config=provider_config)
             except Exception as e:
+                _glm_fb_debug_log_outbound(
+                    direction="RESPONSE_EXCEPTION",
+                    api_base=api_base,
+                    headers=headers,
+                    data=data,
+                    error=e,
+                    stream=stream,
+                    attempt=i,
+                )
                 raise self._handle_error(e=e, provider_config=provider_config)
             break
 
@@ -231,6 +370,15 @@ class BaseLLMHTTPHandler:
         response: Optional[httpx.Response] = None
 
         for i in range(max(max_retry_on_unprocessable_entity_error, 1)):
+            _glm_fb_debug_log_outbound(
+                direction="REQUEST",
+                api_base=api_base,
+                headers=headers,
+                data=data,
+                signed_json_body=signed_json_body,
+                stream=stream,
+                attempt=i,
+            )
             try:
                 response = sync_httpx_client.post(
                     url=api_base,
@@ -244,7 +392,26 @@ class BaseLLMHTTPHandler:
                     stream=stream,
                     logging_obj=logging_obj,
                 )
+                _glm_fb_debug_log_outbound(
+                    direction="RESPONSE",
+                    api_base=api_base,
+                    headers=headers,
+                    data=data,
+                    response=response,
+                    stream=stream,
+                    attempt=i,
+                )
             except httpx.HTTPStatusError as e:
+                _glm_fb_debug_log_outbound(
+                    direction="RESPONSE_HTTPSTATUSERROR",
+                    api_base=api_base,
+                    headers=headers,
+                    data=data,
+                    response=getattr(e, "response", None),
+                    error=e,
+                    stream=stream,
+                    attempt=i,
+                )
                 hit_max_retry = i + 1 == max_retry_on_unprocessable_entity_error
                 should_retry = provider_config.should_retry_llm_api_inside_llm_translation_on_http_error(
                     e=e, litellm_params=litellm_params
@@ -259,6 +426,15 @@ class BaseLLMHTTPHandler:
                 else:
                     raise self._handle_error(e=e, provider_config=provider_config)
             except Exception as e:
+                _glm_fb_debug_log_outbound(
+                    direction="RESPONSE_EXCEPTION",
+                    api_base=api_base,
+                    headers=headers,
+                    data=data,
+                    error=e,
+                    stream=stream,
+                    attempt=i,
+                )
                 raise self._handle_error(e=e, provider_config=provider_config)
             break
 

@@ -221,32 +221,45 @@ def _should_cooldown_deployment(
         )
 
         exception_status_int = cast_exception_status_to_int(exception_status)
+        cooldown_reason = None
+        cooldown_decision = False
         if exception_status_int == 429 and not is_single_deployment_model_group:
-            return True
+            cooldown_reason = "429_and_multi_deployment"
+            cooldown_decision = True
         elif (
             percent_fails == 1.0
             and total_requests_this_minute
             >= SINGLE_DEPLOYMENT_TRAFFIC_FAILURE_THRESHOLD
         ):
-            # Cooldown if all requests failed and we have reasonable traffic
-            return True
+            cooldown_reason = "100pct_fails_threshold"
+            cooldown_decision = True
         elif (
             percent_fails > DEFAULT_FAILURE_THRESHOLD_PERCENT
             and total_requests_this_minute >= DEFAULT_FAILURE_THRESHOLD_MINIMUM_REQUESTS
             and not is_single_deployment_model_group  # by default we should avoid cooldowns on single deployment model groups
         ):
-            # Only apply error rate cooldown when we have enough requests to make the percentage meaningful
-            return True
-
+            cooldown_reason = "failure_rate_above_threshold"
+            cooldown_decision = True
         elif (
             litellm._should_retry(
                 status_code=cast_exception_status_to_int(exception_status)
             )
             is False
         ):
-            return True
+            cooldown_reason = "non_retryable_status"
+            cooldown_decision = True
 
-        return False
+        print(
+            f"[GLM_FB_DEBUG][COOLDOWN_DECISION] deployment_id={deployment} "
+            f"decision={cooldown_decision} reason={cooldown_reason} "
+            f"exception_status={exception_status_int} "
+            f"exception_type={type(original_exception).__name__} "
+            f"percent_fails={percent_fails:.2f} "
+            f"successes_min={num_successes_this_minute} fails_min={num_fails_this_minute} "
+            f"total_min={total_requests_this_minute} "
+            f"single_deployment={is_single_deployment_model_group}"
+        )
+        return cooldown_decision
     else:
         return should_cooldown_based_on_allowed_fails_policy(
             litellm_router_instance=litellm_router_instance,
@@ -300,6 +313,15 @@ def _set_cooldown_deployments(
         exception_status=exception_status,
         original_exception=original_exception,
     ):
+        model_group = litellm_router_instance.get_model_group(id=deployment)
+        print(
+            f"[GLM_FB_DEBUG][COOLDOWN_SET] deployment_id={deployment} "
+            f"model_group={[m.get('model_name') for m in (model_group or [])][:5]} "
+            f"exception_status={exception_status} "
+            f"exception_type={type(original_exception).__name__} "
+            f"exception_msg={str(original_exception)[:200]!r} "
+            f"cooldown_time={time_to_cooldown}"
+        )
         litellm_router_instance.cooldown_cache.add_deployment_to_cooldown(
             model_id=deployment,
             original_exception=original_exception,
@@ -344,6 +366,11 @@ async def _async_get_cooldown_deployments(
     ):
         cached_value_deployment_ids = [cv[0] for cv in cooldown_models]
 
+    if cached_value_deployment_ids:
+        print(
+            f"[GLM_FB_DEBUG][COOLDOWN_QUERY] active_cooled_down_deployment_ids="
+            f"{cached_value_deployment_ids}"
+        )
     verbose_router_logger.debug(f"retrieve cooldown models: {cooldown_models}")
     return cached_value_deployment_ids
 

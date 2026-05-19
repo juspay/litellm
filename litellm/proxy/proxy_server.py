@@ -7195,6 +7195,23 @@ async def chat_completion(  # noqa: PLR0915
             and user_api_key_dict.agent_id is not None
         ):
             data["metadata"]["agent_id"] = user_api_key_dict.agent_id
+
+    try:
+        import json as _json
+        _model_in = data.get("model") if isinstance(data, dict) else None
+        if _model_in is not None and "glm" in str(_model_in).lower():
+            print(
+                f"[GLM_FB_DEBUG][INBOUND_CHAT] route=/v1/chat/completions "
+                f"api_key_hash={getattr(user_api_key_dict, 'api_key', None)!r} "
+                f"team_id={getattr(user_api_key_dict, 'team_id', None)!r} "
+                f"user_id={getattr(user_api_key_dict, 'user_id', None)!r} "
+                f"client_ip={request.client.host if request.client else None} "
+                f"user_agent={request.headers.get('user-agent')!r} "
+                f"body={_json.dumps(data, default=str)}"
+            )
+    except Exception as _e:
+        print(f"[GLM_FB_DEBUG][INBOUND_CHAT_LOGGER_BUG] {type(_e).__name__}: {_e}")
+
     base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
         result = await base_llm_response_processor.base_process_llm_request(

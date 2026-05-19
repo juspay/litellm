@@ -585,6 +585,10 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 "[StickyLeastBusy WARNING] Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
             )
+            print(
+                f"[GLM_FB_DEBUG][STICKY_FALLBACK] model_group={model_group} "
+                f"reason=redis_unavailable healthy_count={len(healthy_deployments)}"
+            )
             self._routing_fallback.labels(
                 model_group, "redis_unavailable", "consistent_hashing"
             ).inc()
@@ -612,6 +616,10 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             verbose_router_logger.warning(
                 "[StickyLeastBusy WARNING] Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
+            )
+            print(
+                f"[GLM_FB_DEBUG][STICKY_FALLBACK] model_group={model_group} "
+                f"reason=redis_unavailable healthy_count={len(healthy_deployments)}"
             )
             self._routing_fallback.labels(
                 model_group, "redis_unavailable", "consistent_hashing"
@@ -854,6 +862,10 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 f"[StickyLeastBusy ERROR] Routing failed, falling back to "
                 f"random selection: {e}"
             )
+            print(
+                f"[GLM_FB_DEBUG][STICKY_FALLBACK] model_group={model_group} "
+                f"reason=error error_type={type(e).__name__} error={str(e)[:200]!r}"
+            )
             self._routing_fallback.labels(
                 model_group, "error", "consistent_hashing"
             ).inc()
@@ -889,6 +901,10 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             verbose_router_logger.error(
                 f"[StickyLeastBusy ERROR] Async routing failed, falling back to "
                 f"random selection: {e}"
+            )
+            print(
+                f"[GLM_FB_DEBUG][STICKY_FALLBACK] model_group={model_group} "
+                f"reason=error error_type={type(e).__name__} error={str(e)[:200]!r}"
             )
             self._routing_fallback.labels(
                 model_group, "error", "consistent_hashing"
