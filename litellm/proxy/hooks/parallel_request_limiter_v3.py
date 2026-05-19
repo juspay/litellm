@@ -1755,13 +1755,16 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             previous_count = result[0]
             new_count = result[1]
 
-            # Skip metrics emission if decrement did not happen (key expired)
+            # Log when decrement did not happen (key expired) — fall through so
+            # the metric still emits, giving visibility into expired-key skips.
             if previous_count == -1 and new_count == -1:
-                verbose_proxy_logger.debug(
-                    f"Max parallel requests decrement skipped: key={descriptor_key}:{descriptor_value} "
+                print(
+                    f"[DECR-EXPIRED] Max parallel requests decrement skipped: "
+                    f"key={descriptor_key}:{descriptor_value}, "
+                    f"counter_key={counter_key}, "
+                    f"token={token!r}, key_alias={key_alias!r} "
                     f"(counter key expired or does not exist)"
                 )
-                return None
 
             # Emit metric for max_parallel_requests decrement
             current_ts = datetime.now().isoformat()
@@ -1856,6 +1859,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         """
         from litellm.litellm_core_utils.core_helpers import (
             _get_parent_otel_span_from_kwargs,
+            get_litellm_metadata_from_kwargs,
         )
         from litellm.proxy.common_utils.callback_utils import (
             get_model_group_from_litellm_kwargs,
@@ -1905,15 +1909,39 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
             # API Key TPM and max_parallel_requests decrement
             if user_api_key:
-                # MAX PARALLEL REQUESTS - only support for API Key, use Lua script for atomic decrement
-                user_api_key_token = standard_logging_metadata.get("user_api_key_hash")
-                user_api_key_alias = standard_logging_metadata.get("user_api_key_alias")
-                await self._execute_max_parallel_requests_decrement(
-                    descriptor_key="api_key",
-                    descriptor_value=user_api_key,
-                    token=user_api_key_token,
-                    key_alias=user_api_key_alias,
+                # MAX PARALLEL REQUESTS — gate symmetrically with INCR. INCR fires
+                # only when user_api_key_dict.max_parallel_requests is not None AND
+                # the global env flag is enabled (see should_rate_limit:611-615).
+                # Mirror that gate here so keys configured with only rpm/tpm don't
+                # fire DECR against a counter that was never created (Lua returns
+                # -1/-1 — orphan metric pollution).
+                litellm_metadata_for_auth = (
+                    get_litellm_metadata_from_kwargs(kwargs=kwargs) or {}
                 )
+                user_api_key_auth_obj = litellm_metadata_for_auth.get(
+                    "user_api_key_auth"
+                )
+                user_api_key_max_parallel_requests = (
+                    getattr(user_api_key_auth_obj, "max_parallel_requests", None)
+                    if user_api_key_auth_obj is not None
+                    else None
+                )
+                if (
+                    ENABLE_MAX_PARALLEL_REQUESTS_RATE_LIMITER
+                    and user_api_key_max_parallel_requests is not None
+                ):
+                    user_api_key_token = standard_logging_metadata.get(
+                        "user_api_key_hash"
+                    )
+                    user_api_key_alias = standard_logging_metadata.get(
+                        "user_api_key_alias"
+                    )
+                    await self._execute_max_parallel_requests_decrement(
+                        descriptor_key="api_key",
+                        descriptor_value=user_api_key,
+                        token=user_api_key_token,
+                        key_alias=user_api_key_alias,
+                    )
                 pipeline_operations.extend(
                     self._create_pipeline_operations(
                         key="api_key",
@@ -2082,7 +2110,15 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             f"original_exception_msg={str(original_exception)[:200]!r}"
         )
         try:
-            if user_api_key_dict and user_api_key_dict.api_key:
+            if (
+                user_api_key_dict
+                and user_api_key_dict.api_key
+                and ENABLE_MAX_PARALLEL_REQUESTS_RATE_LIMITER
+                and user_api_key_dict.max_parallel_requests is not None
+            ):
+                # Gate symmetrically with INCR — see should_rate_limit:611-615.
+                # Without max_parallel_requests configured, no counter was ever
+                # created, so DECR would just hit a missing key (-1/-1).
                 await self._execute_max_parallel_requests_decrement(
                     descriptor_key="api_key",
                     descriptor_value=user_api_key_dict.api_key,
