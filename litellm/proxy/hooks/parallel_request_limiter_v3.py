@@ -1859,6 +1859,23 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                         total_tokens=total_tokens,
                     )
                 )
+            else:
+                _litellm_params = kwargs.get("litellm_params") or {}
+                _lp_metadata = _litellm_params.get("metadata") or {}
+                _lp_litellm_metadata = _litellm_params.get("litellm_metadata") or {}
+                print(
+                    "[DECR-SKIP] async_log_success_event: user_api_key resolved to None — "
+                    f"standard_logging_object_present={bool(kwargs.get('standard_logging_object'))}, "
+                    f"standard_logging_metadata_present={bool(standard_logging_metadata)}, "
+                    f"standard_logging_metadata_user_api_key_hash={standard_logging_metadata.get('user_api_key_hash')!r}, "
+                    f"stream={kwargs.get('stream')!r}, "
+                    f"call_type={kwargs.get('call_type')!r}, "
+                    f"cache_hit={kwargs.get('cache_hit')!r}, "
+                    f"async_complete_streaming_response_present={'async_complete_streaming_response' in kwargs}, "
+                    f"model={kwargs.get('model')!r}, "
+                    f"litellm_params_metadata_user_api_key={_lp_metadata.get('user_api_key')!r}, "
+                    f"litellm_params_litellm_metadata_user_api_key={_lp_litellm_metadata.get('user_api_key')!r}"
+                )
 
             # User TPM
             if user_api_key_user_id:
