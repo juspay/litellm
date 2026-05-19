@@ -1692,13 +1692,16 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             previous_count = result[0]
             new_count = result[1]
 
-            # Skip metrics emission if decrement did not happen (key expired)
+            # Log when decrement did not happen (key expired) — fall through so
+            # the metric still emits, giving visibility into expired-key skips.
             if previous_count == -1 and new_count == -1:
-                verbose_proxy_logger.debug(
-                    f"Max parallel requests decrement skipped: key={descriptor_key}:{descriptor_value} "
+                print(
+                    f"[DECR-EXPIRED] Max parallel requests decrement skipped: "
+                    f"key={descriptor_key}:{descriptor_value}, "
+                    f"counter_key={counter_key}, "
+                    f"token={token!r}, key_alias={key_alias!r} "
                     f"(counter key expired or does not exist)"
                 )
-                return None
 
             # Emit metric for max_parallel_requests decrement
             current_ts = datetime.now().isoformat()
