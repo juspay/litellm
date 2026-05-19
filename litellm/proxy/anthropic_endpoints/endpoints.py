@@ -66,6 +66,16 @@ async def anthropic_response(  # noqa: PLR0915
         print(f"[GLM_FB_DEBUG][INBOUND_MESSAGES_LOGGER_BUG] {type(_e).__name__}: {_e}")
 
     import asyncio
+    import time as _glm_time
+
+    _glm_handler_t0 = _glm_time.monotonic()
+    _glm_handler_is_glm = isinstance(data, dict) and "glm" in str(data.get("model", "")).lower()
+    if _glm_handler_is_glm:
+        print(
+            f"[GLM_FB_DEBUG][HANDLER_ENTRY] route=/v1/messages "
+            f"call_id={data.get('litellm_call_id')!r} "
+            f"t0={_glm_handler_t0:.3f}"
+        )
 
     base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
@@ -87,8 +97,21 @@ async def anthropic_response(  # noqa: PLR0915
             user_api_base=user_api_base,
             version=version,
         )
+        if _glm_handler_is_glm:
+            print(
+                f"[GLM_FB_DEBUG][HANDLER_EXIT_OK] route=/v1/messages "
+                f"call_id={data.get('litellm_call_id')!r} "
+                f"elapsed_ms={(_glm_time.monotonic() - _glm_handler_t0) * 1000:.1f}"
+            )
         return result
     except asyncio.CancelledError as _ce:
+        if _glm_handler_is_glm:
+            print(
+                f"[GLM_FB_DEBUG][HANDLER_EXIT_CANCELLED] route=/v1/messages "
+                f"call_id={data.get('litellm_call_id')!r} "
+                f"elapsed_ms={(_glm_time.monotonic() - _glm_handler_t0) * 1000:.1f} "
+                f"msg={str(_ce)[:200]!r}"
+            )
         # post_call_failure_hook is internally shielded — DECR completes even
         # though this task is being torn down.
         try:
@@ -152,6 +175,15 @@ async def anthropic_response(  # noqa: PLR0915
 
         return _anthropic_response
     except Exception as e:
+        if _glm_handler_is_glm:
+            print(
+                f"[GLM_FB_DEBUG][HANDLER_EXIT_EXCEPTION] route=/v1/messages "
+                f"call_id={data.get('litellm_call_id')!r} "
+                f"elapsed_ms={(_glm_time.monotonic() - _glm_handler_t0) * 1000:.1f} "
+                f"exception_type={type(e).__name__} "
+                f"exception_status={getattr(e, 'status_code', None)} "
+                f"exception_msg={str(e)[:300]!r}"
+            )
         # post_call_failure_hook is internally shielded — DECR completes even
         # if the client disconnects mid-await here.
         try:

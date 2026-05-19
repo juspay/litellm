@@ -454,6 +454,22 @@ class OpenAIChatCompletion(BaseLLM, BaseOpenAILLM):
         - call chat.completions.create by default
         """
         start_time = time.time()
+
+        _glm_dbg = "glm" in str(data.get("model", "")).lower() or "GLM" in str(data.get("model", ""))
+        _glm_base_url = getattr(openai_aclient, "base_url", None)
+        if _glm_dbg:
+            import json as _glm_json
+            try:
+                _glm_body_repr = _glm_json.dumps(data, default=str)
+            except Exception:
+                _glm_body_repr = repr(data)
+            print(
+                f"[GLM_FB_DEBUG][OAI_SDK_REQUEST] base_url={str(_glm_base_url)!r} "
+                f"model={data.get('model')!r} timeout={timeout!r} "
+                f"call_id={data.get('litellm_call_id')!r} "
+                f"body={_glm_body_repr}"
+            )
+
         try:
             raw_response = (
                 await openai_aclient.chat.completions.with_raw_response.create(
@@ -466,6 +482,15 @@ class OpenAIChatCompletion(BaseLLM, BaseOpenAILLM):
                 headers = dict(raw_response.headers)
             else:
                 headers = {}
+
+            if _glm_dbg:
+                print(
+                    f"[GLM_FB_DEBUG][OAI_SDK_RESPONSE] base_url={str(_glm_base_url)!r} "
+                    f"model={data.get('model')!r} "
+                    f"elapsed_ms={(end_time - start_time) * 1000:.1f} "
+                    f"resp_headers={headers}"
+                )
+
             response = raw_response.parse()
             if not data.get("stream") and not hasattr(response, "model_dump"):
                 raise OpenAIError(
@@ -476,9 +501,23 @@ class OpenAIChatCompletion(BaseLLM, BaseOpenAILLM):
         except openai.APITimeoutError as e:
             end_time = time.time()
             time_delta = round(end_time - start_time, 2)
+            if _glm_dbg:
+                print(
+                    f"[GLM_FB_DEBUG][OAI_SDK_TIMEOUT] base_url={str(_glm_base_url)!r} "
+                    f"model={data.get('model')!r} timeout={timeout!r} "
+                    f"elapsed_s={time_delta} error={str(e)[:200]!r}"
+                )
             e.message += f" - timeout value={timeout}, time taken={time_delta} seconds"
             raise e
         except Exception as e:
+            if _glm_dbg:
+                print(
+                    f"[GLM_FB_DEBUG][OAI_SDK_EXCEPTION] base_url={str(_glm_base_url)!r} "
+                    f"model={data.get('model')!r} "
+                    f"elapsed_ms={(time.time() - start_time) * 1000:.1f} "
+                    f"exception_type={type(e).__name__} "
+                    f"error={str(e)[:300]!r}"
+                )
             raise e
 
     @track_llm_api_timing()

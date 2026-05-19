@@ -1395,6 +1395,41 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         """
         verbose_proxy_logger.debug("Inside Rate Limit Pre-Call Hook")
 
+        import time as _glm_time
+        _glm_t0 = _glm_time.monotonic()
+        _glm_model = data.get("model") if isinstance(data, dict) else None
+        _glm_call_id = data.get("litellm_call_id") if isinstance(data, dict) else None
+        _glm_is_glm = _glm_model is not None and "glm" in str(_glm_model).lower()
+        if _glm_is_glm:
+            print(
+                f"[GLM_FB_DEBUG][MPR_PRE_HOOK_ENTRY] model={_glm_model!r} "
+                f"call_id={_glm_call_id!r} call_type={call_type!r} "
+                f"team_id={getattr(user_api_key_dict, 'team_id', None)!r} "
+                f"t0={_glm_t0:.3f}"
+            )
+
+        try:
+            return await self._async_pre_call_hook_impl(
+                user_api_key_dict, cache, data, call_type
+            )
+        finally:
+            if _glm_is_glm:
+                _glm_t1 = _glm_time.monotonic()
+                print(
+                    f"[GLM_FB_DEBUG][MPR_PRE_HOOK_EXIT] model={_glm_model!r} "
+                    f"call_id={_glm_call_id!r} "
+                    f"elapsed_ms={(_glm_t1 - _glm_t0) * 1000:.1f}"
+                )
+
+    async def _async_pre_call_hook_impl(
+        self,
+        user_api_key_dict: UserAPIKeyAuth,
+        cache: DualCache,
+        data: dict,
+        call_type: str,
+    ):
+        """Original body of async_pre_call_hook, wrapped for [GLM_FB_DEBUG] timing."""
+
         #########################################################
         # Check if the call type has a specific rate limiter
         # eg. for Batch APIs we need to use the batch rate limiter to read the input file and count the tokens and requests
@@ -1455,11 +1490,30 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         )
         # Only check rate limits if we have descriptors with actual limits
         if descriptors:
-            response = await self.should_rate_limit(
-                descriptors=descriptors,
-                parent_otel_span=user_api_key_dict.parent_otel_span,
-                user_api_key_dict=user_api_key_dict,
-            )
+            import time as _glm_t
+            _glm_should_rl_t0 = _glm_t.monotonic()
+            _glm_dbg = isinstance(data, dict) and "glm" in str(data.get("model", "")).lower()
+            if _glm_dbg:
+                print(
+                    f"[GLM_FB_DEBUG][MPR_SHOULD_RL_ENTER] "
+                    f"call_id={data.get('litellm_call_id')!r} "
+                    f"num_descriptors={len(descriptors)} "
+                    f"descriptor_keys={[d.get('key') for d in descriptors]}"
+                )
+            try:
+                response = await self.should_rate_limit(
+                    descriptors=descriptors,
+                    parent_otel_span=user_api_key_dict.parent_otel_span,
+                    user_api_key_dict=user_api_key_dict,
+                )
+            finally:
+                if _glm_dbg:
+                    _glm_should_rl_t1 = _glm_t.monotonic()
+                    print(
+                        f"[GLM_FB_DEBUG][MPR_SHOULD_RL_EXIT] "
+                        f"call_id={data.get('litellm_call_id')!r} "
+                        f"elapsed_ms={(_glm_should_rl_t1 - _glm_should_rl_t0) * 1000:.1f}"
+                    )
 
             if response["overall_code"] == "OVER_LIMIT":
                 self._handle_rate_limit_error(

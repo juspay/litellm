@@ -772,9 +772,25 @@ class ProxyBaseLLMRequestProcessing:
 
         self.data["litellm_logging_obj"] = logging_obj
 
-        self.data = await proxy_logging_obj.pre_call_hook(  # type: ignore
-            user_api_key_dict=user_api_key_dict, data=self.data, call_type=route_type  # type: ignore
-        )
+        import time as _glm_pch_time
+        _glm_pch_t0 = _glm_pch_time.monotonic()
+        _glm_pch_is_glm = isinstance(self.data, dict) and "glm" in str(self.data.get("model", "")).lower()
+        if _glm_pch_is_glm:
+            print(
+                f"[GLM_FB_DEBUG][PIPELINE_PRE_CALL_HOOK_ENTER] route_type={route_type!r} "
+                f"call_id={self.data.get('litellm_call_id')!r} t={_glm_pch_t0:.3f}"
+            )
+        try:
+            self.data = await proxy_logging_obj.pre_call_hook(  # type: ignore
+                user_api_key_dict=user_api_key_dict, data=self.data, call_type=route_type  # type: ignore
+            )
+        finally:
+            if _glm_pch_is_glm:
+                print(
+                    f"[GLM_FB_DEBUG][PIPELINE_PRE_CALL_HOOK_EXIT] route_type={route_type!r} "
+                    f"call_id={self.data.get('litellm_call_id') if isinstance(self.data, dict) else None!r} "
+                    f"elapsed_ms={(_glm_pch_time.monotonic() - _glm_pch_t0) * 1000:.1f}"
+                )
 
         # Apply hierarchical router_settings (Key > Team)
         # Global router_settings are already on the Router object itself.
@@ -1001,12 +1017,29 @@ class ProxyBaseLLMRequestProcessing:
 
         ### ROUTE THE REQUEST ###
         # Do not change this - it should be a constant time fetch - ALWAYS
+        import time as _glm_pipeline_time
+        _glm_pipeline_t_route = _glm_pipeline_time.monotonic()
+        _glm_pipeline_is_glm = isinstance(self.data, dict) and "glm" in str(self.data.get("model", "")).lower()
+        if _glm_pipeline_is_glm:
+            print(
+                f"[GLM_FB_DEBUG][PIPELINE_BEFORE_ROUTE] route_type={route_type!r} "
+                f"call_id={self.data.get('litellm_call_id')!r} "
+                f"model={self.data.get('model')!r} "
+                f"t={_glm_pipeline_t_route:.3f}"
+            )
         llm_call = await route_request(
             data=self.data,
             route_type=route_type,
             llm_router=llm_router,
             user_model=user_model,
         )
+        if _glm_pipeline_is_glm:
+            _glm_pipeline_t_after_route = _glm_pipeline_time.monotonic()
+            print(
+                f"[GLM_FB_DEBUG][PIPELINE_AFTER_ROUTE_BEFORE_GATHER] route_type={route_type!r} "
+                f"call_id={self.data.get('litellm_call_id')!r} "
+                f"route_elapsed_ms={(_glm_pipeline_t_after_route - _glm_pipeline_t_route) * 1000:.1f}"
+            )
         tasks.append(llm_call)
 
         # wait for call to end
@@ -1015,6 +1048,13 @@ class ProxyBaseLLMRequestProcessing:
         )  # run the moderation check in parallel to the actual llm api call
 
         responses = await llm_responses
+        if _glm_pipeline_is_glm:
+            _glm_pipeline_t_after_gather = _glm_pipeline_time.monotonic()
+            print(
+                f"[GLM_FB_DEBUG][PIPELINE_AFTER_GATHER] route_type={route_type!r} "
+                f"call_id={self.data.get('litellm_call_id')!r} "
+                f"gather_elapsed_ms={(_glm_pipeline_t_after_gather - _glm_pipeline_t_after_route) * 1000:.1f}"
+            )
 
         response = responses[1]
 
