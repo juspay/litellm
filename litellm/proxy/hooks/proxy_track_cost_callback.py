@@ -20,6 +20,10 @@ from litellm.proxy.auth.auth_checks import (
 )
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
+from litellm.proxy.spend_tracking.failure_payload_enricher import (
+    enrich_failure_request_data,
+    resolve_failure_start_time,
+)
 from litellm.proxy.utils import ProxyUpdateSpend
 from litellm.types.utils import StandardLoggingPayload
 from litellm.utils import get_end_user_id_for_cost_tracking
@@ -48,6 +52,19 @@ class _ProxyDBLogger(CustomLogger):
             return
 
         from litellm.proxy.proxy_server import proxy_logging_obj
+
+        # The ProxyLogging orchestrator runs the enricher BEFORE popping
+        # ``litellm_logging_obj`` from request_data, so by the time we get
+        # here the upstream-attribution fields are already baked in. We
+        # still call the enricher defensively to cover tests / callers that
+        # invoke this hook directly with ``litellm_logging_obj`` set — it's
+        # idempotent and a no-op when the obj is None.
+        _litellm_logging_obj = request_data.get("litellm_logging_obj")
+        enrich_failure_request_data(
+            request_data=request_data,
+            litellm_logging_obj=_litellm_logging_obj,
+            original_exception=original_exception,
+        )
 
         _metadata = dict(
             LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(
@@ -97,12 +114,10 @@ class _ProxyDBLogger(CustomLogger):
                 "custom_llm_provider"
             ) or request_data.get("custom_llm_provider", "")
 
-        # Propagate standard_logging_object and litellm_trace_id from the
-        # Logging instance so that _get_session_id_for_spend_log uses the same
-        # trace_id that Langfuse received (via async_failure_handler).
-        # Without this, the DB session_id would be a random UUID that doesn't
-        # match the Langfuse trace_id, making failed requests unsearchable.
-        _litellm_logging_obj = request_data.get("litellm_logging_obj")
+        # Belt-and-suspenders for standard_logging_object / litellm_trace_id —
+        # the enricher above usually populates these, but if it errored we
+        # still want to lift them from the Logging object so failed requests
+        # remain searchable in Langfuse via the same trace_id.
         if _litellm_logging_obj is not None:
             if not request_data.get("standard_logging_object"):
                 request_data["standard_logging_object"] = getattr(
@@ -113,13 +128,13 @@ class _ProxyDBLogger(CustomLogger):
                     _litellm_logging_obj, "litellm_trace_id", None
                 )
 
-        # Use the actual request start time from the logging object so that
-        # failed requests record the real duration instead of 0.
-        actual_start_time = datetime.now()
-        if _litellm_logging_obj is not None:
-            obj_start = getattr(_litellm_logging_obj, "start_time", None)
-            if obj_start is not None:
-                actual_start_time = obj_start
+        # Prefer the start_time the orchestrator baked into request_data
+        # before stripping ``litellm_logging_obj`` (this is the production
+        # path). Fall back to resolving from the logging obj for direct
+        # callers (tests), then to ``datetime.now()`` as last resort.
+        actual_start_time = request_data.get(
+            "_litellm_failure_start_time"
+        ) or resolve_failure_start_time(_litellm_logging_obj)
 
         await proxy_logging_obj.db_spend_update_writer.update_database(
             token=user_api_key_dict.api_key,

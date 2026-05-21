@@ -34,6 +34,10 @@ from litellm.proxy._types import (
     SpendLogsMetadata,
     SpendLogsPayload,
 )
+from litellm.proxy.spend_tracking.failure_payload_enricher import (
+    enrich_failure_request_data,
+    resolve_failure_start_time,
+)
 from litellm.types.guardrails import GuardrailEventHooks
 from litellm.types.utils import CallTypes, CallTypesLiteral
 
@@ -1785,6 +1789,23 @@ class ProxyLogging:
                 route=route,
                 original_exception=original_exception,
             )
+
+        # Bake identification / upstream-attribution / timing data out of
+        # ``litellm_logging_obj`` into plain dict keys on ``request_data``
+        # BEFORE we pop it. Otherwise callbacks (notably the spend-log
+        # writer) only see a request_data with the Logging object stripped
+        # off and can't reconstruct api_base / model_group / model_id /
+        # request_tags / start_time, which leaves failure rows blank.
+        # Idempotent and error-shielded — never blocks the callback loop.
+        _litellm_logging_obj = request_data.get("litellm_logging_obj")
+        enrich_failure_request_data(
+            request_data=request_data,
+            litellm_logging_obj=_litellm_logging_obj,
+            original_exception=original_exception,
+        )
+        request_data["_litellm_failure_start_time"] = resolve_failure_start_time(
+            _litellm_logging_obj
+        )
 
         # Remove before callbacks iterate — not serialisable
         request_data.pop("litellm_logging_obj", None)
