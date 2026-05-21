@@ -10084,6 +10084,78 @@ export const concurrentRequestLogsCall = async (
   }
 };
 
+export interface RateLimitHit {
+  timestamp: string; // ISO 8601 (UTC)
+  request_id: string;
+  model: string;
+  error_message: string;
+}
+
+export interface RateLimitHitsResponse {
+  data: RateLimitHit[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+/**
+ * Fetch timestamps at which a key was rate limited by the max_parallel_requests (MPR) limiter.
+ * Server-side paginated.
+ * @param accessToken - User access token
+ * @param params - start_date/end_date (UTC), exactly one of api_key / key_alias, page, page_size
+ */
+export const concurrentRateLimitHitsCall = async (
+  accessToken: string,
+  params: {
+    start_date: string;
+    end_date: string;
+    api_key?: string;
+    key_alias?: string;
+    page?: number;
+    page_size?: number;
+  }
+): Promise<RateLimitHitsResponse> => {
+  const proxyBaseUrl = getProxyBaseUrl();
+  const queryParams = new URLSearchParams({
+    start_date: params.start_date,
+    end_date: params.end_date,
+  });
+
+  if (params.api_key) queryParams.append("api_key", params.api_key);
+  if (params.key_alias) queryParams.append("key_alias", params.key_alias);
+  if (params.page) queryParams.append("page", String(params.page));
+  if (params.page_size) queryParams.append("page_size", String(params.page_size));
+
+  const url = proxyBaseUrl
+    ? `${proxyBaseUrl}/concurrent_request_logs/rate_limit_hits?${queryParams.toString()}`
+    : `/concurrent_request_logs/rate_limit_hits?${queryParams.toString()}`;
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    const errorMessage = deriveErrorMessage(errorData);
+    handleError(errorMessage);
+    throw new Error(errorMessage);
+  }
+
+  const data = await response.json();
+  return {
+    data: data.data || [],
+    total: data.total || 0,
+    page: data.page || 1,
+    page_size: data.page_size || 10,
+    total_pages: data.total_pages || 0,
+  };
+};
+
 export interface ComplianceCheckResult {
   check_name: string;
   article: string;

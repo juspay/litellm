@@ -4,6 +4,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import moment from "moment";
 import { concurrentRequestLogsCall } from "../networking";
+import RateLimitHitsView from "./RateLimitHitsView";
 
 interface ConcurrentRequestLogsProps {
   accessToken: string | null;
@@ -54,6 +55,7 @@ export default function ConcurrentRequestLogs({
   const [keyAlias, setKeyAlias] = useState<string>("");
   const [matchFilter, setMatchFilter] = useState<MatchFilter>("all");
   const [currentPage, setCurrentPage] = useState(1);
+  const [showRateLimitHits, setShowRateLimitHits] = useState(false);
 
   // Fetch ALL concurrent request logs from server (no pagination).
   // Pagination is handled client-side to avoid repeated GCP API calls on page changes.
@@ -107,10 +109,46 @@ export default function ConcurrentRequestLogs({
   return (
     <div className="w-full">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-semibold">Concurrent Request Logs</h1>
+      <div className="flex flex-col gap-3 mb-4 md:flex-row md:items-center md:justify-between">
+        <h1 className="text-xl font-semibold">
+          {showRateLimitHits ? "MPR Rate Limit Hits" : "Concurrent Request Logs"}
+        </h1>
+        {/* Prominent view switcher */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">View</span>
+          <div className="inline-flex rounded-lg border border-gray-300 bg-gray-100 p-1 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setShowRateLimitHits(false)}
+              aria-pressed={!showRateLimitHits}
+              className={`px-5 py-2.5 text-sm font-semibold rounded-md transition-colors ${
+                !showRateLimitHits
+                  ? "bg-white text-blue-600 shadow"
+                  : "text-gray-600 hover:text-gray-900"
+              }`}
+            >
+              Concurrent Logs
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowRateLimitHits(true)}
+              aria-pressed={showRateLimitHits}
+              className={`px-5 py-2.5 text-sm font-semibold rounded-md transition-colors ${
+                showRateLimitHits
+                  ? "bg-white text-blue-600 shadow"
+                  : "text-gray-600 hover:text-gray-900"
+              }`}
+            >
+              Rate Limit Hits
+            </button>
+          </div>
+        </div>
       </div>
 
+      {showRateLimitHits ? (
+        <RateLimitHitsView accessToken={accessToken} />
+      ) : (
+      <>
       {/* Input Fields */}
       <div className="bg-white rounded-lg shadow p-4 mb-4">
         <div className="flex flex-wrap items-end gap-4">
@@ -368,6 +406,8 @@ export default function ConcurrentRequestLogs({
           counters logged to GCP Cloud Logging recently.
         </p>
       </div>
+      </>
+      )}
     </div>
   );
 }
