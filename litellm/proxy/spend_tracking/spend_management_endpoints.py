@@ -4386,3 +4386,191 @@ async def concurrent_request_rate_limit_hits(
             f"[concurrent_request_rate_limit_hits] Error: {str(e)}"
         )
         raise handle_exception_on_proxy(e)
+
+
+@router.get(
+    "/concurrent_request_logs/operation_counts",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
+)
+async def concurrent_request_operation_counts(
+    start_date: str = fastapi.Query(
+        description="Start of the time range (UTC), e.g. '2026-05-20 06:00:00' or ISO 8601"
+    ),
+    end_date: str = fastapi.Query(
+        description="End of the time range (UTC), e.g. '2026-05-20 07:00:00' or ISO 8601"
+    ),
+    api_key: Optional[str] = fastapi.Query(
+        default=None,
+        description="API key to look up (masked key / full key / hashed token). Provide either this or key_alias, not both.",
+    ),
+    key_alias: Optional[str] = fastapi.Query(
+        default=None,
+        description="Key alias to look up. Provide either this or api_key, not both.",
+    ),
+):
+    """
+    Count the parallel_requests counter increment vs decrement [METRICS] log entries
+    emitted by the max_parallel_requests limiter, for a key over a time range.
+
+    The GCP log lines carry only `token` and `key_alias` (never the masked key), so:
+      - api_key input is resolved to its token(s) via LiteLLM_VerificationToken,
+        then GCP logs are filtered by token.
+      - key_alias input filters GCP logs by key_alias directly.
+
+    Returns increment_count, decrement_count and their difference. Range is capped
+    at 10 days.
+    """
+    # Require exactly one of api_key / key_alias
+    if api_key and key_alias:
+        raise ProxyException(
+            message="Provide only one of API Key or Key Alias, not both.",
+            type="bad_request",
+            param="api_key/key_alias",
+            code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not api_key and not key_alias:
+        raise ProxyException(
+            message="Provide either an API Key or a Key Alias.",
+            type="bad_request",
+            param="api_key/key_alias",
+            code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        from litellm.integrations.gcp_logging_helpers import (
+            count_parallel_request_operations,
+            GCP_LOGGING_AVAILABLE,
+        )
+    except Exception as import_err:
+        verbose_proxy_logger.error(
+            f"[concurrent_request_operation_counts] Failed to import GCP logging helpers: {import_err}"
+        )
+        return {
+            "increment_count": 0,
+            "decrement_count": 0,
+            "difference": 0,
+            "truncated": False,
+            "gcp_available": False,
+            "error": f"Import error: {str(import_err)}",
+        }
+
+    prisma_client = _get_read_prisma_client()
+
+    try:
+        start_dt = _parse_spend_log_datetime(start_date)
+        end_dt = _parse_spend_log_datetime(end_date)
+
+        # Validate the time range: end after start, and at most 10 days.
+        if end_dt < start_dt:
+            raise ProxyException(
+                message="end_date must be after start_date.",
+                type="bad_request",
+                param="start_date/end_date",
+                code=status.HTTP_400_BAD_REQUEST,
+            )
+        if (end_dt - start_dt) > timedelta(days=10):
+            raise ProxyException(
+                message="Time range cannot exceed 10 days. Please select a range within 10 days.",
+                type="bad_request",
+                param="start_date/end_date",
+                code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not GCP_LOGGING_AVAILABLE:
+            verbose_proxy_logger.warning(
+                "[concurrent_request_operation_counts] google-cloud-logging not available."
+            )
+            return {
+                "increment_count": 0,
+                "decrement_count": 0,
+                "difference": 0,
+                "truncated": False,
+                "gcp_available": False,
+                "error": "google-cloud-logging not available on the server.",
+            }
+
+        start_ts = start_dt.timestamp()
+        end_ts = end_dt.timestamp()
+
+        increment_count = 0
+        decrement_count = 0
+        truncated = False
+        gcp_success = True
+        resolved_token: Optional[str] = None
+        resolved_alias: Optional[str] = None
+
+        if api_key:
+            # Resolve the masked key / full key / hashed token to its token(s).
+            # GCP logs only carry the token, so we must filter by it.
+            token_candidates = list({api_key, hash_token(api_key)})
+            token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
+                where={
+                    "OR": [
+                        {"key_name": api_key},
+                        {"token": {"in": token_candidates}},
+                    ]
+                },
+            )
+            tokens = [row.token for row in token_rows]
+            if not tokens:
+                raise ProxyException(
+                    message="No key found matching the provided API Key.",
+                    type="not_found",
+                    param="api_key",
+                    code=status.HTTP_404_NOT_FOUND,
+                )
+            # Aggregate counts across all resolved tokens (usually exactly one).
+            for tok in tokens:
+                counts, success, was_truncated = await count_parallel_request_operations(
+                    start_timestamp=start_ts,
+                    end_timestamp=end_ts,
+                    token_filter=tok,
+                )
+                gcp_success = gcp_success and success
+                increment_count += counts["increment"]
+                decrement_count += counts["decrement"]
+                truncated = truncated or was_truncated
+            resolved_token = tokens[0] if len(tokens) == 1 else f"{len(tokens)} keys"
+        else:
+            counts, success, was_truncated = await count_parallel_request_operations(
+                start_timestamp=start_ts,
+                end_timestamp=end_ts,
+                key_alias_filter=key_alias,
+            )
+            gcp_success = success
+            increment_count = counts["increment"]
+            decrement_count = counts["decrement"]
+            truncated = was_truncated
+            resolved_alias = key_alias
+
+        if not gcp_success:
+            return {
+                "increment_count": 0,
+                "decrement_count": 0,
+                "difference": 0,
+                "truncated": False,
+                "gcp_available": True,
+                "token": resolved_token,
+                "key_alias": resolved_alias,
+                "error": "Failed to query GCP logs (check GCP project / credentials).",
+            }
+
+        return {
+            "increment_count": increment_count,
+            "decrement_count": decrement_count,
+            "difference": increment_count - decrement_count,
+            "truncated": truncated,
+            "gcp_available": True,
+            "token": resolved_token,
+            "key_alias": resolved_alias,
+        }
+
+    except ProxyException:
+        raise
+    except Exception as e:
+        verbose_proxy_logger.exception(
+            f"[concurrent_request_operation_counts] Error: {str(e)}"
+        )
+        raise handle_exception_on_proxy(e)

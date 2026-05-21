@@ -311,3 +311,131 @@ async def get_concurrent_requests_from_gcp_logs(
         })
 
     return results, True
+
+
+async def count_parallel_request_operations(
+    start_timestamp: float,
+    end_timestamp: float,
+    project_id: Optional[str] = None,
+    token_filter: Optional[str] = None,
+    key_alias_filter: Optional[str] = None,
+) -> Tuple[Dict[str, int], bool, bool]:
+    """
+    Count increment vs decrement [METRICS] parallel_requests log entries within a
+    time range, filtered by token (exact) and/or key_alias (partial match).
+
+    These [METRICS] lines are emitted by parallel_request_limiter_v3.py on every
+    max_parallel_requests counter increment/decrement and carry token + key_alias
+    only (never the masked key) — so callers must resolve a masked api_key to its
+    token before filtering here.
+
+    Args:
+        start_timestamp: Unix timestamp (seconds) — start of range (inclusive)
+        end_timestamp: Unix timestamp (seconds) — end of range (inclusive)
+        project_id: GCP project ID (falls back to env)
+        token_filter: Exact token to match (textPayload:"token=<token>")
+        key_alias_filter: Key alias to match (partial / substring match)
+
+    Returns:
+        (counts, success, truncated) where
+        counts = {"increment": int, "decrement": int, "total": int},
+        success = False if GCP is unavailable or the client could not be created,
+        truncated = True if the max-entries cap was hit (counts are a lower bound).
+    """
+    counts = {"increment": 0, "decrement": 0, "total": 0}
+
+    if not GCP_LOGGING_AVAILABLE:
+        print(
+            "[gcp_logs_query] google-cloud-logging not available. "
+            "Cannot count parallel request operations."
+        )
+        return counts, False, False
+
+    if project_id is None:
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
+    if project_id is None:
+        print(
+            "[gcp_logs_query] No GCP project ID provided. "
+            "Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
+        )
+        return counts, False, False
+
+    client = get_gcp_logging_client(project_id)
+    if client is None:
+        return counts, False, False
+
+    try:
+        start_rfc3339 = datetime.fromtimestamp(start_timestamp, tz=timezone.utc).isoformat()
+        end_rfc3339 = datetime.fromtimestamp(end_timestamp, tz=timezone.utc).isoformat()
+
+        filter_parts = [
+            f'timestamp>="{start_rfc3339}"',
+            f'timestamp<="{end_rfc3339}"',
+            'textPayload:"[METRICS] Emitting parallel_requests metric"',
+        ]
+        if token_filter:
+            escaped_token = token_filter.replace('"', '\\"')
+            filter_parts.append(f'textPayload:"token={escaped_token}"')
+        if key_alias_filter:
+            escaped_alias = key_alias_filter.replace('"', '\\"')
+            filter_parts.append(f'textPayload:"key_alias={escaped_alias}"')
+        filter_str = " AND ".join(filter_parts)
+
+        # Bound the scan so a wide range can't page forever. Counts beyond this are
+        # reported as truncated (a lower bound).
+        max_entries = int(os.environ.get("GCP_LOG_COUNT_MAX_ENTRIES", "50000"))
+
+        print(
+            f"[gcp_logs_query] Counting parallel_requests operations from "
+            f"{start_rfc3339} to {end_rfc3339} "
+            f"(token_filter={'set' if token_filter else 'none'}, "
+            f"key_alias_filter={key_alias_filter or 'none'})"
+        )
+
+        truncated = False
+        scanned = 0
+        for entry in client.list_entries(
+            filter_=filter_str,
+            order_by="timestamp desc",
+            page_size=1000,
+        ):
+            scanned += 1
+            if scanned > max_entries:
+                truncated = True
+                print(
+                    f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
+                    f"while counting, stopping"
+                )
+                break
+
+            text_payload = None
+            if hasattr(entry, "payload") and entry.payload:
+                if isinstance(entry.payload, str):
+                    text_payload = entry.payload
+                elif hasattr(entry.payload, "text"):
+                    text_payload = entry.payload.text
+            elif hasattr(entry, "text_payload"):
+                text_payload = entry.text_payload
+            if not text_payload:
+                continue
+
+            parsed = parse_metrics_log_line(text_payload)
+            if not parsed:
+                continue
+
+            operation = parsed.get("operation")
+            if operation == "increment":
+                counts["increment"] += 1
+            elif operation == "decrement":
+                counts["decrement"] += 1
+
+        counts["total"] = counts["increment"] + counts["decrement"]
+        print(
+            f"[gcp_logs_query] Counted increment={counts['increment']} "
+            f"decrement={counts['decrement']} truncated={truncated}"
+        )
+        return counts, True, truncated
+
+    except Exception as e:
+        print(f"[gcp_logs_query] Error counting parallel request operations: {e}")
+        return counts, False, False

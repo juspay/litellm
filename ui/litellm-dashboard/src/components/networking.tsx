@@ -10156,6 +10156,73 @@ export const concurrentRateLimitHitsCall = async (
   };
 };
 
+export interface OperationCountsResponse {
+  increment_count: number;
+  decrement_count: number;
+  difference: number;
+  truncated: boolean;
+  gcp_available: boolean;
+  token?: string | null;
+  key_alias?: string | null;
+  error?: string;
+}
+
+/**
+ * Count parallel_requests counter increment vs decrement [METRICS] log entries for a key
+ * over a time range (queried from GCP Cloud Logging).
+ * @param accessToken - User access token
+ * @param params - start_date/end_date (UTC), exactly one of api_key / key_alias
+ */
+export const concurrentOperationCountsCall = async (
+  accessToken: string,
+  params: {
+    start_date: string;
+    end_date: string;
+    api_key?: string;
+    key_alias?: string;
+  }
+): Promise<OperationCountsResponse> => {
+  const proxyBaseUrl = getProxyBaseUrl();
+  const queryParams = new URLSearchParams({
+    start_date: params.start_date,
+    end_date: params.end_date,
+  });
+
+  if (params.api_key) queryParams.append("api_key", params.api_key);
+  if (params.key_alias) queryParams.append("key_alias", params.key_alias);
+
+  const url = proxyBaseUrl
+    ? `${proxyBaseUrl}/concurrent_request_logs/operation_counts?${queryParams.toString()}`
+    : `/concurrent_request_logs/operation_counts?${queryParams.toString()}`;
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      [globalLitellmHeaderName]: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    const errorMessage = deriveErrorMessage(errorData);
+    handleError(errorMessage);
+    throw new Error(errorMessage);
+  }
+
+  const data = await response.json();
+  return {
+    increment_count: data.increment_count || 0,
+    decrement_count: data.decrement_count || 0,
+    difference: data.difference || 0,
+    truncated: !!data.truncated,
+    gcp_available: data.gcp_available !== false,
+    token: data.token ?? null,
+    key_alias: data.key_alias ?? null,
+    error: data.error,
+  };
+};
+
 export interface ComplianceCheckResult {
   check_name: string;
   article: string;

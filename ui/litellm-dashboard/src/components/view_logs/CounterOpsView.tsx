@@ -3,18 +3,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import moment from "moment";
-import { Tooltip } from "antd";
-import { concurrentRateLimitHitsCall, RateLimitHitsResponse } from "../networking";
+import { concurrentOperationCountsCall, OperationCountsResponse } from "../networking";
 import { QUICK_SELECT_OPTIONS } from "./constants";
-import { istLocalToUtc, nowISTLocal, utcToISTDisplay } from "./ist_utils";
+import { istLocalToUtc, nowISTLocal } from "./ist_utils";
 
-interface RateLimitHitsViewProps {
+interface CounterOpsViewProps {
   accessToken: string | null;
 }
 
-const PAGE_SIZE = 10;
-
-export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProps) {
+export default function CounterOpsView({ accessToken }: CounterOpsViewProps) {
   const [apiKey, setApiKey] = useState("");
   const [keyAlias, setKeyAlias] = useState("");
 
@@ -27,15 +24,9 @@ export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProp
   const [customStart, setCustomStart] = useState<string>(nowISTLocal({ value: 24, unit: "hours" }));
   const [customEnd, setCustomEnd] = useState<string>(nowISTLocal());
 
-  // The validated key snapshot that actually drives the query. Updated only on Search.
+  // The validated key snapshot that actually drives the query.
   const [submittedKey, setSubmittedKey] = useState<{ apiKey?: string; keyAlias?: string } | null>(null);
   const [validationError, setValidationError] = useState("");
-  const [currentPage, setCurrentPage] = useState(1);
-
-  // Reset to first page whenever the query inputs change.
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [submittedKey, selectedInterval, isCustomDate, customStart, customEnd]);
 
   const computeRange = (): { start: string; end: string } => {
     if (isCustomDate) {
@@ -57,40 +48,43 @@ export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProp
     const endM = moment(customEnd, "YYYY-MM-DDTHH:mm");
     if (!startM.isValid() || !endM.isValid()) return "";
     if (endM.isSameOrBefore(startM)) return "End time must be after start time.";
-    if (endM.diff(startM, "days", true) > 10) return "Time range cannot exceed 10 days.";
+    if (endM.diff(startM, "days", true) > 10) return "Time range cannot exceed 10 days. Please select a range within 10 days.";
     return "";
   }, [isCustomDate, customStart, customEnd]);
 
-  const hitsQuery = useQuery<RateLimitHitsResponse>({
+  const countsQuery = useQuery<OperationCountsResponse>({
     queryKey: [
-      "rateLimitHits",
+      "operationCounts",
       submittedKey,
       selectedInterval,
       isCustomDate,
       isCustomDate ? customStart : null,
       isCustomDate ? customEnd : null,
-      currentPage,
     ],
     queryFn: async () => {
       if (!accessToken || !submittedKey) {
-        return { data: [], total: 0, page: 1, page_size: PAGE_SIZE, total_pages: 0 };
+        return {
+          increment_count: 0,
+          decrement_count: 0,
+          difference: 0,
+          truncated: false,
+          gcp_available: true,
+        };
       }
       const { start, end } = computeRange();
-      return await concurrentRateLimitHitsCall(accessToken, {
+      return await concurrentOperationCountsCall(accessToken, {
         start_date: start,
         end_date: end,
         api_key: submittedKey.apiKey,
         key_alias: submittedKey.keyAlias,
-        page: currentPage,
-        page_size: PAGE_SIZE,
       });
     },
     enabled: !!accessToken && !!submittedKey && !rangeError,
     placeholderData: keepPreviousData,
   });
 
-  // Auto-fetch as the user changes the key fields (debounced so we don't fire a
-  // request on every keystroke). Exactly one of API Key / Key Alias must be set.
+  // Auto-fetch (debounced) as the user changes the key fields. Exactly one of
+  // API Key / Key Alias must be set.
   useEffect(() => {
     const trimmedKey = apiKey.trim();
     const trimmedAlias = keyAlias.trim();
@@ -114,7 +108,6 @@ export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProp
   }, [apiKey, keyAlias]);
 
   // Explicit search: applies the current key immediately (bypassing the debounce).
-  // If the key is unchanged, the query key won't change, so force a refetch.
   const handleSearch = () => {
     const trimmedKey = apiKey.trim();
     const trimmedAlias = keyAlias.trim();
@@ -137,16 +130,13 @@ export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProp
       submittedKey.apiKey === next.apiKey &&
       submittedKey.keyAlias === next.keyAlias;
     if (isSameKey) {
-      hitsQuery.refetch();
+      countsQuery.refetch();
     } else {
       setSubmittedKey(next);
     }
   };
 
-  const data = hitsQuery.data?.data || [];
-  const total = hitsQuery.data?.total || 0;
-  const totalPages = hitsQuery.data?.total_pages || 0;
-
+  const result = countsQuery.data;
   const rangeLabel = useMemo(() => {
     if (isCustomDate) return "Custom Range (IST)";
     return QUICK_SELECT_OPTIONS.find(
@@ -157,6 +147,9 @@ export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProp
   if (!accessToken) {
     return null;
   }
+
+  const hasResult = !!submittedKey && !!result && !countsQuery.isError && result.gcp_available && !result.error;
+  const difference = result?.difference ?? 0;
 
   return (
     <div className="w-full">
@@ -213,19 +206,19 @@ export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProp
 
           <button
             onClick={handleSearch}
-            disabled={hitsQuery.isFetching}
+            disabled={countsQuery.isFetching}
             className="px-4 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
           >
             Search
           </button>
 
           <button
-            onClick={() => hitsQuery.refetch()}
-            disabled={!submittedKey || hitsQuery.isFetching}
+            onClick={() => countsQuery.refetch()}
+            disabled={!submittedKey || countsQuery.isFetching}
             className="px-3 py-2 text-sm border rounded-md hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
           >
             <svg
-              className={`w-4 h-4 ${hitsQuery.isFetching ? "animate-spin" : ""}`}
+              className={`w-4 h-4 ${countsQuery.isFetching ? "animate-spin" : ""}`}
               fill="none"
               stroke="currentColor"
               viewBox="0 0 24 24"
@@ -273,123 +266,94 @@ export default function RateLimitHitsView({ accessToken }: RateLimitHitsViewProp
 
         {submittedKey && !validationError && !rangeError && (
           <div className="mt-2 text-sm text-gray-500">
-            Showing max_parallel_requests rate limit hits for{" "}
+            Showing increment / decrement counts for{" "}
             <span className="font-mono">
               {submittedKey.apiKey
                 ? `API Key ${submittedKey.apiKey.length > 24 ? submittedKey.apiKey.substring(0, 24) + "…" : submittedKey.apiKey}`
                 : `Key Alias "${submittedKey.keyAlias}"`}
             </span>{" "}
             over <span className="font-medium">{rangeLabel}</span>
-            {total > 0 && <span className="ml-2">({total} hits)</span>}
           </div>
         )}
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                #
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Timestamp (IST)
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Model
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Limit Details
-              </th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {!submittedKey ? (
-              <tr>
-                <td colSpan={4} className="px-6 py-4 text-center text-gray-500">
-                  Enter an API Key or Key Alias to see results.
-                </td>
-              </tr>
-            ) : hitsQuery.isError ? (
-              <tr>
-                <td colSpan={4} className="px-6 py-4 text-center text-red-600">
-                  {(hitsQuery.error as Error)?.message || "Failed to fetch rate limit hits."}
-                </td>
-              </tr>
-            ) : hitsQuery.isLoading ? (
-              <tr>
-                <td colSpan={4} className="px-6 py-4 text-center text-gray-500">
-                  <div className="flex items-center justify-center gap-2">
-                    <svg className="animate-spin h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                      />
-                    </svg>
-                    Loading...
-                  </div>
-                </td>
-              </tr>
-            ) : data.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="px-6 py-4 text-center text-gray-500">
-                  No max_parallel_requests rate limit hits found for this key in the selected range.
-                </td>
-              </tr>
-            ) : (
-              data.map((row, index) => (
-                <tr key={`${row.request_id}-${index}`} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {(currentPage - 1) * PAGE_SIZE + index + 1}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">
-                    {utcToISTDisplay(row.timestamp)}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{row.model || "-"}</td>
-                  <td className="px-6 py-4 text-sm text-gray-500 max-w-md">
-                    <Tooltip title={row.error_message}>
-                      <span className="block truncate">{row.error_message || "-"}</span>
-                    </Tooltip>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div className="px-6 py-4 border-t flex items-center justify-between">
-            <span className="text-sm text-gray-700">
-              Page {currentPage} of {totalPages}
-            </span>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1 || hitsQuery.isFetching}
-                className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50"
-              >
-                Previous
-              </button>
-              <button
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages || hitsQuery.isFetching}
-                className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50"
-              >
-                Next
-              </button>
-            </div>
+      {/* Results */}
+      <div className="bg-white rounded-lg shadow p-6">
+        {!submittedKey ? (
+          <div className="text-center text-gray-500 py-6">Enter an API Key or Key Alias to see counts.</div>
+        ) : countsQuery.isError ? (
+          <div className="text-center text-red-600 py-6">
+            {(countsQuery.error as Error)?.message || "Failed to fetch operation counts."}
           </div>
+        ) : countsQuery.isLoading ? (
+          <div className="flex items-center justify-center gap-2 text-gray-500 py-6">
+            <svg className="animate-spin h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+            Loading...
+          </div>
+        ) : result && (!result.gcp_available || result.error) ? (
+          <div className="text-center text-amber-700 py-6">
+            {result.error || "GCP logging is not available on the server."}
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="rounded-lg border border-green-200 bg-green-50 p-4">
+                <div className="text-sm font-medium text-green-700">Increment Logs</div>
+                <div className="mt-1 text-3xl font-bold text-green-800">
+                  {(result?.increment_count ?? 0).toLocaleString()}
+                </div>
+                <div className="mt-1 text-xs text-green-600">operation=increment</div>
+              </div>
+
+              <div className="rounded-lg border border-orange-200 bg-orange-50 p-4">
+                <div className="text-sm font-medium text-orange-700">Decrement Logs</div>
+                <div className="mt-1 text-3xl font-bold text-orange-800">
+                  {(result?.decrement_count ?? 0).toLocaleString()}
+                </div>
+                <div className="mt-1 text-xs text-orange-600">operation=decrement</div>
+              </div>
+
+              <div
+                className={`rounded-lg border p-4 ${
+                  difference === 0 ? "border-blue-200 bg-blue-50" : "border-red-200 bg-red-50"
+                }`}
+              >
+                <div className={`text-sm font-medium ${difference === 0 ? "text-blue-700" : "text-red-700"}`}>
+                  Difference (inc − dec)
+                </div>
+                <div className={`mt-1 text-3xl font-bold ${difference === 0 ? "text-blue-800" : "text-red-800"}`}>
+                  {difference > 0 ? `+${difference.toLocaleString()}` : difference.toLocaleString()}
+                </div>
+                <div className={`mt-1 text-xs ${difference === 0 ? "text-blue-600" : "text-red-600"}`}>
+                  {difference === 0 ? "Balanced" : "Increments and decrements differ"}
+                </div>
+              </div>
+            </div>
+
+            {hasResult && result?.truncated && (
+              <div className="mt-4 p-2 bg-amber-50 border border-amber-200 rounded-md">
+                <p className="text-sm text-amber-800">
+                  <strong>Note:</strong> Hit the maximum number of log entries scanned, so these counts are a
+                  lower bound. Narrow the time range for exact counts.
+                </p>
+              </div>
+            )}
+          </>
         )}
       </div>
 
       <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded-md">
         <p className="text-sm text-amber-800">
-          <strong>Note:</strong> Timestamps come from SpendLogs failure entries (status 429,
-          <span className="font-mono"> Limit type: max_parallel_requests</span>) and are shown in IST.
+          <strong>Note:</strong> Counts come from the parallel_requests <span className="font-mono">[METRICS]</span>{" "}
+          log lines in GCP Cloud Logging. An API Key is resolved to its token first (these logs carry token /
+          key_alias, not the masked key).
         </p>
       </div>
     </div>
