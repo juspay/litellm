@@ -439,3 +439,124 @@ async def count_parallel_request_operations(
     except Exception as e:
         print(f"[gcp_logs_query] Error counting parallel request operations: {e}")
         return counts, False, False
+
+
+async def get_parallel_request_metric_series(
+    start_timestamp: float,
+    end_timestamp: float,
+    project_id: Optional[str] = None,
+    token_filter: Optional[str] = None,
+    key_alias_filter: Optional[str] = None,
+) -> Tuple[List[Dict], bool]:
+    """
+    Return all [METRICS] parallel_requests log entries within [start, end] for a
+    token / key_alias, sorted ascending by the log entry's receive time.
+
+    Used to reconstruct the Redis counter value at each point in a time window (e.g.
+    once per minute): for a given target time T, the counter value is the
+    current_count of the latest entry whose entry_time <= T.
+
+    Note: the payload's own `timestamp=` field is an unreliable wall-clock isoformat
+    (not a unix float), so we use the GCP entry's receive timestamp for ordering.
+
+    Returns:
+        (entries, success) where each entry is
+        {"entry_time": float (unix seconds), "current_count": int,
+         "operation": str, "token": str, "key_alias": Optional[str]}.
+    """
+    entries: List[Dict] = []
+
+    if not GCP_LOGGING_AVAILABLE:
+        print(
+            "[gcp_logs_query] google-cloud-logging not available. "
+            "Cannot fetch parallel request metric series."
+        )
+        return entries, False
+
+    if project_id is None:
+        project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
+    if project_id is None:
+        print(
+            "[gcp_logs_query] No GCP project ID provided. "
+            "Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
+        )
+        return entries, False
+
+    client = get_gcp_logging_client(project_id)
+    if client is None:
+        return entries, False
+
+    try:
+        start_rfc3339 = datetime.fromtimestamp(start_timestamp, tz=timezone.utc).isoformat()
+        end_rfc3339 = datetime.fromtimestamp(end_timestamp, tz=timezone.utc).isoformat()
+
+        filter_parts = [
+            f'timestamp>="{start_rfc3339}"',
+            f'timestamp<="{end_rfc3339}"',
+            'textPayload:"[METRICS] Emitting parallel_requests metric"',
+        ]
+        if token_filter:
+            escaped_token = token_filter.replace('"', '\\"')
+            filter_parts.append(f'textPayload:"token={escaped_token}"')
+        if key_alias_filter:
+            escaped_alias = key_alias_filter.replace('"', '\\"')
+            filter_parts.append(f'textPayload:"key_alias={escaped_alias}"')
+        filter_str = " AND ".join(filter_parts)
+
+        max_entries = int(os.environ.get("GCP_LOG_COUNT_MAX_ENTRIES", "50000"))
+
+        print(
+            f"[gcp_logs_query] Fetching parallel_requests metric series from "
+            f"{start_rfc3339} to {end_rfc3339}"
+        )
+
+        scanned = 0
+        for entry in client.list_entries(
+            filter_=filter_str,
+            order_by="timestamp asc",
+            page_size=1000,
+        ):
+            scanned += 1
+            if scanned > max_entries:
+                print(
+                    f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
+                    f"while building metric series, stopping"
+                )
+                break
+
+            entry_time = getattr(entry, "timestamp", None)
+            if entry_time is None:
+                continue
+
+            text_payload = None
+            if hasattr(entry, "payload") and entry.payload:
+                if isinstance(entry.payload, str):
+                    text_payload = entry.payload
+                elif hasattr(entry.payload, "text"):
+                    text_payload = entry.payload.text
+            elif hasattr(entry, "text_payload"):
+                text_payload = entry.text_payload
+            if not text_payload:
+                continue
+
+            parsed = parse_metrics_log_line(text_payload)
+            if not parsed:
+                continue
+
+            entries.append({
+                "entry_time": entry_time.timestamp(),
+                "current_count": parsed["current_count"],
+                "operation": parsed["operation"],
+                "token": parsed["token"],
+                "key_alias": parsed["key_alias"],
+            })
+
+        # Already ascending by order_by, but sort defensively.
+        entries.sort(key=lambda x: x["entry_time"])
+
+        print(f"[gcp_logs_query] Returning {len(entries)} metric series entries")
+        return entries, True
+
+    except Exception as e:
+        print(f"[gcp_logs_query] Error fetching parallel request metric series: {e}")
+        return entries, False

@@ -6,13 +6,15 @@ import moment from "moment";
 import { concurrentRequestLogsCall } from "../networking";
 import RateLimitHitsView from "./RateLimitHitsView";
 import CounterOpsView from "./CounterOpsView";
+import KeyTimelineView from "./KeyTimelineView";
 
-type CrlView = "concurrency" | "rateLimitHits" | "counterOps";
+type CrlView = "concurrency" | "rateLimitHits" | "counterOps" | "keyTimeline";
 
 const VIEW_OPTIONS: { value: CrlView; label: string; title: string }[] = [
   { value: "concurrency", label: "Concurrent Logs", title: "Concurrent Request Logs" },
   { value: "rateLimitHits", label: "Rate Limit Hits", title: "MPR Rate Limit Hits" },
   { value: "counterOps", label: "Counter Ops", title: "Increment vs Decrement Counts" },
+  { value: "keyTimeline", label: "Timeline", title: "Per-Minute Concurrency Timeline" },
 ];
 
 interface ConcurrentRequestLogsProps {
@@ -132,7 +134,7 @@ export default function ConcurrentRequestLogs({
                 type="button"
                 onClick={() => setView(option.value)}
                 aria-pressed={view === option.value}
-                className={`px-4 py-2.5 text-sm font-semibold rounded-md transition-colors ${
+                className={`px-3.5 py-2.5 text-sm font-semibold rounded-md transition-colors ${
                   view === option.value
                     ? "bg-white text-blue-600 shadow"
                     : "text-gray-600 hover:text-gray-900"
@@ -149,6 +151,8 @@ export default function ConcurrentRequestLogs({
         <RateLimitHitsView accessToken={accessToken} />
       ) : view === "counterOps" ? (
         <CounterOpsView accessToken={accessToken} />
+      ) : view === "keyTimeline" ? (
+        <KeyTimelineView accessToken={accessToken} />
       ) : (
       <>
       {/* Input Fields */}

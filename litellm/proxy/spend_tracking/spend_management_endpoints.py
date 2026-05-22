@@ -1,5 +1,6 @@
 #### SPEND MANAGEMENT #####
 import asyncio
+import bisect
 import collections
 import json
 import os
@@ -4572,5 +4573,224 @@ async def concurrent_request_operation_counts(
     except Exception as e:
         verbose_proxy_logger.exception(
             f"[concurrent_request_operation_counts] Error: {str(e)}"
+        )
+        raise handle_exception_on_proxy(e)
+
+
+@router.get(
+    "/concurrent_request_logs/timeline",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
+)
+async def concurrent_request_timeline(
+    start_date: str = fastapi.Query(
+        description="Start of the time range (UTC), e.g. '2026-05-22 06:00:00' or ISO 8601"
+    ),
+    end_date: str = fastapi.Query(
+        description="End of the time range (UTC), e.g. '2026-05-22 06:30:00' or ISO 8601"
+    ),
+    api_key: Optional[str] = fastapi.Query(
+        default=None,
+        description="API key to look up (masked key / full key / hashed token). Provide either this or key_alias, not both.",
+    ),
+    key_alias: Optional[str] = fastapi.Query(
+        default=None,
+        description="Key alias to look up. Provide either this or api_key, not both.",
+    ),
+):
+    """
+    For a single key, return the Redis counter value and SpendLogs concurrency
+    sampled once per minute across the time window (max 30 minutes).
+
+    Mirrors the per-row columns of the Concurrent Request Logs view
+    (key_alias, key_token, spend_logs_concurrency, redis_concurrency, is_match),
+    but one row per minute timestamp instead of one row per key.
+
+    For each minute T:
+      - redis_concurrency = current_count of the latest [METRICS] log entry at or
+        before T (carried forward), summed across the key's token(s).
+      - spend_logs_concurrency = number of SpendLogs requests active at T
+        (startTime in [T-60m, T] and endTime >= T), same definition as the
+        Concurrent Request Logs view.
+    """
+    # Require exactly one of api_key / key_alias
+    if api_key and key_alias:
+        raise ProxyException(
+            message="Provide only one of API Key or Key Alias, not both.",
+            type="bad_request",
+            param="api_key/key_alias",
+            code=status.HTTP_400_BAD_REQUEST,
+        )
+    if not api_key and not key_alias:
+        raise ProxyException(
+            message="Provide either an API Key or a Key Alias.",
+            type="bad_request",
+            param="api_key/key_alias",
+            code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        from litellm.integrations.gcp_logging_helpers import (
+            get_parallel_request_metric_series,
+            GCP_LOGGING_AVAILABLE,
+        )
+    except Exception as import_err:
+        verbose_proxy_logger.error(
+            f"[concurrent_request_timeline] Failed to import GCP logging helpers: {import_err}"
+        )
+        return {"data": [], "total": 0, "gcp_available": False, "error": f"Import error: {str(import_err)}"}
+
+    prisma_client = _get_read_prisma_client()
+
+    try:
+        start_dt = _parse_spend_log_datetime(start_date)
+        end_dt = _parse_spend_log_datetime(end_date)
+
+        # Validate the time range: end after start, and at most 30 minutes.
+        if end_dt < start_dt:
+            raise ProxyException(
+                message="end_date must be after start_date.",
+                type="bad_request",
+                param="start_date/end_date",
+                code=status.HTTP_400_BAD_REQUEST,
+            )
+        if (end_dt - start_dt) > timedelta(minutes=30):
+            raise ProxyException(
+                message="Time range cannot exceed 30 minutes. Please select a range within 30 minutes.",
+                type="bad_request",
+                param="start_date/end_date",
+                code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve the input to the key's token(s). Both SpendLogs (keyed on the
+        # hashed token) and GCP logs (carry token) need the token.
+        if api_key:
+            token_candidates = list({api_key, hash_token(api_key)})
+            token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
+                where={
+                    "OR": [
+                        {"key_name": api_key},
+                        {"token": {"in": token_candidates}},
+                    ]
+                },
+            )
+        else:
+            token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
+                where={"key_alias": key_alias},
+            )
+
+        tokens = [row.token for row in token_rows]
+        if not tokens:
+            raise ProxyException(
+                message=f"No key found matching the provided {'API Key' if api_key else 'Key Alias'}.",
+                type="not_found",
+                param="api_key" if api_key else "key_alias",
+                code=status.HTTP_404_NOT_FOUND,
+            )
+        display_alias = token_rows[0].key_alias or key_alias or "—"
+        display_token = tokens[0] if len(tokens) == 1 else f"{len(tokens)} keys"
+
+        # Build the per-minute buckets [start, end] stepping 1 minute.
+        buckets: List[datetime] = []
+        cursor = start_dt
+        while cursor <= end_dt:
+            buckets.append(cursor)
+            cursor = cursor + timedelta(minutes=1)
+
+        # SpendLogs concurrency per minute — single generate_series query, same
+        # active-at-T definition as the Concurrent Request Logs view.
+        token_placeholders = ", ".join([f"${i+3}" for i in range(len(tokens))])
+        spend_sql = f"""
+        SELECT
+            ts AS bucket,
+            COUNT(l.api_key)::int AS spend_logs_concurrency
+        FROM generate_series($1::timestamptz, $2::timestamptz, interval '1 minute') AS ts
+        LEFT JOIN "LiteLLM_SpendLogs" l
+            ON l.api_key IN ({token_placeholders})
+            AND l."startTime" >= ts - INTERVAL '60 minutes'
+            AND l."startTime" <= ts
+            AND l."endTime" >= ts
+        GROUP BY ts
+        ORDER BY ts
+        """
+        spend_params = [start_dt.isoformat(), end_dt.isoformat(), *tokens]
+        spend_rows = await asyncio.wait_for(
+            prisma_client.db.query_raw(spend_sql, *spend_params),
+            timeout=15.0,
+        )
+        spend_map: Dict[int, int] = {}
+        for r in spend_rows or []:
+            bucket = r.get("bucket")
+            if isinstance(bucket, datetime):
+                spend_map[int(bucket.timestamp())] = r.get("spend_logs_concurrency") or 0
+            elif isinstance(bucket, str):
+                spend_map[int(datetime.fromisoformat(bucket).timestamp())] = r.get("spend_logs_concurrency") or 0
+
+        # Redis counter per minute — fetch the [METRICS] series once per token over
+        # the window (with a small lookback so the first minutes can carry forward),
+        # then for each minute take the latest current_count at or before it.
+        gcp_available = GCP_LOGGING_AVAILABLE
+        gcp_success = True
+        token_entry_times: Dict[str, List[float]] = {}
+        token_entry_counts: Dict[str, List[int]] = {}
+        if gcp_available:
+            lookback = int(os.environ.get("GCP_TIMELINE_LOOKBACK_SECONDS", "600"))
+            series_start = start_dt.timestamp() - lookback
+            series_end = end_dt.timestamp()
+            for tok in tokens:
+                series, success = await get_parallel_request_metric_series(
+                    start_timestamp=series_start,
+                    end_timestamp=series_end,
+                    token_filter=tok,
+                )
+                gcp_success = gcp_success and success
+                token_entry_times[tok] = [e["entry_time"] for e in series]
+                token_entry_counts[tok] = [e["current_count"] for e in series]
+
+        data: List[Dict[str, Any]] = []
+        for bucket in buckets:
+            bucket_unix = int(bucket.timestamp())
+            spend = spend_map.get(bucket_unix, 0)
+
+            redis_val: Optional[int] = None
+            if gcp_available and gcp_success:
+                running_total: Optional[int] = None
+                bucket_ts = bucket.timestamp()
+                for tok in tokens:
+                    times = token_entry_times.get(tok, [])
+                    if not times:
+                        continue
+                    idx = bisect.bisect_right(times, bucket_ts) - 1
+                    if idx >= 0:
+                        # Stale entry: if the nearest log is more than 10 minutes
+                        # before this bucket, don't carry forward — show "—".
+                        if bucket_ts - times[idx] > 600:
+                            continue
+                        running_total = (running_total or 0) + token_entry_counts[tok][idx]
+                redis_val = running_total
+
+            is_match: Optional[bool] = None if redis_val is None else (spend == redis_val)
+            data.append({
+                "timestamp": bucket.isoformat(),
+                "key_alias": display_alias,
+                "key_token": display_token,
+                "spend_logs_concurrency": spend,
+                "redis_concurrency": redis_val,
+                "is_match": is_match,
+            })
+
+        return {
+            "data": data,
+            "total": len(data),
+            "gcp_available": gcp_available,
+            "gcp_success": gcp_success,
+        }
+
+    except ProxyException:
+        raise
+    except Exception as e:
+        verbose_proxy_logger.exception(
+            f"[concurrent_request_timeline] Error: {str(e)}"
         )
         raise handle_exception_on_proxy(e)
