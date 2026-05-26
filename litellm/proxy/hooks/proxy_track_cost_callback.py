@@ -78,16 +78,40 @@ class _ProxyDBLogger(CustomLogger):
         if not base_call_id:
             return
 
-        from litellm.proxy.proxy_server import prisma_client, proxy_logging_obj
+        from litellm.proxy.proxy_server import (
+            disable_spend_logs,
+            prisma_client,
+            proxy_logging_obj,
+        )
+
+        # Calling _insert_spend_log_to_db directly (below) bypasses
+        # update_database's own kill-switch, so honor disable_spend_logs here.
+        if disable_spend_logs is True:
+            return
 
         try:
+            litellm_params = kwargs.get("litellm_params", {}) or {}
+            metadata = get_litellm_metadata_from_kwargs(kwargs=kwargs)
+
+            # Mirror the success path (_PROXY_track_cost_callback): only track
+            # failures for calls that carry a real identity. This skips
+            # identity-less internal calls (e.g. semantic-cache embeddings) so
+            # they don't create blank failure rows, and — via
+            # _should_track_cost_callback — also honors disable_spend_updates.
+            if not _should_track_cost_callback(
+                user_api_key=metadata.get("user_api_key"),
+                user_id=metadata.get("user_api_key_user_id"),
+                team_id=metadata.get("user_api_key_team_id"),
+                end_user_id=get_end_user_id_for_cost_tracking(litellm_params),
+            ):
+                return
+
             sl_object: Optional[StandardLoggingPayload] = kwargs.get(
                 "standard_logging_object", None
             )
             error_information = (
                 sl_object.get("error_information") if sl_object is not None else None
             )
-            litellm_params = kwargs.get("litellm_params", {}) or {}
 
             # Timing can arrive as None on the failure path (and
             # ``completion_start_time`` is frequently present-but-None in
@@ -133,9 +157,13 @@ class _ProxyDBLogger(CustomLogger):
                 end_time=end_time,
             )
             payload["spend"] = 0.0
-            for _time_key in ("startTime", "endTime", "completionStartTime"):
-                if isinstance(payload.get(_time_key), datetime):
-                    payload[_time_key] = payload[_time_key].isoformat()
+            # Finalize timestamps exactly like update_database (which only
+            # isoformats startTime/endTime and leaves completionStartTime as a
+            # datetime) so these rows match the proven success-path shape.
+            if isinstance(payload.get("startTime"), datetime):
+                payload["startTime"] = payload["startTime"].isoformat()
+            if isinstance(payload.get("endTime"), datetime):
+                payload["endTime"] = payload["endTime"].isoformat()
 
             await proxy_logging_obj.db_spend_update_writer._insert_spend_log_to_db(
                 payload=payload,

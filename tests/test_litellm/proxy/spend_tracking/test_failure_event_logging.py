@@ -218,6 +218,44 @@ async def test_missing_litellm_call_id_is_noop():
     mock_insert.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_respects_disable_spend_logs():
+    """disable_spend_logs is the operator kill-switch for SpendLogs writes.
+    Because we call _insert_spend_log_to_db directly (bypassing update_database's
+    own guard), the failure path must honor it explicitly."""
+    args = await _capture_attempt_kwargs()
+    logger = _ProxyDBLogger()
+
+    with patch("litellm.proxy.proxy_server.disable_spend_logs", True), patch(
+        _INSERT_TARGET, new_callable=AsyncMock
+    ) as mock_insert:
+        await logger.async_log_failure_event(
+            kwargs=args["kwargs"], response_obj=None, **_timing(args)
+        )
+
+    mock_insert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_skips_call_without_identity():
+    """Identity-less internal calls (e.g. semantic-cache embeddings) must NOT
+    write blank failure rows — mirror the success path's _should_track_cost_callback
+    gate. litellm_call_id is present but metadata carries no user_api_key*."""
+    logger = _ProxyDBLogger()
+    kwargs = {
+        "litellm_call_id": "NOIDENTITY",
+        "litellm_params": {"metadata": {}},
+        "standard_logging_object": {"error_information": {"error_code": "500"}},
+    }
+
+    with patch(_INSERT_TARGET, new_callable=AsyncMock) as mock_insert:
+        await logger.async_log_failure_event(
+            kwargs=kwargs, response_obj=None, start_time=None, end_time=None
+        )
+
+    mock_insert.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # End-to-end through the router (real async_log_failure_event dispatch)
 # ---------------------------------------------------------------------------
@@ -260,6 +298,7 @@ async def test_fallback_rescued_failure_is_logged():
             model="primary",
             messages=[{"role": "user", "content": "hi"}],
             litellm_call_id="RESCUED",
+            metadata={"user_api_key_user_id": "u1", "user_api_key": "sk-hash"},
         )
         await asyncio.sleep(0.5)
 
@@ -310,6 +349,7 @@ async def test_all_fail_writes_distinct_rows_per_attempt():
                 model="primary",
                 messages=[{"role": "user", "content": "hi"}],
                 litellm_call_id="ALLFAIL",
+                metadata={"user_api_key_user_id": "u1", "user_api_key": "sk-hash"},
             )
         except Exception:
             pass
