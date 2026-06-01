@@ -136,6 +136,13 @@ class UserAPIKeyAuthExceptionHandler:
                 )
             elif isinstance(e, ProxyException):
                 raise e
+            if PrismaDBExceptionHandler.is_database_transport_error(e):
+                raise ProxyException(
+                    message="Service temporarily unavailable, " + str(e),
+                    type=ProxyErrorTypes.no_db_connection,
+                    param=getattr(e, "param", "None"),
+                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             raise ProxyException(
                 message="Authentication Error, " + str(e),
                 type=ProxyErrorTypes.auth_error,
