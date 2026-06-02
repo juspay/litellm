@@ -2240,10 +2240,10 @@ async def _fetch_key_object_from_db_with_reconnect(
             did_reconnect = False
             if hasattr(prisma_client, "attempt_db_reconnect"):
                 auth_reconnect_timeout = getattr(
-                    prisma_client, "_db_auth_reconnect_timeout_seconds", 2.0
+                    prisma_client, "_db_auth_reconnect_timeout_seconds", 30.0
                 )
                 if not isinstance(auth_reconnect_timeout, (int, float)):
-                    auth_reconnect_timeout = 2.0
+                    auth_reconnect_timeout = 30.0
                 auth_reconnect_lock_timeout = getattr(
                     prisma_client, "_db_auth_reconnect_lock_timeout_seconds", 0.1
                 )

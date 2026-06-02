@@ -220,25 +220,28 @@ class PrismaWrapper:
         """Disconnect and reconnect the Prisma client with a new database URL."""
         from prisma import Prisma  # type: ignore
 
-        old_engine_pid = self._get_engine_pid()
-
-        try:
-            await self._original_prisma.disconnect()
-        except Exception as e:
-            verbose_proxy_logger.warning(f"Failed to disconnect Prisma client: {e}")
-            await self._kill_engine_process(old_engine_pid)
-
         if http_client is not None:
             new_prisma = Prisma(http=http_client)
         else:
             new_prisma = Prisma()
 
-        # Swap only after connect() succeeds. If connect() raises or is cancelled
-        # (e.g. asyncio.wait_for timeout on the auth path's 2s budget), leaving a
-        # half-built client installed would poison every subsequent query with
-        # ClientNotConnectedError until process restart -- see issue #28322.
+        # Connect the new client BEFORE touching the old one. The old client
+        # keeps serving requests with no error window. If connect() raises or is
+        # cancelled (e.g. asyncio.wait_for timeout on the auth path's 2s budget),
+        # _original_prisma is never updated so there is no poisoning -- see issue #28322.
         await new_prisma.connect()
+
+        # Atomic swap -- new client is live from this line onward.
+        old_prisma = self._original_prisma
+        old_engine_pid = self._get_engine_pid()
         self._original_prisma = new_prisma
+
+        # Disconnect old client after the swap so it never blocks requests.
+        try:
+            await old_prisma.disconnect()
+        except Exception as e:
+            verbose_proxy_logger.warning(f"Failed to disconnect old Prisma client: {e}")
+            await self._kill_engine_process(old_engine_pid)
 
     async def start_token_refresh_task(self) -> None:
         """
