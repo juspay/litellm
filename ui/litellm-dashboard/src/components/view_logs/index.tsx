@@ -82,6 +82,9 @@ export default function SpendLogsTable({
   const [selectedKeyIdInfoView, setSelectedKeyIdInfoView] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState("");
   const [selectedEndUser, setSelectedEndUser] = useState("");
+  const [selectedKeyAlias, setSelectedKeyAlias] = useState("");
+  const [selectedErrorCode, setSelectedErrorCode] = useState("");
+  const [selectedErrorMessage, setSelectedErrorMessage] = useState("");
   const [filterByCurrentUser, setFilterByCurrentUser] = useState(userRole && internalUserRoles.includes(userRole));
   const [activeTab, setActiveTab] = useState("request logs");
   const [showAnalytics, setShowAnalytics] = useState(false);
@@ -264,10 +267,13 @@ export default function SpendLogsTable({
       endTime,
       selectedTeamId,
       selectedKeyHash,
+      selectedKeyAlias,
       filterByCurrentUser ? userID : null,
       selectedStatus,
       selectedModelId,
       selectedEndUser,
+      selectedErrorCode,
+      selectedErrorMessage,
     ],
     queryFn: async () => {
       if (!accessToken || !token || !userRole || !userID) {
@@ -289,8 +295,11 @@ export default function SpendLogsTable({
         filterByCurrentUser ? userID : undefined,
         selectedEndUser,
         selectedStatus,
-        selectedModelId,
         undefined,
+        selectedKeyAlias || undefined,
+        selectedModelId || undefined,
+        selectedErrorCode || undefined,
+        selectedErrorMessage || undefined,
       );
 
       return response || { time_bucket_size: '', data: [] };
@@ -309,9 +318,12 @@ export default function SpendLogsTable({
       selectedErrorCategories,
       selectedTeamId,
       selectedKeyHash,
+      selectedKeyAlias,
       filterByCurrentUser ? userID : null,
       selectedModelId,
       selectedEndUser,
+      selectedErrorCode,
+      selectedErrorMessage,
       failureLogsAnalyticsCurrentPage,
       failureLogsAnalyticsCurrentPageSize,
     ],
@@ -332,7 +344,10 @@ export default function SpendLogsTable({
         end_date: formattedEndTime,
         user_id: filterByCurrentUser ? userID : undefined,
         end_user: selectedEndUser || undefined,
-        model: selectedModelId || undefined,
+        model_id: selectedModelId || undefined,
+        key_alias: selectedKeyAlias || undefined,
+        error_code: selectedErrorCode || undefined,
+        error_message: selectedErrorMessage || undefined,
         error_classes: selectedErrorCategories.length > 0 ? selectedErrorCategories.join(",") : undefined,
         page: failureLogsAnalyticsCurrentPage,
         page_size: failureLogsAnalyticsCurrentPageSize,
@@ -395,6 +410,9 @@ export default function SpendLogsTable({
     setSelectedStatus(filters["Status"] || "");
     setSelectedModelId(filters["Model"] || "");
     setSelectedEndUser(filters["End User"] || "");
+    setSelectedKeyAlias(filters["Key Alias"] || "");
+    setSelectedErrorCode(filters["Error Code"] || "");
+    setSelectedErrorMessage(filters["Error Message"] || "");
 
     // Key Alias filtering is handled server-side by performSearch via the key_alias param.
     // We intentionally do not translate the alias to a hash here to avoid firing a
@@ -402,10 +420,10 @@ export default function SpendLogsTable({
     setSelectedKeyHash(filters["Key Hash"] || "");
   }, [filters, accessToken]);
 
-  // Reset failure logs analytics page when categories or time range changes
+  // Reset failure logs analytics page when any filter or time range changes
   useEffect(() => {
     setFailureLogsAnalyticsCurrentPage(1);
-  }, [selectedErrorCategories, startTime, endTime]);
+  }, [selectedErrorCategories, startTime, endTime, selectedTeamId, selectedKeyHash, selectedKeyAlias, selectedModelId, selectedEndUser, selectedErrorCode, selectedErrorMessage]);
 
   if (!accessToken || !token || !userRole || !userID) {
     return null;
