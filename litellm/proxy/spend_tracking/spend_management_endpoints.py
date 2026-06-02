@@ -3413,8 +3413,17 @@ async def ui_view_error_stats(
     model: Optional[str] = fastapi.Query(
         default=None, description="Filter by model"
     ),
+    model_id: Optional[str] = fastapi.Query(
+        default=None, description="Filter by model_id"
+    ),
     key_alias: Optional[str] = fastapi.Query(
         default=None, description="Filter by key alias"
+    ),
+    error_code: Optional[str] = fastapi.Query(
+        default=None, description="Filter by error code"
+    ),
+    error_message: Optional[str] = fastapi.Query(
+        default=None, description="Filter by error message (partial match)"
     ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
@@ -3467,6 +3476,9 @@ async def ui_view_error_stats(
         if model is not None:
             where_conditions["model"] = model
 
+        if model_id is not None:
+            where_conditions["model_id"] = model_id
+
         if end_user is not None:
             where_conditions["end_user"] = end_user
 
@@ -3475,6 +3487,12 @@ async def ui_view_error_stats(
                 "path": ["user_api_key_alias"],
                 "string_contains": key_alias,
             }
+
+        if error_code is not None:
+            where_conditions["error_code"] = error_code
+
+        if error_message is not None:
+            where_conditions["error_message"] = error_message
 
         status_condition = _build_status_filter_condition(status_filter)
         if status_condition:
@@ -3594,6 +3612,11 @@ async def ui_view_error_stats(
             params.append(where_conditions["model"])
             param_index += 1
 
+        if "model_id" in where_conditions:
+            sql_query += f" AND model_id = ${param_index}"
+            params.append(where_conditions["model_id"])
+            param_index += 1
+
         if "end_user" in where_conditions:
             sql_query += f" AND end_user = ${param_index}"
             params.append(where_conditions["end_user"])
@@ -3602,6 +3625,16 @@ async def ui_view_error_stats(
         if "metadata" in where_conditions:
             sql_query += f" AND metadata::text LIKE ${param_index}"
             params.append(f'%{where_conditions["metadata"]["string_contains"]}%')
+            param_index += 1
+
+        if "error_code" in where_conditions:
+            sql_query += f" AND (metadata::jsonb)->'error_information'->>'error_code' = ${param_index}"
+            params.append(where_conditions["error_code"])
+            param_index += 1
+
+        if "error_message" in where_conditions:
+            sql_query += f" AND (metadata::jsonb)->'error_information'->>'error_message' LIKE ${param_index}"
+            params.append(f'%{where_conditions["error_message"]}%')
             param_index += 1
 
         sql_query += " GROUP BY 1, 2 ORDER BY 1 ASC, 3 DESC"
@@ -3676,8 +3709,17 @@ async def ui_view_failure_logs_analytics_paginated(
     model: Optional[str] = fastapi.Query(
         default=None, description="Filter by model"
     ),
+    model_id: Optional[str] = fastapi.Query(
+        default=None, description="Filter by model_id"
+    ),
     key_alias: Optional[str] = fastapi.Query(
         default=None, description="Filter by key alias"
+    ),
+    error_code: Optional[str] = fastapi.Query(
+        default=None, description="Filter by error code"
+    ),
+    error_message: Optional[str] = fastapi.Query(
+        default=None, description="Filter by error message (partial match)"
     ),
     error_classes: Optional[str] = fastapi.Query(
         default=None,
@@ -3763,6 +3805,9 @@ async def ui_view_failure_logs_analytics_paginated(
         if model is not None:
             where_conditions["model"] = model
 
+        if model_id is not None:
+            where_conditions["model_id"] = model_id
+
         if end_user is not None:
             where_conditions["end_user"] = end_user
 
@@ -3771,6 +3816,12 @@ async def ui_view_failure_logs_analytics_paginated(
                 "path": ["user_api_key_alias"],
                 "string_contains": key_alias,
             }
+
+        if error_code is not None:
+            where_conditions["error_code"] = error_code
+
+        if error_message is not None:
+            where_conditions["error_message"] = error_message
 
         # Parse error classes
         error_class_list = []
@@ -3851,6 +3902,11 @@ async def ui_view_failure_logs_analytics_paginated(
             params.append(where_conditions["model"])
             param_index += 1
 
+        if "model_id" in where_conditions:
+            sql_query += f" AND model_id = ${param_index}"
+            params.append(where_conditions["model_id"])
+            param_index += 1
+
         if "end_user" in where_conditions:
             sql_query += f" AND end_user = ${param_index}"
             params.append(where_conditions["end_user"])
@@ -3859,6 +3915,16 @@ async def ui_view_failure_logs_analytics_paginated(
         if "metadata" in where_conditions:
             sql_query += f" AND metadata::text LIKE ${param_index}"
             params.append(f'%{where_conditions["metadata"]["string_contains"]}%')
+            param_index += 1
+
+        if "error_code" in where_conditions:
+            sql_query += f" AND (metadata::jsonb)->'error_information'->>'error_code' = ${param_index}"
+            params.append(where_conditions["error_code"])
+            param_index += 1
+
+        if "error_message" in where_conditions:
+            sql_query += f" AND (metadata::jsonb)->'error_information'->>'error_message' LIKE ${param_index}"
+            params.append(f'%{where_conditions["error_message"]}%')
             param_index += 1
 
         # Filter by selected error classes

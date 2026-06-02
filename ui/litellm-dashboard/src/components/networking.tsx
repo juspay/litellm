@@ -2829,6 +2829,9 @@ export const errorStatsCall = async (
   status_filter?: string,
   model?: string,
   key_alias?: string,
+  model_id?: string,
+  error_code?: string,
+  error_message?: string,
 ) => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/spend/logs/error_stats` : `/spend/logs/error_stats`;
@@ -2844,6 +2847,9 @@ export const errorStatsCall = async (
     if (status_filter) queryParams.append("status_filter", status_filter);
     if (model) queryParams.append("model", model);
     if (key_alias) queryParams.append("key_alias", key_alias);
+    if (model_id) queryParams.append("model_id", model_id);
+    if (error_code) queryParams.append("error_code", error_code);
+    if (error_message) queryParams.append("error_message", error_message);
 
     const queryString = queryParams.toString();
     if (queryString) {
@@ -2885,7 +2891,10 @@ export const failureLogsAnalyticsPaginatedCall = async (
     user_id?: string;
     end_user?: string;
     model?: string;
+    model_id?: string;
     key_alias?: string;
+    error_code?: string;
+    error_message?: string;
     error_classes?: string;
     page?: number;
     page_size?: number;
@@ -2903,7 +2912,10 @@ export const failureLogsAnalyticsPaginatedCall = async (
     if (params.user_id) queryParams.append("user_id", params.user_id);
     if (params.end_user) queryParams.append("end_user", params.end_user);
     if (params.model) queryParams.append("model", params.model);
+    if (params.model_id) queryParams.append("model_id", params.model_id);
     if (params.key_alias) queryParams.append("key_alias", params.key_alias);
+    if (params.error_code) queryParams.append("error_code", params.error_code);
+    if (params.error_message) queryParams.append("error_message", params.error_message);
     if (params.error_classes) queryParams.append("error_classes", params.error_classes);
     if (params.page) queryParams.append("page", params.page.toString());
     if (params.page_size) queryParams.append("page_size", params.page_size.toString());
