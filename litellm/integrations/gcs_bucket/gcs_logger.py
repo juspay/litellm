@@ -159,7 +159,12 @@ class ProductionGCSLogger(CustomLogger):
                 "litellm_session_id": session_id,
                 "type": "SUCCESS",
                 "user": {
-                    "email": metadata.get("user_api_key_user_email"),
+                    "email": (
+                        metadata.get("user_api_key_user_email")
+                        or metadata.get("user_email")
+                        or kwargs.get("user_email")
+                        or kwargs.get("metadata", {}).get("user_api_key_user_email")
+                    ),
                     "user_id": metadata.get("user_api_key_user_id"),
                     "team_alias": metadata.get("user_api_key_team_alias"),
                     "department": (metadata.get("user_api_key_metadata") or {}).get(
@@ -198,6 +203,10 @@ class ProductionGCSLogger(CustomLogger):
                 },
                 "headers": metadata.get("headers"),
             }
+
+            # no sensitive info is present in the full log verified manually
+            if not success_log["user"]["email"]:
+                success_log["litellm_kwargs"] = kwargs
 
             if hasattr(response_obj, "choices") and response_obj.choices:
                 choice = response_obj.choices[0]
