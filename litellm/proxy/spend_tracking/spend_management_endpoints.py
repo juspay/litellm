@@ -40,15 +40,19 @@ def _get_read_prisma_client():
     """Get the read replica Prisma client, falling back to primary if not configured."""
     from litellm.proxy.proxy_server import prisma_client, prisma_read_client
 
-    client = prisma_read_client if prisma_read_client is not None else prisma_client
-    if client is None:
+    if prisma_read_client is not None:
+        return prisma_read_client
+
+    print("[WARNING] Read replica not initialized (READ_DATABASE_URL not set), falling back to primary DATABASE_URL")
+
+    if prisma_client is None:
         raise ProxyException(
             message="Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys",
             type="internal_error",
             param="None",
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
-    return client
+    return prisma_client
 
 
 class ErrorStatsResponse(BaseModel):
