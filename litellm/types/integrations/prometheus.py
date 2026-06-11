@@ -204,6 +204,9 @@ class UserAPIKeyLabelNames(Enum):
     STREAM = "stream"
     ORG_ID = "org_id"
     ORG_ALIAS = "org_alias"
+    POOL_NAME = "pool_name"
+    POOL_TYPE = "pool_type"
+    POD_WORKER = "pod_worker"
 
 
 DEFINED_PROMETHEUS_METRICS = Literal[
@@ -270,6 +273,9 @@ DEFINED_PROMETHEUS_METRICS = Literal[
     "litellm_check_batch_cost_jobs_processed_total",
     "litellm_check_batch_cost_errors_total",
     "litellm_check_batch_cost_last_run_timestamp",
+    # Redis pool metrics
+    "litellm_redis_pool_active_connections",
+    "litellm_redis_pool_max_connections",
 ]
 
 
@@ -702,6 +708,14 @@ class PrometheusMetricLabels:
 
     litellm_check_batch_cost_last_run_timestamp: List[str] = []
 
+    # Redis pool metrics
+    litellm_redis_pool_active_connections = [
+        UserAPIKeyLabelNames.POOL_NAME.value,
+        UserAPIKeyLabelNames.POOL_TYPE.value,
+        UserAPIKeyLabelNames.POD_WORKER.value,
+    ]
+    litellm_redis_pool_max_connections = litellm_redis_pool_active_connections
+
     @staticmethod
     def get_labels(label_name: DEFINED_PROMETHEUS_METRICS) -> List[str]:
         default_labels = getattr(PrometheusMetricLabels, label_name)
@@ -855,6 +869,12 @@ class NoOpMetric:
         pass
 
     def dec(self, *args, **kwargs):
+        pass
+
+    def set(self, *args, **kwargs):
+        pass
+
+    def observe(self, *args, **kwargs):
         pass
 
     def set(self, *args, **kwargs):
