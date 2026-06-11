@@ -41,6 +41,7 @@ def _get_read_prisma_client():
     from litellm.proxy.proxy_server import prisma_client, prisma_read_client
 
     if prisma_read_client is not None:
+        print("[INFO] Using read replica Prisma client (READ_DATABASE_URL)")
         return prisma_read_client
 
     print("[WARNING] Read replica not initialized (READ_DATABASE_URL not set), falling back to primary DATABASE_URL")

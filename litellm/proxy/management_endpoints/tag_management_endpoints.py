@@ -43,10 +43,15 @@ def _get_read_prisma_client():
     """Get the read replica Prisma client, falling back to primary if not configured."""
     from litellm.proxy.proxy_server import prisma_client, prisma_read_client
 
-    client = prisma_read_client if prisma_read_client is not None else prisma_client
-    if client is None:
+    if prisma_read_client is not None:
+        print("[INFO] Using read replica Prisma client (READ_DATABASE_URL)")
+        return prisma_read_client
+
+    print("[WARNING] Read replica not initialized (READ_DATABASE_URL not set), falling back to primary DATABASE_URL")
+
+    if prisma_client is None:
         raise HTTPException(status_code=500, detail="Database not connected")
-    return client
+    return prisma_client
 
 
 async def _get_model_names(prisma_client, model_ids: list) -> Dict[str, str]:

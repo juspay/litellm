@@ -19,13 +19,18 @@ def _get_read_prisma_client():
     """Use read replica for audit log queries, falling back to primary."""
     from litellm.proxy.proxy_server import prisma_client, prisma_read_client
 
-    client = prisma_read_client if prisma_read_client is not None else prisma_client
-    if client is None:
+    if prisma_read_client is not None:
+        print("[INFO] Using read replica Prisma client (READ_DATABASE_URL)")
+        return prisma_read_client
+
+    print("[WARNING] Read replica not initialized (READ_DATABASE_URL not set), falling back to primary DATABASE_URL")
+
+    if prisma_client is None:
         raise HTTPException(
             status_code=500,
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
-    return client
+    return prisma_client
 
 
 @router.get(
