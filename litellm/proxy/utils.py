@@ -2434,6 +2434,7 @@ class PrismaClient:
     ):
         ## init logging object
         self.proxy_logging_obj = proxy_logging_obj
+        self.database_url = database_url
         self.iam_token_db_auth: Optional[bool] = str_to_bool(
             os.getenv("IAM_TOKEN_DB_AUTH")
         )
@@ -2453,7 +2454,10 @@ class PrismaClient:
             )
         if http_client is not None:
             self.db = PrismaWrapper(
-                original_prisma=Prisma(http=http_client),
+                original_prisma=Prisma(
+                    http=http_client,
+                    datasource={"url": database_url},
+                ),
                 iam_token_db_auth=(
                     self.iam_token_db_auth
                     if self.iam_token_db_auth is not None
@@ -2462,7 +2466,7 @@ class PrismaClient:
             )
         else:
             self.db = PrismaWrapper(
-                original_prisma=Prisma(),
+                original_prisma=Prisma(datasource={"url": database_url}),
                 iam_token_db_auth=(
                     self.iam_token_db_auth
                     if self.iam_token_db_auth is not None
@@ -4093,7 +4097,9 @@ class PrismaClient:
             self._engine_confirmed_dead = False
 
             async def _do_heavy_reconnect() -> None:
-                db_url = os.getenv("DATABASE_URL", "")
+                db_url = getattr(self, "database_url", None) or os.getenv(
+                    "DATABASE_URL", ""
+                )
                 if not db_url:
                     verbose_proxy_logger.error(
                         "DATABASE_URL not set; cannot recreate Prisma client."
