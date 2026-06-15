@@ -221,9 +221,12 @@ class PrismaWrapper:
         from prisma import Prisma  # type: ignore
 
         if http_client is not None:
-            new_prisma = Prisma(http=http_client)
+            new_prisma = Prisma(
+                http=http_client,
+                datasource={"url": new_db_url},
+            )
         else:
-            new_prisma = Prisma()
+            new_prisma = Prisma(datasource={"url": new_db_url})
 
         # Connect the new client BEFORE touching the old one. The old client
         # keeps serving requests with no error window. If connect() raises or is
