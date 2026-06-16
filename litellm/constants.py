@@ -203,6 +203,20 @@ AIOHTTP_CONNECTOR_LIMIT_PER_HOST = int(
 )
 AIOHTTP_KEEPALIVE_TIMEOUT = int(os.getenv("AIOHTTP_KEEPALIVE_TIMEOUT", 120))
 AIOHTTP_TTL_DNS_CACHE = int(os.getenv("AIOHTTP_TTL_DNS_CACHE", 300))
+# TCP keepalive probes on the aiohttp connector sockets.
+# keepalive_timeout above only governs *idle pooled* connections. A connection
+# actively waiting on a response (long prefill / high TTFT) is not idle, so a
+# NAT/gateway between the proxy and the backend can silently drop the flow
+# mid-request -> the backend's response is blackholed and the request hangs until
+# the read timeout (e.g. 540s). SO_KEEPALIVE probes keep the NAT mapping warm and
+# tear a genuinely-dead socket down in ~IDLE + INTVL*CNT seconds instead.
+AIOHTTP_TCP_KEEPALIVE = os.getenv("AIOHTTP_TCP_KEEPALIVE", "True").lower() in (
+    "true",
+    "1",
+)
+AIOHTTP_TCP_KEEPALIVE_IDLE = int(os.getenv("AIOHTTP_TCP_KEEPALIVE_IDLE", 30))
+AIOHTTP_TCP_KEEPALIVE_INTVL = int(os.getenv("AIOHTTP_TCP_KEEPALIVE_INTVL", 10))
+AIOHTTP_TCP_KEEPALIVE_CNT = int(os.getenv("AIOHTTP_TCP_KEEPALIVE_CNT", 3))
 # enable_cleanup_closed is only needed for Python versions with the SSL leak bug
 # Fixed in Python 3.12.7+ and 3.13.1+ (see https://github.com/python/cpython/pull/118960)
 # Reference: https://github.com/aio-libs/aiohttp/blob/master/aiohttp/connector.py#L74-L78

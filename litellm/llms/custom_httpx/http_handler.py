@@ -1,5 +1,7 @@
 import asyncio
+import inspect
 import os
+import socket
 import ssl
 import sys
 import time
@@ -29,6 +31,10 @@ from litellm.constants import (
     AIOHTTP_CONNECTOR_LIMIT_PER_HOST,
     AIOHTTP_KEEPALIVE_TIMEOUT,
     AIOHTTP_NEEDS_CLEANUP_CLOSED,
+    AIOHTTP_TCP_KEEPALIVE,
+    AIOHTTP_TCP_KEEPALIVE_CNT,
+    AIOHTTP_TCP_KEEPALIVE_IDLE,
+    AIOHTTP_TCP_KEEPALIVE_INTVL,
     AIOHTTP_TTL_DNS_CACHE,
     DEFAULT_SSL_CIPHERS,
 )
@@ -71,6 +77,43 @@ headers = get_default_headers()
 
 # https://www.python-httpx.org/advanced/timeouts
 _DEFAULT_TIMEOUT = httpx.Timeout(timeout=5.0, connect=5.0)
+
+# aiohttp gained the public ``socket_factory`` TCPConnector arg in 3.11. Detect it
+# once so the keepalive wiring is a no-op (rather than a TypeError) on older pins.
+_AIOHTTP_SUPPORTS_SOCKET_FACTORY = (
+    "socket_factory" in inspect.signature(TCPConnector.__init__).parameters
+)
+
+
+def _tcp_keepalive_socket_factory(
+    addr_info: Tuple[Any, ...],
+) -> socket.socket:
+    """
+    socket_factory for aiohttp's TCPConnector that enables TCP keepalive probes.
+
+    aiohttp's ``keepalive_timeout`` only governs *idle pooled* connections. A
+    connection blocked on a slow response (long prefill / high TTFT) is not idle,
+    so a NAT/gateway can drop the flow mid-request and the response is blackholed
+    until the read timeout. SO_KEEPALIVE probes keep the NAT mapping warm for a
+    live-but-slow backend (its kernel ACKs the probes regardless of load) and tear
+    a genuinely-dead socket down in ~IDLE + INTVL*CNT seconds.
+    """
+    family, type_, proto = addr_info[0], addr_info[1], addr_info[2]
+    sock = socket.socket(family, type_, proto)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        sock.setsockopt(
+            socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, AIOHTTP_TCP_KEEPALIVE_IDLE
+        )
+    if hasattr(socket, "TCP_KEEPINTVL"):
+        sock.setsockopt(
+            socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, AIOHTTP_TCP_KEEPALIVE_INTVL
+        )
+    if hasattr(socket, "TCP_KEEPCNT"):
+        sock.setsockopt(
+            socket.IPPROTO_TCP, socket.TCP_KEEPCNT, AIOHTTP_TCP_KEEPALIVE_CNT
+        )
+    return sock
 
 
 def _prepare_request_data_and_content(
@@ -881,6 +924,17 @@ class AsyncHTTPHandler:
             "ttl_dns_cache": AIOHTTP_TTL_DNS_CACHE,
             **connector_kwargs,
         }
+        # Enable TCP keepalive probes so half-open connections across a NAT are
+        # detected (and torn down) fast instead of blackholing until the read
+        # timeout. Requires aiohttp >= 3.11 (socket_factory) and platform support.
+        if (
+            AIOHTTP_TCP_KEEPALIVE
+            and _AIOHTTP_SUPPORTS_SOCKET_FACTORY
+            and hasattr(socket, "TCP_KEEPIDLE")
+        ):
+            transport_connector_kwargs[
+                "socket_factory"
+            ] = _tcp_keepalive_socket_factory
         if AIOHTTP_NEEDS_CLEANUP_CLOSED:
             transport_connector_kwargs["enable_cleanup_closed"] = True
         if AIOHTTP_CONNECTOR_LIMIT > 0:
