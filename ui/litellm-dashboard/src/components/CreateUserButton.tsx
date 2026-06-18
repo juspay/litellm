@@ -3,7 +3,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { Accordion, AccordionBody, AccordionHeader, SelectItem, TextInput } from "@tremor/react";
 import { Alert, Button, Form, Input, Modal, Select, Select as Select2, Space, Tooltip, Typography } from "antd";
-import React, { useEffect, useMemo, useState } from "react";
+import debounce from "lodash/debounce";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import BulkCreateUsers from "./bulk_create_users_button";
 import TeamDropdown from "./common_components/team_dropdown";
 import { getModelDisplayName } from "./key_team_helpers/fetch_available_models_team_key";
@@ -14,6 +15,7 @@ import {
   invitationCreateCall,
   modelAvailableCall,
   userCreateCall,
+  userFilterUICall,
 } from "./networking";
 import OnboardingModal, { InvitationLink } from "./onboarding_link";
 const { Option } = Select;
@@ -66,6 +68,33 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
   const [invitationLinkData, setInvitationLinkData] = useState<InvitationLink | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const { data: organizations = [] } = useOrganizations();
+  const [ownerOptions, setOwnerOptions] = useState<{ label: string; value: string }[]>([]);
+  const [ownerSearchLoading, setOwnerSearchLoading] = useState(false);
+
+  const fetchOwners = async (searchText: string) => {
+    if (!searchText) {
+      setOwnerOptions([]);
+      return;
+    }
+    setOwnerSearchLoading(true);
+    try {
+      const params = new URLSearchParams();
+      params.append("user_email", searchText);
+      const results = await userFilterUICall(accessToken, params);
+      setOwnerOptions(
+        results.map((u: { user_email: string; user_id: string }) => ({
+          label: `${u.user_email} (${u.user_id})`,
+          value: u.user_id,
+        }))
+      );
+    } catch {
+      // silently ignore search errors
+    } finally {
+      setOwnerSearchLoading(false);
+    }
+  };
+
+  const debouncedOwnerSearch = useCallback(debounce(fetchOwners, 300), [accessToken]);
 
   // Derive teams from the user's organizations, falling back to the teams prop
   const availableTeams = useMemo(() => {
@@ -113,6 +142,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
     user_role: string;
     organization_ids?: string[];
     organizations?: string[];
+    owner_ids?: string[];
   }) => {
     try {
       NotificationsManager.info("Making API Call");
@@ -213,6 +243,41 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
           <TeamDropdown />
         </Form.Item>
 
+        <Form.Item
+          label={
+            <span>
+              Owners{" "}
+              <Tooltip title="At least 2 users who own this service account">
+                <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+              </Tooltip>
+            </span>
+          }
+          name="owner_ids"
+          required={false}
+          rules={[
+            {
+              validator: async (_, value) => {
+                if (value && value.length > 0 && value.length < 2) {
+                  throw new Error("If specifying owners, please select at least 2");
+                }
+              },
+            },
+          ]}
+          help="optional — if provided, minimum 2 owners"
+        >
+          <Select2
+            mode="multiple"
+            showSearch
+            placeholder="Search by email to add owners"
+            filterOption={false}
+            onSearch={(v) => debouncedOwnerSearch(v)}
+            loading={ownerSearchLoading}
+            options={ownerOptions}
+            notFoundContent={ownerSearchLoading ? "Searching..." : "No users found"}
+            style={{ width: "100%" }}
+          />
+        </Form.Item>
+
         <Form.Item label="Metadata" name="metadata">
           <Input.TextArea rows={4} placeholder="Enter metadata as JSON" />
         </Form.Item>
@@ -307,6 +372,41 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
                 </Option>
               ))}
             </Select>
+          </Form.Item>
+
+          <Form.Item
+            label={
+              <span>
+                Owners{" "}
+                <Tooltip title="At least 2 users who own this service account">
+                  <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                </Tooltip>
+              </span>
+            }
+            name="owner_ids"
+            required={false}
+            rules={[
+              {
+                validator: async (_, value) => {
+                  if (value && value.length > 0 && value.length < 2) {
+                    throw new Error("If specifying owners, please select at least 2");
+                  }
+                },
+              },
+            ]}
+            help="optional — if provided, minimum 2 owners"
+          >
+            <Select2
+              mode="multiple"
+              showSearch
+              placeholder="Search by email to add owners"
+              filterOption={false}
+              onSearch={(v) => debouncedOwnerSearch(v)}
+              loading={ownerSearchLoading}
+              options={ownerOptions}
+              notFoundContent={ownerSearchLoading ? "Searching..." : "No users found"}
+              style={{ width: "100%" }}
+            />
           </Form.Item>
 
           <Form.Item label="Metadata" name="metadata">
