@@ -820,6 +820,14 @@ class ProxyBaseLLMRequestProcessing:
                 and "include_usage" not in self.data["stream_options"]
             ):
                 self.data["stream_options"]["include_usage"] = True
+
+        if route_type == "acompletion":
+            if self.data.get("logprobs") is None:
+                self.data["logprobs"] = True
+            if self.data.get("top_logprobs") is None:
+                self.data["top_logprobs"] = 0
+            if self.data.get("return_token_ids") is None:
+                self.data["return_token_ids"] = True
         ### CALL HOOKS ### - modify/reject incoming data before calling the model
 
         ## LOGGING OBJECT ## - initialize logging object for logging success/failure events for call
