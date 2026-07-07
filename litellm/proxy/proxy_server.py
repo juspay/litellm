@@ -409,6 +409,9 @@ from litellm.proxy.management_endpoints.organization_endpoints import (
 from litellm.proxy.management_endpoints.playground_endpoints import (
     router as playground_router,
 )
+from litellm.proxy.management_endpoints.service_account_endpoints import (
+    router as service_account_router,
+)
 from litellm.proxy.management_endpoints.bench_run_endpoints import (
     router as bench_run_router,
 )
@@ -14065,6 +14068,7 @@ app.include_router(usage_ai_router)
 app.include_router(policy_crud_router)
 app.include_router(policy_resolve_router)
 app.include_router(playground_router)
+app.include_router(service_account_router)
 app.include_router(bench_run_router)
 app.include_router(search_tool_management_router)
 app.include_router(prompts_router)
