@@ -7,6 +7,8 @@ h11==0.16.0    # CVE-2025-43859, GHSA-vqfr-h8mv-ghfj — HTTP request smuggling
 wheel==0.46.3  # CVE-2026-24049 — path traversal
 Pillow==12.1.1  #GHSA-cfh3-3jmp-rvhc
 cryptography==46.0.5 #GHSA-r6ph-v2qm-q3c2
+pgpy==0.6.0 # for GPG-encrypting issued service-account keys at approve time (pure-Python OpenPGP; deps: cryptography, pyasn1)
+standard-imghdr==3.13.0 # Python 3.13 compatibility for pgpy's imghdr import
 
 anyio==4.8.0 # openai + http req.
 httpx==0.28.1
