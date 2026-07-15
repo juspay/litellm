@@ -1,0 +1,142 @@
+b1da7d6e6779a6a373685786e6d1afd3dd5e1ac0|2026-04-21|chore: v1.83.3 upgrade planning scaffolding
+23cd7b59b82b22385652acd4aca319fd54f7040e|2026-04-21|chore: v1.83.3 upgrade Phase 2 audit complete
+0cb462385a0d618eb17e8326d626c66042e2af9a|2026-04-21|fix: correct #46/#48 audit — #48 is not pure revert, keeps it
+96dc09b433bffe59da225d50ea4233f6cb041e1c|2026-04-21|chore: lock in 4 design decisions from 2026-04-21 review
+eb8b52dc61f39102281bd20c0f7f802e069246f5|2026-04-21|chore: Phase 3 dry-run findings — conflict scale much smaller than estimated
+86274430e7bddc4b82779fd85ab6426352a49218|2026-01-29|dropping prompt-caching-scope-* header for v1/messages for claude code compatibility (#41)
+bf3e3d57bbdef78e73791b8797b5b843d5b3a408|2026-01-29|Dropping prompt caching scope header (#42)
+c58efff732962cc8a57fee9c8ec299162ea7368e|2026-01-29|Dropping prompt caching scope header (#43)
+3119333b2ed3d40f4cc7dfcdbf164f64ce93ba46|2026-01-29|Dropping prompt caching scope header (#44)
+617e44d4c6f3f4d85bc36ce36d58956c7c6b11c3|2026-02-25|Hotfix/reasoning field prod (#80)
+12631609b34072b2f60db2e872df1f6c568516a4|2026-04-22|chore: record batch 01 replay — #134 is effective DROP (upstream has it)
+435f5efb2e4372e546306953194084c8f82e49ab|2026-04-22|fix(vertex-anthropic): add missing Dict import for get_anthropic_beta_from_headers
+465078f14fc514325e7791ccbf5985d26ac659c5|2025-12-22|feat: Added custom model contexts
+bc05e59409f77140fa8ad4bdd562c12cc6aef9ab|2025-12-22|feat: Added custom model contexts
+1d7dc3db4a3f10b51e186be431f4d9469a80fcde|2025-12-24|Modified custom model contexts- added public names (#6)
+3ee6a31471ec549b4c5bb4bdc378313a770ca0ad|2026-01-07|jenkins file
+d9907c1397434dcc18e212afd164386a3464ad42|2026-02-13|added sandbox branch for gcr push (#61)
+91a03a97fc133f36d25a696a665deb22ceaef0e9|2026-03-02|build file changes for trunk based dev (#85)
+1775cb36c96e0eb920cc266ecd183ff91cdaf3ad|2026-03-25|bumping up prisma version (#113)
+b95d4d3b6e1f5370207c20307426a22371fd3853|2026-04-17|Playground integration (#124)
+5d013d720b311152ba8c18ee30e7a6df3daeb4a9|2026-04-19|XYNE-123: overlay local litellm-proxy-extras over PyPI wheel (#130)
+51ea5a7d8e28c851546d9ce5056986bde27545de|2026-04-19|XYNE-123: build litellm-proxy-extras from source in GCR images (#131)
+13a2ca56472f90606635825d04158c24d80c30a1|2026-04-20|XYNE-123: switch playground booking API to seat-selection schema (#132)
+f2414d6688d5a88877b4ab53d565dd4f6e5c157a|2026-04-20|XYNE-123: let users retry failed/cancelled playground bookings (#133)
+cfb0f67734a55176c4da5effbdbd8036ea23fbcf|2025-12-04|feat: Add GCP Logs stdout logger for structured JSON logging
+3b1794dc37cd3aeab50e48fabe5592905e47f250|2025-12-15|added gcp logging support to service logger, updated_at for reset budget job
+b54597cf4a69771e46127b8049adf6c98224f9c7|2025-12-23|feat: added gcs-logging to store all user request and response (#2)
+369f00a21011a9d2c7668682c4bf829a743d0da3|2025-12-30|directory structure change for gcs logger (#8)
+8dee0caafc1bd44c16112750fbdce8dc0303bee7|2025-12-31|directory structure change for gcs logger (#9)
+bfffe823712603bed412411ab7ba8055018cb6de|2026-01-05|fix: fixed the issue in anthropic compatible logs (#10)
+1e9496d9fb35614bfba7fb3a6d63a81a4ad71a7a|2026-01-05|bq fixes (#11)
+99cc5a6627063fdf9dc8cfaf783efb71904d3de2|2026-01-12|Add Log client headers (#17)
+31c205118928bf234192f09152925acc310a42b0|2026-01-28|logging-full-req-in-error-logs (#38)
+a65a6c0c77188f3d3a678c1606d7edf244274468|2026-02-03|bug: fix null email issue (#49)
+216ccb072dc2b8eaba31756df22d90b06988a7ca|2026-02-06|disabling gcs logging in the case when x-litellm-disable-logging: true header is present (#54)
+64353dad9ab4569e9103dec703c2dbfba856b55d|2026-04-07|Fix/big queries (#122)
+5cdd6044999578d1592fa20c708119aa99b6ae34|2026-04-22|chore: batch-02 replay — defer #127/#135 to batch-06 (file-creation dependency)
+c271e49ce9862e38a0353a4d3a82bb8dcec6067f|2025-12-05|feature: user budget restriction
+2ec95c2e694f2089406d59c8bc7741928bc92171|2025-12-09|patch litellm for cost restriction based on user spend and max budget
+a23cb8701e0079fe506309e3e3705368e35041b2|2025-12-11|removing debug print logs for cost restriction
+5436d63f4068393757daac4fd5463434e3f92aa1|2025-12-15|removed a debug log line
+a87d0a4f6f768e27f7c5b188c5e81474635ac873|2026-03-17|models endpoints budget bypass fix (#106)
+26374667f54fb2c866b02dcd634b378e28b151fe|2026-02-25|added bulk cost update endpoint  (#75) (#79)
+bb05103e1e8cc39ae4b1b6be1bd036406e395a6d|2026-03-16|implemented new team update endpoint as the old one has premium featu… (#97)
+1bdee55eed0fb088848a8dac9d0b9f5ed9e60912|2026-04-16|feat: allow specific non-admin users to call /user/delete via USER_DE… (#128)
+6f3308989f738c2ec46ec94e716028323c37819f|2026-04-21|feat: add lightweight audit logging for user/key/team/model operations (#129)
+2fa56e37267e7b3d4079102961bbbdb6997cef6d|2026-01-16|added active user analytics and user leaderboard for hosted vllm (#26)
+96e61b281c287bc6c14c53af520379b1597eb6ce|2026-01-21|Analytics/active user analytics (#30)
+261322d49f447b574c0a4ff47b50c78699ff896c|2026-01-22|fix: Use leaderboard total_count for Today's Active Users card (#32)
+8d5328176984db4308b43ec75536a72ce593b169|2026-01-27|feat: add user-count(email) based DAU/WAU/MAU analytics endpoints and… (#35)
+45cf20751cd4447d69d599480551708c938bfaac|2026-01-29|added team based filtering in user activity and some ui fixes (#40)
+5696f4700b4c7acb97442ffc14aef6a082bb237f|2026-02-03|feat: release/prod aggregated dashboard for failure logs (#47)
+4ef54f786cf2aed90717e87fa62e2893c12265fc|2026-02-06|feat(spend logs analytics section): analytics toggle, analytics logs, time range selection on analytics (#53)
+ad98fd26a37d20ad9acd402802f6f94269cb6155|2026-03-02|fix: adding back failure logs aggregation changes + local environment fixes (#87)
+46214a95c1dd5baf18e7c2bc85de45ec065d1e22|2026-03-17|metadata shown for failure logs (#104)
+b9cd8f9484cb00e6e93ab8dc19e750da8502cee1|2026-03-17|Fix/failure log (#107)
+6a9105c8d4f3f957f4db39f011ebbb8893b2f44b|2026-01-20|Litellm Logs Pagination Fix (#29)
+1879bd4fd4c34a8d6982c675df77a3f8bfe8226c|2026-01-27|build fix (#36)
+780394938dabe65cd9c4845cd326581f42140abb|2026-02-02|temp logging change (#46)
+c2e38ed729d7b9b8cc0ce83390bacd6055a7b73f|2026-02-03|Revert "temp logging change (#46)" (#48)
+56ceb99ef86fc55e055c199e334a992f91b28702|2026-02-06|fix: fixing strict type checks for chartOptions in error stats table compoent (#55)
+5c6706fb45f35fcbbc542cb4608c27c3e684fa7c|2026-03-13|Message filter (#100)
+44a44a268fd505af789eb3f0075815e18a0759f8|2026-03-17|fix: adding models filter dropdown and make model filtered logs accessible to viewer (#103)
+138e08c44b87a047b5392e679ff55d038af223d8|2026-03-17|fix: saving state of filter component before remounting (#109)
+85f3cca7ecefa6d070992fd98dbdadf75f17fb02|2026-04-02|fix: adding permission to make concurrent requests tab viewable for admin viewer (#118)
+490b38c729ddc24c55c1739c13d4fc2ebf819a1e|2026-04-14|fix: fixing concurrent requests logs issues and addtional filter options (#126)
+36eb25601a44a295ad3886f14ff8745c060cd3ed|2026-04-15|fix: gcp logs client initialization issue (#127)
+2b12c25638bb8c171473f1df82f5186133b00033|2026-04-20|nit: adding logs for gcp logger client initialization (#135)
+e8c120270d48d7de414d1bcb43f1d62d8689ba12|2026-03-13|fix: multi instance max parallel requests rate limit fixes (#101)
+f7195a44f43103738c820f003383fab1a95a3ed5|2026-03-16|performance fixes for rpm and concurrency limit: avoiding addtional writes for increments and decrements on Redis counters (#102)
+b9679940e92076481d95040785555efe61489bce|2026-03-27|fix: alternate approach for handling rate limit counter leak issues (#114)
+b1a16f5b4a472e9a5c4d09e3bbe89db151c11774|2026-04-01|feat: add metrics and UI changes for verifying if redis counter for concurrency requests tracking is getting updated properly (#116)
+2cea7f48f3b3cf57441e2378d13e2689250ad237|2026-04-07|fix: adding log for metric emission in mpr rate limit flow (#121)
+b6ca3b5a0914091f4ee41a1a084d11d22abb1a2d|2026-04-13|fix: redis counter drift problem (#125)
+7a108adb9d3fa433cc045bb02c6fc6764899c2c8|2025-12-04|fix: python import based fallback
+4a46740aa24bfd35f24ac8dd8673d4a298b5f1c5|2025-12-05|feature: added pre request fallback for non-vision models to vision models
+89e838d291d027ee8b61d2b7fbc31177e285047d|2025-12-05|testing fixes
+d39a52b4e66e8906ba50dee73e4810c7795acb34|2025-12-15|vision support fix
+45c1c253fc633cb103146d86b80be0410eafa368|2025-12-31|removed fuzzy check in vision model
+8a94d4f6990758cddea8a469ce373e85b45dc900|2026-01-07|Fix/least busy routing (#16)
+a4be42262fda2b4d911ff6f75cee1c3e9ecc1c38|2026-01-09|relying on redis instead of inmem for counter for load balancing (#19)
+a8b73542079758d94e0510aff9266d65c89be488|2026-01-09|fix: use redis_only for usage-based-routing-v2 to fix request distribution (#23)
+956563b5effc3b7729f6a8052f155784540e572a|2026-01-20|fix: add VLLM context window error pattern for fallback triggering (#28)
+dd46aa90c26affc6ae3f0eb7413d2c4c2cb593b1|2026-02-25|modified simple shuffle routing logic (#74)
+768cccaf192fe05fe722840119ca8bb024617533|2026-03-13|Feature/sticky least busy (#96)
+82ce11d2c1dc890b427bea3daaa131ed205b9e10|2026-03-17|Feature/sticky busy redis (#105)
+3170156168e8b2a33bd7d73b9a830a4fdc5d68e2|2026-03-18|Routing issue fixes and Prometheus metric for routing (#110)
+adedd97aaff4d32af6c1ce08492205fe9b92232c|2026-03-25|Fix/routing issues (#112)
+cff43e20820041db6376753f6cf275ca1ec10ce6|2026-03-17|fixes (#108)
+381b15115b3fa14d4081e3ad9b459c5a862b6e04|2026-04-07|removed debug print logs (#123)
+c59bff0a0d6af7cbee71eb1087fd62494eb85712|2026-04-22|chore: batch-03 replay notes — 16 applied, #117 skipped (superseded by group_by)
+c9f74752b1c6fe4d7b2f59eb5d6d934ca404db45|2026-04-22|fix: remove duplicate ui_view_error_stats and ui_view_failure_logs_analytics_paginated blocks
+b551d4cd5b3f3d86233d3fc46ce666816748b649|2026-04-22|chore: Phase 4 MUST-SURVIVE verification report — all 26 items green
+e7043735670c9cfb81272ee2854f202d1826db65|2026-04-22|fix(ui): regenerate package-lock.json for apexcharts + svgdotjs deps
+f2b67c4889dc70b97aaacf62eab8f50e1ec227d2|2026-04-22|fix(ui): use selectedModelId in failureLogsAnalytics query (not selectedModel)
+bf737fbf12477ff71a6efd7ee93f953142cb9b2b|2026-04-22|fix(ui): dynamic-import react-apexcharts to avoid SSR window error
+b9fb3e53a42ad43cf46f74c5df478a5da835fffd|2026-04-22|added feature/ to build gcr temperorily
+dd24f092d0a51d061162cd221470bb06bb1f037f|2026-04-27|move metadata fields to metadata blob before Prisma write (#142)
+0ace9dc36bf137adf01353bba72c4035524fa7f3|2026-04-28|Sync/vpatching concurrent request log fixes (#144)
+4d6927cea0d4508d636cbf11c77248494b0e8349|2026-04-28|fixed key block issue (#143)
+608d1f9e6729a5589f6d1076d6b5fbc9c5e9e8ec|2026-04-28|fix: set budget_reset_at when creating users via team/member_add (#145)
+a803a29a5405602d117a4121dadb837bc7f04e08|2026-04-28|fix : restricting the user even when the budget is equal to the spend
+0cc41f2ae098502dfa541b12c5f0ba7dedd3874d|2026-04-28|added logs for routing
+3e5517a60021de30b1991f8867342735d7ff4a57|2026-04-29|fix: mpr rate limit issue for litellm upgrade (#146)
+4b0f51344165e32f9612054148a96247356e23d7|2026-04-29|  fix: write daily spend analytics for FREE_MODELS (hosted_vllm regression) (#147)
+c31062cdba86c5731e4b23e117f8d43834e6f11b|2026-04-29|added release/* to build gcr
+cda2d93d788bb71f48771716c24e6b210247c004|2026-04-29|fix: minor mpr bug fixes improvements (#148)
+319299865b329463028f0f43eb5b11335e6d7af7|2026-04-30|fix(proxy): use parameterized query for combined_view token lookup (#149)
+dbb19b182a093cdf635a537bc29ddb1b1aef1e17|2026-05-04|added logs to _get_request_duration_ms (#150)
+529a0484c55dbad8dc0f2da15424a84991ca6e0f|2026-05-05|added table and change for the LiteLLM_DailyUserRequestDuration (#152)
+294bdc6589127382181d5d674544c1c6f8016389|2026-05-06|fix: using pre and post processing to manage redis for concurrency rate limit (#153)
+043a2618cabb80c181d1a9d165e22e18eed6aa68|2026-05-13|fix(router): strip stream_options from silent_model kwargs (#155)
+f0a8cc572ee019340c7c95dc96fe4a59d44e1a68|2026-05-14|fix: addressing mpr rate limit multiple decrements and increments issue (#156)
+b57c3aa16216437e4a079c128f69b7ec6f10210f|2026-05-18|fix(concurrency rate limit): shielding post call hook methods from upstream aborts (#157)
+abc60d1d3d89293eba7022604e1cb2ef42f3c8cc|2026-05-19|removed the delete user api endpoint from the proxy admin veiwer check (#158)
+155d09827c954e16ace5d6cb836978b9cb630495|2026-05-19|debug(mpr rate limit): mpr rate limit add debug log to track success path decr failures (#160)
+6e835eb8e25cc26da52b296a755bef2fec8ef44b|2026-05-19|debug(mpr rate limit): emit metrics in case of decrements post key expiry (#161)
+788d0a1599eef5df31b2369617c709f2e9e0f919|2026-05-19|fix(mpr rate limit): disabling dsicrements if mpr is not set for a key (#163)
+94328520e2a32ee2904eab801fdbaadd3b018c17|2026-05-22|fix(spend logs): enrich failure rows with upstream attribution (#164)
+46699b31993e6e2c258b7d2345fbf657ba3a25e2|2026-05-25|Sync/vfeature add rate limited logs timestamp visibility (#165)
+0e8e01c144a8d0720b5c0e152352ccf674425bfc|2026-05-27|Fix/spend logs log fallback attempt failures (#166)
+787236de9d785e07c1e1197eabeefb65d6b0c718|2026-05-27|Xyne 123 bench runs (#167)
+cab254a264121797da8efb941f13f38ca364b0cd|2026-06-01|fix(db auth errors): client not connected to the query engine fixes (#168)
+0ae32d20d16796cc5ea364f7bfefaeb0cb801502|2026-06-02|fix(db): eliminate ClientNotConnectedError cascade after Prisma engine death (#170)
+c49bc22e5e32d5d65962f9d58769aa011335934b|2026-06-02|removing load tool table query as we don't have any tool gaurdrail (#172)
+c08d6d463844dd7aab83257e2aa1a47d8bfebc4e|2026-06-02|fix(filters): fixes for analytics view (#173)
+0db352785b68c69d3be9e9b9c32e30fb0d14cf97|2026-06-04|XYNE-123: add server-config + speculative fields to bench runs (#174)
+834f50b240dafc2bdd6085e414523fd19c42c27b|2026-06-10|nit: adding logging in case read replica is not initialized in litellm (#178)
+0ba05225f49ca3f3d9900ccb01ee94acbf183e23|2026-06-11|feat(redis connections): observability for redis active connections and litellm redis max connections (#180)
+46518e4c4726114a04f088a3936ffffb243f2e11|2026-06-11|nit: additional logs for read replica db (#181)
+14635de6a27bb41f55b4f9ef04634b68704e14a9|2026-06-15|fix: close upstream LLM stream on client disconnect (port #30245) (#184)
+3919ce1f92a5807a1a8799d64bd35e080c0f473d|2026-06-15|[HIGH RISK] fix(read replica db): fix read read db instance prisma client initializations on startup and restarts (#183)
+d3ecaf15f51bbaff8fae51a70b0da40c51e1d059|2026-06-16|feature(new service account flow): added table creation db migrations for new service account flow (#185)
+75c76c564c56eb923a9076d1a741b0acffecf342|2026-06-16|fix(aiohttp): enable TCP keepalive on connector to prevent NAT-dropped connection hangs (#186)
+4d36996da92a53940fb4889b5e660304b1b8741b|2026-06-18|feat(new service account flow): service account owners creation (#191)
+90d9bb8089257def2afefd1d7e39750661076dd2|2026-06-22|feat(new service account flow): user deletion flow (#197)
+73479de8d0c315b30cbdc8f2ac5cdc114a1b902f|2026-06-24|Feat: added log-probs and token-ids to GCS (#177)
+ef4df06fb374347f29745382c51c80190f43d9b2|2026-06-24|adding additional columns to service account table (#202)
+05e41940bea386de5747781fbe61651bd9620091|2026-06-25|add log-probs for other chat completions paths (#203)
+28b1e4c604e1d77eecf35539249ba57b62a3d741|2026-06-25|feat(service accounts flow): add additional columns during service account user creation and handling key creation for the same (#204)
+fa38ff2b429674fd079b3910efde73785d1cc66a|2026-07-09|feat(service account flow automation): changes for grid automation (#207)
+325975bff55fa2b319cdce3afb9a6a23ec4cb10d|2026-07-14|feat(mpr rate limit): use zsets instead of redis counter for mpr rate limiting (#211)
