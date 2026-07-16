@@ -107,6 +107,11 @@ class ModelInfo(BaseModel):
     ] = None  # specify if the base model is azure/gpt-3.5-turbo etc for accurate cost tracking
     tier: Optional[Literal["free", "paid"]] = None
 
+    # relative hardware capacity for sticky-least-busy routing: scales the
+    # deployment's share of the consistent hash ring AND its load tolerance
+    # before rebalancing. Defaults to 1.0 (equal weight) when unset.
+    sticky_weight: Optional[float] = None
+
     """
     Team Model Specific Fields
     """

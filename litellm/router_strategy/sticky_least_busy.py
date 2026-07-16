@@ -21,7 +21,7 @@ import hashlib
 import json
 import random
 from bisect import bisect_right
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
@@ -103,7 +103,9 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         # Per-model-group consistent hash rings.
         # Each model group (e.g., "llama-70b", "kimi-k2-5-dev") may have different
         # deployments, so each needs its own ring. Keyed by model_group name.
-        # Value: (frozenset_of_deployment_ids, sorted_ring_list)
+        # Value: (signature, sorted_ring_list) where signature is a frozenset of
+        # (deployment_id, weight) pairs — so a weight change (not just an id-set
+        # change) invalidates the cached ring and triggers a rebuild.
         self._rings: Dict[str, Tuple[frozenset, List[Tuple[int, str]]]] = {}
 
         # Prometheus metrics (lazy init — no-op if prometheus_client not installed)
@@ -255,15 +257,41 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
     # Consistent Hashing
     # =========================================================================
 
-    def _build_hash_ring(self, model_group: str, deployment_ids: List[str]) -> None:
+    def _vnodes_for_weight(self, weight: float) -> int:
         """
-        Build a consistent hash ring from deployment IDs using virtual nodes.
-        Rings are cached per model_group — only rebuilds if the set of IDs
-        for that model group has changed.
+        Number of virtual nodes a deployment gets for a given capacity weight.
+
+        Computed in INTEGER space (scale weight to per-mille, multiply, then
+        integer-divide) rather than as a float `round(virtual_nodes * weight)`.
+        A float value landing exactly on a .5 rounding boundary could round
+        differently across pods/architectures, producing divergent rings and
+        breaking cross-pod stickiness. Integer math is bit-identical everywhere.
+        Always at least 1 vnode so a positive weight is never dropped from the ring.
         """
-        new_ids = frozenset(deployment_ids)
+        return max(1, (self.virtual_nodes * round(weight * 1000)) // 1000)
+
+    def _build_hash_ring(
+        self, model_group: str, weights: Union[Dict[str, float], List[str]]
+    ) -> None:
+        """
+        Build a weighted consistent hash ring from deployment weights.
+
+        Each deployment gets `virtual_nodes * weight` points on the ring, so a
+        deployment with a higher capacity weight owns a proportionally larger
+        share of the key space (more conversations stick to it).
+
+        `weights` is normally a {deployment_id: weight} dict. A plain list of
+        deployment IDs is also accepted as shorthand for equal weight (1.0).
+
+        Rings are cached per model_group and keyed on the full (id, weight) set,
+        so the ring rebuilds when a deployment is added/removed OR when any
+        deployment's weight changes.
+        """
+        if not isinstance(weights, dict):
+            weights = {dep_id: 1.0 for dep_id in weights}
+        signature = frozenset(weights.items())
         cached = self._rings.get(model_group)
-        if cached and cached[0] == new_ids:
+        if cached and cached[0] == signature:
             return
 
         prev_count = len(cached[0]) if cached else 0
@@ -271,24 +299,28 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             f"[StickyLeastBusy RING-BUILD] Rebuilding hash ring for "
             f"model_group={model_group}: "
             f"prev_deployments={prev_count}, "
-            f"new_deployments={len(new_ids)}, "
-            f"ids={list(new_ids)}"
+            f"new_deployments={len(weights)}, "
+            f"weights={dict(weights)}"
         )
 
         ring: List[Tuple[int, str]] = []
-        for dep_id in deployment_ids:
-            for i in range(self.virtual_nodes):
+        for dep_id, weight in weights.items():
+            n = self._vnodes_for_weight(weight)
+            for i in range(n):
+                # Key scheme unchanged from the unweighted ring: raising a
+                # deployment's weight only *appends* new points (i grows), it
+                # never moves existing ones — so re-weighting is cache-cheap.
                 key = f"{dep_id}:{i}"
                 h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
                 ring.append((h, dep_id))
 
         ring.sort(key=lambda x: x[0])
-        self._rings[model_group] = (new_ids, ring)
+        self._rings[model_group] = (signature, ring)
 
         verbose_router_logger.info(
             f"[StickyLeastBusy RING-BUILD] Ring for {model_group} built with "
             f"{len(ring)} virtual nodes "
-            f"({self.virtual_nodes} per deployment)"
+            f"(base {self.virtual_nodes} per deployment, scaled by weight)"
         )
 
     def _get_deployment_for_key(
@@ -655,6 +687,25 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         except Exception as e:
             return f"[error extracting info: {e}]"
 
+    @staticmethod
+    def _weight_for(deployment: dict) -> float:
+        """
+        Relative capacity weight for a deployment, read from
+        model_info.sticky_weight. Governs both the deployment's share of the
+        consistent hash ring and its load tolerance before rebalancing.
+
+        Must come only from static config/DB (never runtime load) so every pod
+        derives the same weight and builds an identical ring. Falls back to 1.0
+        (equal weight) for legacy/config models without the field, and guards
+        against non-numeric or non-positive values.
+        """
+        raw = (deployment.get("model_info") or {}).get("sticky_weight", 1.0)
+        try:
+            weight = float(raw)
+        except (TypeError, ValueError):
+            return 1.0
+        return weight if weight > 0 else 1.0
+
     def _select_deployment(
         self,
         model_group: str,
@@ -671,14 +722,16 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
         """
         dep_id_to_deployment: Dict[str, dict] = {}
         dep_ids: List[str] = []
+        weights: Dict[str, float] = {}
         for d in healthy_deployments:
             dep_id = d["model_info"]["id"]
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
             dep_ids.append(dep_id)
             dep_id_to_deployment[dep_id] = d
+            weights[dep_id] = self._weight_for(d)
 
-        self._build_hash_ring(model_group, dep_ids)
+        self._build_hash_ring(model_group, weights)
 
         # Expose Redis counts to Prometheus so Grafana can show what routing sees
         for did in dep_ids:
@@ -686,26 +739,36 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 request_counts.get(did, 0)
             )
 
-        total_load = sum(request_counts.get(did, 0) for did in dep_ids)
-        avg_load = total_load / len(dep_ids) if dep_ids else 0
-        min_load = min(
-            (request_counts.get(did, 0) for did in dep_ids), default=0
-        )
+        # Capacity-normalized load: divide each deployment's raw in-flight count
+        # by its weight, so a higher-capacity node is judged less loaded at the
+        # same raw count and tolerates proportionally more requests before
+        # rebalancing. Redis counts stay raw — only the comparisons normalize.
+        eff_load: Dict[str, float] = {
+            did: request_counts.get(did, 0) / weights.get(did, 1.0)
+            for did in dep_ids
+        }
 
-        # Avg+min blend: catches skewed distributions where avg alone is pulled
-        # up by outliers. E.g. loads [50,25,20,7,5] → avg=21.4 but min=5,
-        # reference=(21.4+5)/2=13.2, so a node at 25 correctly triggers rebalance.
+        total_load = sum(request_counts.get(did, 0) for did in dep_ids)
+        avg_load = sum(eff_load.values()) / len(dep_ids) if dep_ids else 0
+        min_load = min(eff_load.values(), default=0)
+
+        # Avg+min blend on normalized load: catches skewed distributions where
+        # avg alone is pulled up by outliers. E.g. loads [50,25,20,7,5] → avg=21.4
+        # but min=5, reference=(21.4+5)/2=13.2, so a node at 25 correctly triggers
+        # rebalance.
         reference_load = (avg_load + min_load) / 2
 
-        # --- Log node status overview ---
+        # --- Log node status overview (raw count, weight, and normalized load) ---
         node_summary = ", ".join(
-            f"{did}={request_counts.get(did, 0)}" for did in dep_ids
+            f"{did}={request_counts.get(did, 0)}"
+            f"/w{weights.get(did, 1.0):g}={eff_load[did]:.2f}"
+            for did in dep_ids
         )
 
-        # Calculate imbalance ratio for each deployment
+        # Calculate imbalance ratio for each deployment (on normalized load)
         imbalance_ratios = []
         for did in dep_ids:
-            load = request_counts.get(did, 0)
+            load = eff_load[did]
             ref = max(reference_load, 1.0)
             ratio = load / ref if ref > 0 else 0
             imbalance_ratios.append(f"{did}={ratio:.2f}")
@@ -715,8 +778,8 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             f"healthy_deployments={len(dep_ids)}, "
             f"deployment_ids={dep_ids}, "
             f"total_in_flight={total_load}, "
-            f"avg_load={avg_load:.2f}, "
-            f"min_load={min_load}, "
+            f"avg_norm_load={avg_load:.2f}, "
+            f"min_norm_load={min_load:.2f}, "
             f"reference_load={reference_load:.2f}, "
             f"imbalance_threshold={self.imbalance_threshold}, "
             f"loads_per_deployment=[{node_summary}], "
@@ -728,28 +791,32 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
             preferred_id = self._get_deployment_for_key(model_group, sticky_key)
             if preferred_id and preferred_id in dep_id_to_deployment:
                 preferred_load = request_counts.get(preferred_id, 0)
+                preferred_eff = eff_load.get(preferred_id, 0)
+                preferred_weight = weights.get(preferred_id, 1.0)
                 effective_reference = max(reference_load, 1.0)
                 threshold_value = self.imbalance_threshold * effective_reference
-                current_ratio = preferred_load / effective_reference if effective_reference > 0 else 0
+                current_ratio = preferred_eff / effective_reference if effective_reference > 0 else 0
 
                 verbose_router_logger.info(
                     f"[StickyLeastBusy STICKY-CHECK] model_group={model_group}, "
                     f"sticky_key={sticky_key[:16]}..., "
                     f"preferred_deployment={preferred_id}, "
                     f"preferred_load={preferred_load}, "
+                    f"preferred_weight={preferred_weight:g}, "
+                    f"preferred_norm_load={preferred_eff:.2f}, "
                     f"effective_reference={effective_reference:.2f}, "
                     f"threshold_value={threshold_value:.2f}, "
                     f"current_imbalance_ratio={current_ratio:.2f}x "
                     f"(threshold_ratio={self.imbalance_threshold}x)"
                 )
 
-                if preferred_load < threshold_value:
+                if preferred_eff < threshold_value:
                     selected = dep_id_to_deployment[preferred_id]
                     verbose_router_logger.info(
                         f"[StickyLeastBusy DECISION] STICKY -> deployment_id={preferred_id}, "
                         f"api_base={selected.get('litellm_params', {}).get('api_base', 'unknown')}, "
                         f"model={selected.get('litellm_params', {}).get('model', 'unknown')}, "
-                        f"reason=load_{preferred_load}_below_threshold_{threshold_value:.2f}, "
+                        f"reason=norm_load_{preferred_eff:.2f}_below_threshold_{threshold_value:.2f}, "
                         f"imbalance_ratio={current_ratio:.2f}x"
                     )
                     self._routing_decisions.labels(
@@ -760,7 +827,7 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                     verbose_router_logger.info(
                         f"[StickyLeastBusy STICKY-OVERRIDE] model_group={model_group}, "
                         f"preferred_deployment={preferred_id} OVERLOADED, "
-                        f"load={preferred_load} exceeds threshold={threshold_value:.2f}, "
+                        f"norm_load={preferred_eff:.2f} exceeds threshold={threshold_value:.2f}, "
                         f"imbalance_ratio={current_ratio:.2f}x > {self.imbalance_threshold}x, "
                         f"falling_back_to=least_busy"
                     )
@@ -782,12 +849,13 @@ class StickyLeastBusyLoggingHandler(CustomLogger):
                 f"using=least_busy"
             )
 
-        # Least-busy fallback with random tie-breaking
-        # (min_load already computed above for reference_load)
+        # Least-busy fallback with random tie-breaking, on capacity-normalized
+        # load (min_load already computed above for reference_load) — so a
+        # higher-weight node is preferred at the same raw in-flight count.
         min_deployments = [
             dep_id_to_deployment[did]
             for did in dep_ids
-            if request_counts.get(did, 0) == min_load
+            if eff_load[did] == min_load
         ]
         min_dep_ids = [
             d["model_info"]["id"] for d in min_deployments
