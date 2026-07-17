@@ -286,7 +286,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({
                   label="Sticky Weight"
                   name="sticky_weight"
                   className="mb-4"
-                  tooltip="Relative hardware capacity for sticky-least-busy routing (e.g. H200=1, B300=1.7). Higher = more traffic routed to this deployment and higher load tolerance before rebalancing."
+                  tooltip="Relative hardware capacity for sticky-least-busy routing (e.g. 1 for H200, 2 for B300). Higher = more traffic routed to this deployment and higher load tolerance before rebalancing."
                   rules={[
                     { required: true, message: "Sticky weight is required" },
                     {
@@ -297,7 +297,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({
                     },
                   ]}
                 >
-                  <InputNumber min={0} step={0.1} style={{ width: "100%" }} placeholder="e.g. 1" />
+                  <InputNumber min={0} step={0.1} style={{ width: "100%" }} placeholder="e.g. 1 for H200, 2 for B300" />
                 </Form.Item>
                 {/* Team-only Model Switch - Only show for proxy admins, not team admins */}
                 {(isAdmin || !isTeamAdmin) && (

@@ -727,7 +727,7 @@ export default function ModelInfoView({
                           <Form.Item
                             name="sticky_weight"
                             className="mb-0"
-                            tooltip="Relative hardware capacity for sticky-least-busy routing (e.g. H200=1, B300=1.7). Higher = more traffic and higher load tolerance before rebalancing."
+                            tooltip="Relative hardware capacity for sticky-least-busy routing (e.g. 1 for H200, 2 for B300). Higher = more traffic and higher load tolerance before rebalancing."
                             rules={[
                               { required: true, message: "Sticky weight is required" },
                               {
@@ -738,7 +738,7 @@ export default function ModelInfoView({
                               },
                             ]}
                           >
-                            <NumericalInput min={0} step={0.1} placeholder="e.g. 1" />
+                            <NumericalInput min={0} step={0.1} placeholder="e.g. 1 for H200, 2 for B300" />
                           </Form.Item>
                         ) : (
                           <div className="mt-1 p-2 bg-gray-50 rounded">

@@ -80,6 +80,9 @@ from litellm.router_strategy.lowest_tpm_rpm_v2 import LowestTPMLoggingHandler_v2
 from litellm.router_strategy.simple_shuffle import simple_shuffle
 from litellm.router_strategy.sticky_least_busy import StickyLeastBusyLoggingHandler
 from litellm.router_strategy.sticky_least_busy_redis import StickyLeastBusyRedisLoggingHandler
+from litellm.router_strategy.sticky_least_busy_weighted import (
+    StickyLeastBusyWeightedLoggingHandler,
+)
 from litellm.router_strategy.tag_based_routing import get_deployments_for_tag
 from litellm.router_utils.add_retry_fallback_headers import (
     add_fallback_headers_to_response,
@@ -222,6 +225,9 @@ class Router:
     tenacity = None
     leastbusy_logger: Optional[LeastBusyLoggingHandler] = None
     lowesttpm_logger: Optional[LowestTPMLoggingHandler] = None
+    sticky_leastbusy_weighted_logger: Optional[
+        StickyLeastBusyWeightedLoggingHandler
+    ] = None
     optional_callbacks: Optional[List[Union[CustomLogger, Callable, str]]] = None
 
     def __init__(  # noqa: PLR0915
@@ -297,6 +303,7 @@ class Router:
             "least-busy",
             "sticky-least-busy",
             "sticky-least-busy-redis",
+            "sticky-least-busy-weighted",
             "usage-based-routing",
             "latency-based-routing",
             "cost-based-routing",
@@ -861,7 +868,7 @@ class Router:
             if isinstance(litellm.input_callback, list):
                 litellm.input_callback = [
                     cb for cb in litellm.input_callback
-                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler))
+                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler, StickyLeastBusyWeightedLoggingHandler))
                 ]
                 litellm.input_callback.append(self.sticky_leastbusy_logger)  # type: ignore
             else:
@@ -870,7 +877,7 @@ class Router:
             if isinstance(litellm.callbacks, list):
                 litellm.callbacks = [
                     cb for cb in litellm.callbacks
-                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler))
+                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler, StickyLeastBusyWeightedLoggingHandler))
                 ]
                 litellm.logging_callback_manager.add_litellm_callback(self.sticky_leastbusy_logger)  # type: ignore
         elif (
@@ -889,7 +896,7 @@ class Router:
             if isinstance(litellm.input_callback, list):
                 litellm.input_callback = [
                     cb for cb in litellm.input_callback
-                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler))
+                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler, StickyLeastBusyWeightedLoggingHandler))
                 ]
                 litellm.input_callback.append(self.sticky_leastbusy_redis_logger)  # type: ignore
             else:
@@ -897,9 +904,39 @@ class Router:
             if isinstance(litellm.callbacks, list):
                 litellm.callbacks = [
                     cb for cb in litellm.callbacks
-                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler))
+                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler, StickyLeastBusyWeightedLoggingHandler))
                 ]
                 litellm.logging_callback_manager.add_litellm_callback(self.sticky_leastbusy_redis_logger)  # type: ignore
+        elif (
+            routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY_WEIGHTED.value
+            or routing_strategy == RoutingStrategy.STICKY_LEAST_BUSY_WEIGHTED
+        ):
+            # Weighted variant of sticky-least-busy. Independent singleton, metrics,
+            # and Redis key prefix — see StickyLeastBusyWeightedLoggingHandler.
+            sticky_weighted_args = routing_strategy_args or {}
+            self.sticky_leastbusy_weighted_logger = StickyLeastBusyWeightedLoggingHandler(
+                router_cache=self.cache,
+                imbalance_threshold=sticky_weighted_args.get("imbalance_threshold", 1.5),
+                virtual_nodes=sticky_weighted_args.get("virtual_nodes", 150),
+                cache_ttl=sticky_weighted_args.get("cache_ttl", 600),
+            )
+
+            # Clean stale references — remove ALL sticky handler types so switching
+            # strategies never leaves two sticky handlers double-counting in-flight.
+            if isinstance(litellm.input_callback, list):
+                litellm.input_callback = [
+                    cb for cb in litellm.input_callback
+                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler, StickyLeastBusyWeightedLoggingHandler))
+                ]
+                litellm.input_callback.append(self.sticky_leastbusy_weighted_logger)  # type: ignore
+            else:
+                litellm.input_callback = [self.sticky_leastbusy_weighted_logger]  # type: ignore
+            if isinstance(litellm.callbacks, list):
+                litellm.callbacks = [
+                    cb for cb in litellm.callbacks
+                    if not isinstance(cb, (StickyLeastBusyLoggingHandler, StickyLeastBusyRedisLoggingHandler, StickyLeastBusyWeightedLoggingHandler))
+                ]
+                litellm.logging_callback_manager.add_litellm_callback(self.sticky_leastbusy_weighted_logger)  # type: ignore
         elif (
             routing_strategy == RoutingStrategy.USAGE_BASED_ROUTING.value
             or routing_strategy == RoutingStrategy.USAGE_BASED_ROUTING
@@ -9358,6 +9395,7 @@ class Router:
             and self.routing_strategy != "least-busy"
             and self.routing_strategy != "sticky-least-busy"
             and self.routing_strategy != "sticky-least-busy-redis"
+            and self.routing_strategy != "sticky-least-busy-weighted"
         ):  # prevent regressions for other routing strategies, that don't have async get available deployments implemented.
             return self.get_available_deployment(
                 model=model,
@@ -9496,6 +9534,29 @@ class Router:
                 except Exception as e:
                     verbose_router_logger.error(
                         f"StickyLeastBusyRedis async_get_available_deployments failed: {e}, "
+                        f"falling back to simple_shuffle"
+                    )
+                    return simple_shuffle(
+                        llm_router_instance=self,
+                        healthy_deployments=healthy_deployments,
+                        model=model,
+                    )
+            elif (
+                self.routing_strategy == "sticky-least-busy-weighted"
+                and self.sticky_leastbusy_weighted_logger is not None
+            ):
+                try:
+                    deployment = (
+                        await self.sticky_leastbusy_weighted_logger.async_get_available_deployments(
+                            model_group=model,
+                            healthy_deployments=healthy_deployments,  # type: ignore
+                            messages=messages,
+                            request_kwargs=request_kwargs,
+                        )
+                    )
+                except Exception as e:
+                    verbose_router_logger.error(
+                        f"StickyLeastBusyWeighted async_get_available_deployments failed: {e}, "
                         f"falling back to simple_shuffle"
                     )
                     return simple_shuffle(
@@ -9692,6 +9753,29 @@ class Router:
                 except Exception as e:
                     verbose_router_logger.error(
                         f"StickyLeastBusyRedis async_get_available_deployments failed: {e}, "
+                        f"falling back to simple_shuffle"
+                    )
+                    return simple_shuffle(
+                        llm_router_instance=self,
+                        healthy_deployments=pass_through_deployments,
+                        model=model,
+                    )
+            elif (
+                self.routing_strategy == "sticky-least-busy-weighted"
+                and self.sticky_leastbusy_weighted_logger is not None
+            ):
+                try:
+                    deployment = (
+                        await self.sticky_leastbusy_weighted_logger.async_get_available_deployments(
+                            model_group=model,
+                            healthy_deployments=pass_through_deployments,  # type: ignore
+                            messages=messages,
+                            request_kwargs=request_kwargs,
+                        )
+                    )
+                except Exception as e:
+                    verbose_router_logger.error(
+                        f"StickyLeastBusyWeighted async_get_available_deployments failed: {e}, "
                         f"falling back to simple_shuffle"
                     )
                     return simple_shuffle(
@@ -9903,6 +9987,24 @@ class Router:
                     healthy_deployments=healthy_deployments,
                     model=model,
                 )
+        elif self.routing_strategy == "sticky-least-busy-weighted" and self.sticky_leastbusy_weighted_logger is not None:
+            try:
+                deployment = self.sticky_leastbusy_weighted_logger.get_available_deployments(
+                    model_group=model,
+                    healthy_deployments=healthy_deployments,  # type: ignore
+                    messages=messages,
+                    request_kwargs=request_kwargs,
+                )
+            except Exception as e:
+                verbose_router_logger.error(
+                    f"StickyLeastBusyWeighted get_available_deployments failed: {e}, "
+                    f"falling back to simple_shuffle"
+                )
+                return simple_shuffle(
+                    llm_router_instance=self,
+                    healthy_deployments=healthy_deployments,
+                    model=model,
+                )
         elif self.routing_strategy == "simple-shuffle":
             # if users pass rpm or tpm, we do a random weighted pick - based on rpm/tpm
             ############## Check 'weight' param set for weighted pick #################
@@ -10100,6 +10202,24 @@ class Router:
             except Exception as e:
                 verbose_router_logger.error(
                     f"StickyLeastBusyRedis get_available_deployments failed: {e}, "
+                    f"falling back to simple_shuffle"
+                )
+                return simple_shuffle(
+                    llm_router_instance=self,
+                    healthy_deployments=pass_through_deployments,
+                    model=model,
+                )
+        elif self.routing_strategy == "sticky-least-busy-weighted" and self.sticky_leastbusy_weighted_logger is not None:
+            try:
+                deployment = self.sticky_leastbusy_weighted_logger.get_available_deployments(
+                    model_group=model,
+                    healthy_deployments=pass_through_deployments,  # type: ignore
+                    messages=messages,
+                    request_kwargs=request_kwargs,
+                )
+            except Exception as e:
+                verbose_router_logger.error(
+                    f"StickyLeastBusyWeighted get_available_deployments failed: {e}, "
                     f"falling back to simple_shuffle"
                 )
                 return simple_shuffle(
