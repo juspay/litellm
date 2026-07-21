@@ -1389,9 +1389,7 @@ class LiteLLMAnthropicMessagesAdapter:
                         "signature": thought_sig,
                     }
                 return "tool_use", cast("ContentBlockContentBlockDict", tool_block)
-            elif choice.delta.content is not None and len(choice.delta.content) > 0:
-                return "text", TextBlock(type="text", text="")
-            elif isinstance(choice, StreamingChoices) and hasattr(choice.delta, "thinking_blocks"):
+            if isinstance(choice, StreamingChoices) and hasattr(choice.delta, "thinking_blocks"):
                 thinking_blocks = choice.delta.thinking_blocks or []
                 if len(thinking_blocks) > 0:
                     thinking_block = thinking_blocks[0]
@@ -1410,9 +1408,11 @@ class LiteLLMAnthropicMessagesAdapter:
                         return "thinking", ChatCompletionThinkingBlock(
                             type="thinking", thinking=thinking, signature=signature
                         )
-            elif isinstance(choice, StreamingChoices) and hasattr(choice.delta, "reasoning_content"):
+            if isinstance(choice, StreamingChoices) and hasattr(choice.delta, "reasoning_content"):
                 if choice.delta.reasoning_content:
                     return "thinking", ChatCompletionThinkingBlock(type="thinking", thinking="", signature="")
+            if choice.delta.content is not None and len(choice.delta.content) > 0:
+                return "text", TextBlock(type="text", text="")
 
         return "text", TextBlock(type="text", text="")
 
