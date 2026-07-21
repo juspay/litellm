@@ -32,6 +32,9 @@ from litellm import DualCache
 from litellm._logging import verbose_proxy_logger
 from litellm.constants import DYNAMIC_RATE_LIMIT_ERROR_THRESHOLD_PER_MINUTE
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.integrations.gcp_logging_helpers.parallel_requests_metrics import (
+    build_parallel_requests_metric_log_line,
+)
 from litellm.litellm_core_utils.prompt_templates.common_utils import (
     get_str_from_messages,
 )
@@ -2340,13 +2343,14 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             current_ts = time.time()
 
             print(
-                f"[METRICS] Emitting parallel_requests metric: "
-                f"token={user_api_key_dict.token}, "
-                f"key_alias={user_api_key_dict.key_alias}, "
-                f"previous_count={previous_count}, "
-                f"current_count={current_count}, "
-                f"operation={operation}, "
-                f"timestamp={current_ts}"
+                build_parallel_requests_metric_log_line(
+                    token=user_api_key_dict.token,
+                    key_alias=user_api_key_dict.key_alias,
+                    previous_count=previous_count,
+                    current_count=current_count,
+                    operation=operation,
+                    timestamp=current_ts,
+                )
             )
 
             labels = {
@@ -2960,13 +2964,14 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 key_alias=metric_key_alias,
             )
             print(
-                f"[METRICS] Emitting parallel_requests metric: "
-                f"token={metric_token}, "
-                f"key_alias={metric_key_alias}, "
-                f"previous_count={previous_count}, "
-                f"current_count={active_count}, "
-                f"operation=increment, "
-                f"timestamp={current_ts}"
+                build_parallel_requests_metric_log_line(
+                    token=metric_token,
+                    key_alias=metric_key_alias,
+                    previous_count=previous_count,
+                    current_count=active_count,
+                    operation="increment",
+                    timestamp=current_ts,
+                )
             )
 
             verbose_proxy_logger.debug(
@@ -3087,13 +3092,14 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 key_alias=metric_key_alias,
             )
             print(
-                f"[METRICS] Emitting parallel_requests metric: "
-                f"token={metric_token}, "
-                f"key_alias={metric_key_alias}, "
-                f"previous_count={previous_count}, "
-                f"current_count={new_count}, "
-                f"operation=decrement, "
-                f"timestamp={current_ts}"
+                build_parallel_requests_metric_log_line(
+                    token=metric_token,
+                    key_alias=metric_key_alias,
+                    previous_count=previous_count,
+                    current_count=new_count,
+                    operation="decrement",
+                    timestamp=current_ts,
+                )
             )
 
             verbose_proxy_logger.debug(
