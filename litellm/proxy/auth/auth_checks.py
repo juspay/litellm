@@ -479,6 +479,8 @@ def is_model_info_route(route: str) -> bool:
     """Check if the route is a read-only model info/listing route exempt from budget checks."""
     if route in MODEL_DISCOVERY_ROUTES:
         return True
+    if RouteChecks.is_llm_api_route(route=route):
+        return False
     if route.startswith("/models/") or route.startswith("/v1/models/"):
         return True
     return False
