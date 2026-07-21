@@ -119,6 +119,9 @@ class _ProxyDBLogger(CustomLogger):
             error_information = (
                 sl_object.get("error_information") if sl_object is not None else None
             )
+            error_information = _sanitize_error_information_for_spend_logs(
+                error_information
+            )
 
             # Timing can arrive as None on the failure path (and
             # ``completion_start_time`` is frequently present-but-None in
