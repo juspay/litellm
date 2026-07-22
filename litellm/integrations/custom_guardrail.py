@@ -890,6 +890,14 @@ def log_guardrail_information(func):
         self: CustomGuardrail = args[0]
         request_data: dict = kwargs.get("data") or kwargs.get("request_data") or {}
         event_type = _infer_event_type_from_function_name(func.__name__)
+        verbose_logger.debug(
+            "Guardrail execution start: guardrail_name=%s guardrail_class=%s hook=%s event_type=%s start_time=%s",
+            self.guardrail_name,
+            self.__class__.__name__,
+            func.__name__,
+            event_type,
+            start_time.isoformat(),
+        )
 
         # Store original inputs for comparison (for apply_guardrail functions)
         original_inputs = None
@@ -898,22 +906,53 @@ def log_guardrail_information(func):
 
         try:
             response = await func(*args, **kwargs)
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            verbose_logger.debug(
+                "Guardrail execution end: guardrail_name=%s guardrail_class=%s hook=%s event_type=%s status=success start_time=%s end_time=%s duration_ms=%.3f",
+                self.guardrail_name,
+                self.__class__.__name__,
+                func.__name__,
+                event_type,
+                start_time.isoformat(),
+                end_time.isoformat(),
+                duration * 1000,
+            )
             return self._process_response(
                 response=response,
                 request_data=request_data,
                 start_time=start_time.timestamp(),
-                end_time=datetime.now().timestamp(),
-                duration=(datetime.now() - start_time).total_seconds(),
+                end_time=end_time.timestamp(),
+                duration=duration,
                 event_type=event_type,
                 original_inputs=original_inputs,
             )
         except Exception as e:
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            status = (
+                "guardrail_intervened"
+                if self._is_guardrail_intervention(e)
+                else "guardrail_failed_to_respond"
+            )
+            verbose_logger.debug(
+                "Guardrail execution end: guardrail_name=%s guardrail_class=%s hook=%s event_type=%s status=%s error_type=%s start_time=%s end_time=%s duration_ms=%.3f",
+                self.guardrail_name,
+                self.__class__.__name__,
+                func.__name__,
+                event_type,
+                status,
+                e.__class__.__name__,
+                start_time.isoformat(),
+                end_time.isoformat(),
+                duration * 1000,
+            )
             return self._process_error(
                 e=e,
                 request_data=request_data,
                 start_time=start_time.timestamp(),
-                end_time=datetime.now().timestamp(),
-                duration=(datetime.now() - start_time).total_seconds(),
+                end_time=end_time.timestamp(),
+                duration=duration,
                 event_type=event_type,
             )
 
@@ -923,6 +962,14 @@ def log_guardrail_information(func):
         self: CustomGuardrail = args[0]
         request_data: dict = kwargs.get("data") or kwargs.get("request_data") or {}
         event_type = _infer_event_type_from_function_name(func.__name__)
+        verbose_logger.debug(
+            "Guardrail execution start: guardrail_name=%s guardrail_class=%s hook=%s event_type=%s start_time=%s",
+            self.guardrail_name,
+            self.__class__.__name__,
+            func.__name__,
+            event_type,
+            start_time.isoformat(),
+        )
 
         # Store original inputs for comparison (for apply_guardrail functions)
         original_inputs = None
@@ -931,18 +978,53 @@ def log_guardrail_information(func):
 
         try:
             response = func(*args, **kwargs)
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            verbose_logger.debug(
+                "Guardrail execution end: guardrail_name=%s guardrail_class=%s hook=%s event_type=%s status=success start_time=%s end_time=%s duration_ms=%.3f",
+                self.guardrail_name,
+                self.__class__.__name__,
+                func.__name__,
+                event_type,
+                start_time.isoformat(),
+                end_time.isoformat(),
+                duration * 1000,
+            )
             return self._process_response(
                 response=response,
                 request_data=request_data,
-                duration=(datetime.now() - start_time).total_seconds(),
+                start_time=start_time.timestamp(),
+                end_time=end_time.timestamp(),
+                duration=duration,
                 event_type=event_type,
                 original_inputs=original_inputs,
             )
         except Exception as e:
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            status = (
+                "guardrail_intervened"
+                if self._is_guardrail_intervention(e)
+                else "guardrail_failed_to_respond"
+            )
+            verbose_logger.debug(
+                "Guardrail execution end: guardrail_name=%s guardrail_class=%s hook=%s event_type=%s status=%s error_type=%s start_time=%s end_time=%s duration_ms=%.3f",
+                self.guardrail_name,
+                self.__class__.__name__,
+                func.__name__,
+                event_type,
+                status,
+                e.__class__.__name__,
+                start_time.isoformat(),
+                end_time.isoformat(),
+                duration * 1000,
+            )
             return self._process_error(
                 e=e,
                 request_data=request_data,
-                duration=(datetime.now() - start_time).total_seconds(),
+                start_time=start_time.timestamp(),
+                end_time=end_time.timestamp(),
+                duration=duration,
                 event_type=event_type,
             )
 

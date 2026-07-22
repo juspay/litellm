@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -780,6 +781,48 @@ class TestEventTypeLogging:
         logged_info = request_data["metadata"]["standard_logging_guardrail_information"]
         assert len(logged_info) == 1
         assert logged_info[0]["guardrail_mode"] == GuardrailEventHooks.pre_call
+
+    @pytest.mark.asyncio
+    async def test_log_guardrail_information_emits_execution_timing_logs(
+        self, caplog
+    ):
+        """
+        Test that log_guardrail_information emits start/end log lines with timestamps.
+        """
+        from litellm.integrations.custom_guardrail import log_guardrail_information
+        from litellm.types.guardrails import GuardrailEventHooks
+
+        class TestGuardrail(CustomGuardrail):
+            def __init__(self):
+                super().__init__(
+                    guardrail_name="timing_guardrail",
+                    event_hook=GuardrailEventHooks.pre_call,
+                )
+
+            @log_guardrail_information
+            async def async_pre_call_hook(self, data: dict, **kwargs):
+                return {"result": "pre_call_executed"}
+
+        guardrail = TestGuardrail()
+        request_data = {"metadata": {}}
+
+        with caplog.at_level(logging.DEBUG, logger="LiteLLM"):
+            await guardrail.async_pre_call_hook(data=request_data)
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "LiteLLM"
+        ]
+        assert any("Guardrail execution start" in message for message in messages)
+        end_message = next(
+            message for message in messages if "Guardrail execution end" in message
+        )
+        assert "guardrail_name=timing_guardrail" in end_message
+        assert "status=success" in end_message
+        assert "start_time=" in end_message
+        assert "end_time=" in end_message
+        assert "duration_ms=" in end_message
 
     def test_add_standard_logging_uses_event_type_over_event_hook(self):
         """

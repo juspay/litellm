@@ -2,6 +2,7 @@
 Tests for the Content Filter Guardrail
 """
 
+import logging
 import os
 import sys
 from unittest.mock import MagicMock
@@ -868,6 +869,46 @@ class TestContentFilterGuardrail:
         assert isinstance(masked_count, dict)
         # Should have counts for masked entities
         assert len(masked_count) > 0
+
+    @pytest.mark.asyncio
+    async def test_apply_guardrail_emits_execution_timing_logs(self, caplog):
+        """
+        Test that apply_guardrail emits start/end log lines with timestamps.
+        """
+        patterns = [
+            ContentFilterPattern(
+                pattern_type="prebuilt",
+                pattern_name="email",
+                action=ContentFilterAction.MASK,
+            ),
+        ]
+
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-timing-logs",
+            patterns=patterns,
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="LiteLLM Proxy"):
+            await guardrail.apply_guardrail(
+                inputs={"texts": ["Contact me at test@example.com"]},
+                request_data={"metadata": {}},
+                input_type="request",
+            )
+
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "LiteLLM Proxy"
+        ]
+        assert any("Guardrail execution start" in message for message in messages)
+        end_message = next(
+            message for message in messages if "Guardrail execution end" in message
+        )
+        assert "guardrail_name=test-timing-logs" in end_message
+        assert "status=success" in end_message
+        assert "start_time=" in end_message
+        assert "end_time=" in end_message
+        assert "duration_ms=" in end_message
 
     @pytest.mark.asyncio
     async def test_apply_guardrail_logs_blocked_status(self):

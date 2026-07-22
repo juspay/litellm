@@ -1714,6 +1714,7 @@ class ContentFilterGuardrail(CustomGuardrail):
         detections: List[ContentFilterDetection],
         status: "GuardrailStatus",
         start_time: datetime,
+        end_time: datetime,
         masked_entity_count: Dict[str, int],
         exception_str: str,
     ) -> None:
@@ -1767,8 +1768,8 @@ class ContentFilterGuardrail(CustomGuardrail):
             request_data=request_data,
             guardrail_status=status,
             start_time=start_time.timestamp(),
-            end_time=datetime.now().timestamp(),
-            duration=(datetime.now() - start_time).total_seconds(),
+            end_time=end_time.timestamp(),
+            duration=(end_time - start_time).total_seconds(),
             masked_entity_count=masked_entity_count,
             tracing_detail=GuardrailTracingDetail(**tracing_kw),  # type: ignore[typeddict-item]
         )
@@ -1803,6 +1804,14 @@ class ContentFilterGuardrail(CustomGuardrail):
         masked_entity_count: Dict[str, int] = {}
         status: GuardrailStatus = "success"
         exception_str: str = ""
+        verbose_proxy_logger.debug(
+            "Guardrail execution start: guardrail_name=%s guardrail_class=%s hook=apply_guardrail event_type=%s input_type=%s start_time=%s",
+            self.guardrail_name,
+            self.__class__.__name__,
+            self.event_hook,
+            input_type,
+            start_time.isoformat(),
+        )
 
         try:
             texts = inputs.get("texts", [])
@@ -1845,12 +1854,28 @@ class ContentFilterGuardrail(CustomGuardrail):
             exception_str = str(e)
             raise e
         finally:
+            end_time = datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            verbose_proxy_logger.debug(
+                "Guardrail execution end: guardrail_name=%s guardrail_class=%s hook=apply_guardrail event_type=%s input_type=%s status=%s start_time=%s end_time=%s duration_ms=%.3f detections=%d masked_entities=%d",
+                self.guardrail_name,
+                self.__class__.__name__,
+                self.event_hook,
+                input_type,
+                status,
+                start_time.isoformat(),
+                end_time.isoformat(),
+                duration * 1000,
+                len(detections),
+                sum(masked_entity_count.values()),
+            )
             # Log guardrail information
             self._log_guardrail_information(
                 request_data=request_data,
                 detections=detections,
                 status=status,
                 start_time=start_time,
+                end_time=end_time,
                 masked_entity_count=masked_entity_count,
                 exception_str=exception_str,
             )
