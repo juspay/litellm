@@ -10859,6 +10859,20 @@ async def model_metrics_exceptions(
     return {"data": response, "exception_types": list(exception_types)}
 
 
+def _is_experimental_deployment(model: dict) -> bool:
+    """True if the deployment carries an "experimental" / "experimental:<id>" tag.
+
+    Used to hide deployments that are temporarily scaled down (e.g. in GPUStack)
+    from the default /model/info listing.
+    """
+    tags = (model.get("litellm_params") or {}).get("tags") or []
+    return any(
+        isinstance(tag, str)
+        and (tag == "experimental" or tag.startswith("experimental:"))
+        for tag in tags
+    )
+
+
 def _get_proxy_model_info(model: dict) -> dict:
     # provided model_info in config.yaml
     model_info = model.get("model_info", {})
@@ -10915,6 +10929,7 @@ def _get_proxy_model_info(model: dict) -> dict:
 async def model_info_v1(  # noqa: PLR0915
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     litellm_model_id: Optional[str] = None,
+    include_experimental: bool = False,
 ):
     """
     Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)
@@ -10924,6 +10939,11 @@ async def model_info_v1(  # noqa: PLR0915
 
         - When litellm_model_id is passed, it will return the info for that specific model
         - When litellm_model_id is not passed, it will return the info for all models
+
+        include_experimental: bool = False - deployments tagged `"experimental"` (or
+        `"experimental:<id>"`) in `litellm_params.tags` — e.g. temporarily scaled down in
+        GPUStack — are hidden from the listing by default for every caller. Only a
+        PROXY_ADMIN that explicitly passes `include_experimental=true` gets them back.
 
     Returns:
         Returns a dictionary containing information about each model.
@@ -11038,6 +11058,21 @@ async def model_info_v1(  # noqa: PLR0915
             all_models = copy.deepcopy(_relevant_models)  # type: ignore
         else:
             all_models = []
+
+    # Deployments tagged "experimental" (or "experimental:<id>") in
+    # litellm_params.tags — e.g. temporarily scaled down in GPUStack — are hidden
+    # from the listing by default for every caller. Only a PROXY_ADMIN that
+    # explicitly passes include_experimental=true gets them back.
+    show_experimental = (
+        include_experimental
+        and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
+    )
+    if not show_experimental:
+        all_models = [
+            model
+            for model in all_models
+            if not _is_experimental_deployment(model)
+        ]
 
     for in_place_model in all_models:
         in_place_model = _get_proxy_model_info(model=in_place_model)
