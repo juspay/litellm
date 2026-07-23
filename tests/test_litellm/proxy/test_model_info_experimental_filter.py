@@ -82,6 +82,58 @@ def _non_admin():
     return UserAPIKeyAuth(api_key="sk-test")
 
 
+class TestFullyExperimentalModelNames:
+    """
+    _fully_experimental_model_names powers the /v1/models and /models filter: a
+    name is hidden only when EVERY deployment for it is experimental.
+    """
+
+    def _router(self, deployments):
+        r = MagicMock()
+        r.model_list = deployments
+        return r
+
+    def test_all_deployments_experimental_hidden(self):
+        from litellm.proxy.proxy_server import _fully_experimental_model_names
+
+        r = self._router([
+            _deployment_dict("m1", ["experimental:1"]),
+            _deployment_dict("m1", ["experimental:2"]),
+        ])
+        assert _fully_experimental_model_names(r) == {"m1"}
+
+    def test_partial_replica_kept(self):
+        """One replica down, one live -> the name stays visible."""
+        from litellm.proxy.proxy_server import _fully_experimental_model_names
+
+        r = self._router([
+            _deployment_dict("m1", ["experimental:1"]),
+            _deployment_dict("m1", None),
+        ])
+        assert _fully_experimental_model_names(r) == set()
+
+    def test_no_experimental(self):
+        from litellm.proxy.proxy_server import _fully_experimental_model_names
+
+        r = self._router([_deployment_dict("m1"), _deployment_dict("m2", ["prod"])])
+        assert _fully_experimental_model_names(r) == set()
+
+    def test_mixed_names(self):
+        from litellm.proxy.proxy_server import _fully_experimental_model_names
+
+        r = self._router([
+            _deployment_dict("down", ["experimental:9"]),
+            _deployment_dict("up", None),
+            _deployment_dict("up", ["experimental:9"]),  # one replica down, still up
+        ])
+        assert _fully_experimental_model_names(r) == {"down"}
+
+    def test_none_router(self):
+        from litellm.proxy.proxy_server import _fully_experimental_model_names
+
+        assert _fully_experimental_model_names(None) == set()
+
+
 class TestModelInfoExperimentalFilter:
     @pytest.mark.asyncio
     async def test_hidden_by_default_for_admin(self):

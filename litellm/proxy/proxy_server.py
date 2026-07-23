@@ -7070,6 +7070,11 @@ async def model_list(
             only_model_access_groups=only_model_access_groups or False,
         )
 
+        # Hide names whose every deployment is scaled down (experimental)
+        hidden_models = _fully_experimental_model_names(llm_router)
+        if hidden_models:
+            all_models = [m for m in all_models if m not in hidden_models]
+
         # Build response data with all proxy models
         model_data = []
         for model in all_models:
@@ -7102,6 +7107,11 @@ async def model_list(
         return_wildcard_routes=return_wildcard_routes or False,
         user_api_key_cache=user_api_key_cache,
     )
+
+    # Hide names whose every deployment is scaled down (experimental)
+    hidden_models = _fully_experimental_model_names(llm_router)
+    if hidden_models:
+        all_models = [m for m in all_models if m not in hidden_models]
 
     # Build response data
     model_data = []
@@ -10871,6 +10881,29 @@ def _is_experimental_deployment(model: dict) -> bool:
         and (tag == "experimental" or tag.startswith("experimental:"))
         for tag in tags
     )
+
+
+def _fully_experimental_model_names(llm_router: Optional[Router]) -> Set[str]:
+    """Model names whose *every* deployment is tagged experimental.
+
+    Such a name has no live deployment, so it is hidden from the
+    OpenAI-compatible /v1/models and /models listings. A name that still has at
+    least one non-experimental deployment is kept — it is still served (e.g. one
+    replica scaled down in GPUStack while others stay up).
+    """
+    if llm_router is None:
+        return set()
+    all_names: Set[str] = set()
+    live_names: Set[str] = set()
+    for deployment in getattr(llm_router, "model_list", None) or []:
+        dep = deployment if isinstance(deployment, dict) else dict(deployment)
+        name = dep.get("model_name")
+        if not name:
+            continue
+        all_names.add(name)
+        if not _is_experimental_deployment(dep):
+            live_names.add(name)
+    return all_names - live_names
 
 
 def _get_proxy_model_info(model: dict) -> dict:
