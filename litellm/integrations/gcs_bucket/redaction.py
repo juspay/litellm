@@ -12,10 +12,10 @@ happens the first time the module is imported, then reused for every
 subsequent call). Categories that are intended for *blocking* (for example
 "Dangerous Content*") are intentionally excluded from redaction.
 
-Redaction can be toggled off via the ``GCS_REDACT_PII`` environment variable.
-Set it to any of ``"false"``, ``"0"``, ``"no"``, or ``"off"``
-(case-insensitive) to disable redaction entirely; :func:`redact_text` and
-:func:`redact_messages` become no-ops in that mode.
+Redaction is opt-IN and disabled by default. Set the ``GCS_REDACT_PII``
+environment variable to any value other than ``"false"``, ``"0"``,
+``"no"``, or ``"off"`` (case-insensitive) to enable it; :func:`redact_text`
+and :func:`redact_messages` become no-ops when disabled.
 """
 
 import logging
@@ -32,8 +32,9 @@ from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.patterns im
 # ---------------------------------------------------------------------------
 # Environment toggle
 # ---------------------------------------------------------------------------
-# Read once at module import time. Default is ON.
-_REDACT_ENABLED_RAW = os.getenv("GCS_REDACT_PII", "true")
+# Read once at module import time. Default is OFF — set GCS_REDACT_PII to any
+# truthy value (anything other than "false"/"0"/"no"/"off") to enable.
+_REDACT_ENABLED_RAW = os.getenv("GCS_REDACT_PII", "false")
 REDACT_ENABLED: bool = _REDACT_ENABLED_RAW.strip().lower() not in (
     "false",
     "0",
