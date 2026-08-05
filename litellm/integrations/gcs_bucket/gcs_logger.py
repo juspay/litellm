@@ -21,6 +21,8 @@ from typing import Optional
 
 
 def _sanitize_for_json(obj, seen=None):
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
     if seen is None:
         seen = set()
     if id(obj) in seen:
@@ -37,8 +39,6 @@ def _sanitize_for_json(obj, seen=None):
             return _sanitize_for_json(obj.model_dump(), seen)
         except Exception:
             return str(obj)
-    if isinstance(obj, (str, int, float, bool, type(None))):
-        return obj
     return str(obj)
 
 
