@@ -8,6 +8,7 @@ on:
       - sync/v*
       - feature/*
       - release/*
+      - fix/*
   workflow_dispatch:  # allows manual trigger for testing
 
 env:

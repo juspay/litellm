@@ -417,6 +417,24 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
     def _get_request_count_cache_key(self, model_group: str, deployment_id: str) -> str:
         return f"sticky_lb_weighted:{model_group}:{deployment_id}:request_count"
 
+    @staticmethod
+    def _format_call_id(litellm_call_id: object) -> str:
+        if litellm_call_id is None:
+            return "None"
+        call_id = str(litellm_call_id)
+        if not call_id:
+            return "None"
+        return f"{call_id[:16]}..."
+
+    @staticmethod
+    def _previous_count_from_delta(new_value: object, delta: int) -> str:
+        if isinstance(new_value, (int, float)):
+            return str(new_value - delta)
+        return "unknown"
+
+    def _is_redis_configured(self) -> bool:
+        return self.router_cache.redis_cache is not None
+
     # =========================================================================
     # TTL Refresh
     # =========================================================================
@@ -490,112 +508,232 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
     def log_pre_api_call(self, model, messages, kwargs):
         """Increment in-flight count. Deduped by litellm_call_id for streaming."""
         if kwargs is None:
+            verbose_router_logger.info(
+                "[StickyLeastBusyWeighted COUNTER-SKIP] action=increment reason=kwargs_none"
+            )
             return
         try:
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
+                litellm_call_id = kwargs.get("litellm_call_id")
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
+                    f"reason=missing_litellm_params_or_metadata "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
                 return
 
             model_group = litellm_params["metadata"].get("model_group")
             dep_id = (litellm_params.get("model_info") or {}).get("id")
+            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get(
+                "litellm_call_id"
+            )
             if model_group is None or dep_id is None:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
+                    f"reason=missing_model_group_or_deployment_id "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
                 return
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
 
-            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get("litellm_call_id")
+            stream = kwargs.get("stream", False)
             if litellm_call_id and not self._should_increment(litellm_call_id):
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
+                    f"reason=duplicate_call_id model_group={model_group}, "
+                    f"deployment_id={dep_id}, stream={stream}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}"
+                )
                 return
 
             cache_key = self._get_request_count_cache_key(model_group, dep_id)
             new_value = self.router_cache.increment_cache(key=cache_key, value=1, ttl=self.cache_ttl)
             self._refresh_cache_ttl(cache_key)
             self._routing_in_flight.labels(model_group, dep_id).inc()
-            stream = kwargs.get("stream", False)
-            verbose_router_logger.debug(
-                f"[StickyLeastBusyWeighted INCREMENT] "
-                f"deployment_id={dep_id}, "
-                f"model_group={model_group}, "
-                f"new_count={new_value}, "
-                f"stream={stream}, "
-                f"call_id={litellm_call_id[:16] if litellm_call_id else 'None'}..."
+            previous_count = self._previous_count_from_delta(new_value, 1)
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted COUNTER] action=increment "
+                f"model_group={model_group}, deployment_id={dep_id}, "
+                f"cache_key={cache_key}, delta=1, previous_count={previous_count}, "
+                f"new_count={new_value}, stream={stream}, "
+                f"call_id={self._format_call_id(litellm_call_id)}, "
+                f"redis_configured={self._is_redis_configured()}, "
+                f"seen_call_ids={len(self._seen_call_ids)}"
             )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy log_pre_api_call error: {e}")
 
     def _decrement_request_count(self, kwargs, callback_type: str) -> None:
         if kwargs is None:
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                f"callback_type={callback_type}, reason=kwargs_none"
+            )
             return
         try:
+            litellm_call_id = kwargs.get("litellm_call_id")
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                    f"callback_type={callback_type}, "
+                    f"reason=missing_litellm_params_or_metadata, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
                 return
+            litellm_call_id = litellm_call_id or litellm_params.get("litellm_call_id")
             model_group = litellm_params["metadata"].get("model_group")
             dep_id = (litellm_params.get("model_info") or {}).get("id")
             if model_group is None or dep_id is None:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                    f"callback_type={callback_type}, "
+                    f"reason=missing_model_group_or_deployment_id, "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
                 return
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
 
             cache_key = self._get_request_count_cache_key(model_group, dep_id)
-            new_value = self.router_cache.increment_cache(key=cache_key, value=-1, ttl=self.cache_ttl)
+            call_id_seen_before_cleanup = (
+                litellm_call_id in self._seen_call_ids if litellm_call_id else False
+            )
+            new_value = self.router_cache.increment_cache(
+                key=cache_key, value=-1, ttl=self.cache_ttl
+            )
             self._refresh_cache_ttl(cache_key)
             self._routing_in_flight.labels(model_group, dep_id).dec()
-            verbose_router_logger.debug(
-                f"[StickyLeastBusyWeighted DECREMENT {callback_type}] "
-                f"deployment_id={dep_id}, "
-                f"model_group={model_group}, "
-                f"new_count={new_value}"
+            previous_count = self._previous_count_from_delta(new_value, -1)
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted COUNTER] action=decrement "
+                f"callback_type={callback_type}, model_group={model_group}, "
+                f"deployment_id={dep_id}, cache_key={cache_key}, delta=-1, "
+                f"previous_count={previous_count}, new_count={new_value}, "
+                f"call_id={self._format_call_id(litellm_call_id)}, "
+                f"call_id_seen_before_cleanup={call_id_seen_before_cleanup}, "
+                f"redis_configured={self._is_redis_configured()}, "
+                f"seen_call_ids={len(self._seen_call_ids)}"
             )
-            if new_value < 0:
+            if new_value is None:
                 verbose_router_logger.warning(
-                    f"[StickyLeastBusyWeighted WARNING] Negative count detected "
-                    f"for deployment_id={dep_id}, resetting to 0"
+                    f"[StickyLeastBusyWeighted COUNTER-WARNING] action=decrement "
+                    f"callback_type={callback_type}, reason=cache_increment_returned_none, "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"cache_key={cache_key}, call_id={self._format_call_id(litellm_call_id)}, "
+                    f"redis_configured={self._is_redis_configured()}"
+                )
+            elif new_value < 0:
+                verbose_router_logger.warning(
+                    f"[StickyLeastBusyWeighted COUNTER-RESET] reason=negative_count "
+                    f"callback_type={callback_type}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, cache_key={cache_key}, "
+                    f"new_count={new_value}, reset_to=0, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
                 )
                 self._counter_resets.labels(model_group, dep_id).inc()
                 self.router_cache.set_cache(key=cache_key, value=0, ttl=self.cache_ttl)
 
-            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get("litellm_call_id")
             if litellm_call_id:
                 self._cleanup_call_id(litellm_call_id)
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
+                    f"callback_type={callback_type}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"removed={call_id_seen_before_cleanup}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}"
+                )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy decrement error: {e}")
 
     async def _async_decrement_request_count(self, kwargs, callback_type: str) -> None:
         if kwargs is None:
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                f"callback_type={callback_type}, reason=kwargs_none"
+            )
             return
         try:
+            litellm_call_id = kwargs.get("litellm_call_id")
             litellm_params = kwargs.get("litellm_params")
             if litellm_params is None or litellm_params.get("metadata") is None:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                    f"callback_type={callback_type}, "
+                    f"reason=missing_litellm_params_or_metadata, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
                 return
+            litellm_call_id = litellm_call_id or litellm_params.get("litellm_call_id")
             model_group = litellm_params["metadata"].get("model_group")
             dep_id = (litellm_params.get("model_info") or {}).get("id")
             if model_group is None or dep_id is None:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                    f"callback_type={callback_type}, "
+                    f"reason=missing_model_group_or_deployment_id, "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
                 return
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
 
             cache_key = self._get_request_count_cache_key(model_group, dep_id)
-            new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1, ttl=self.cache_ttl)
+            call_id_seen_before_cleanup = (
+                litellm_call_id in self._seen_call_ids if litellm_call_id else False
+            )
+            new_value = await self.router_cache.async_increment_cache(
+                key=cache_key, value=-1, ttl=self.cache_ttl
+            )
             await self._async_refresh_cache_ttl(cache_key)
             self._routing_in_flight.labels(model_group, dep_id).dec()
-            verbose_router_logger.debug(
-                f"[StickyLeastBusyWeighted DECREMENT {callback_type}] "
-                f"deployment_id={dep_id}, "
-                f"model_group={model_group}, "
-                f"new_count={new_value}"
+            previous_count = self._previous_count_from_delta(new_value, -1)
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted COUNTER] action=decrement "
+                f"callback_type={callback_type}, model_group={model_group}, "
+                f"deployment_id={dep_id}, cache_key={cache_key}, delta=-1, "
+                f"previous_count={previous_count}, new_count={new_value}, "
+                f"call_id={self._format_call_id(litellm_call_id)}, "
+                f"call_id_seen_before_cleanup={call_id_seen_before_cleanup}, "
+                f"redis_configured={self._is_redis_configured()}, "
+                f"seen_call_ids={len(self._seen_call_ids)}"
             )
-            if new_value < 0:
+            if new_value is None:
                 verbose_router_logger.warning(
-                    f"[StickyLeastBusyWeighted WARNING] Negative count detected "
-                    f"for deployment_id={dep_id}, resetting to 0"
+                    f"[StickyLeastBusyWeighted COUNTER-WARNING] action=decrement "
+                    f"callback_type={callback_type}, reason=cache_increment_returned_none, "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"cache_key={cache_key}, call_id={self._format_call_id(litellm_call_id)}, "
+                    f"redis_configured={self._is_redis_configured()}"
+                )
+            elif new_value < 0:
+                verbose_router_logger.warning(
+                    f"[StickyLeastBusyWeighted COUNTER-RESET] reason=negative_count "
+                    f"callback_type={callback_type}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, cache_key={cache_key}, "
+                    f"new_count={new_value}, reset_to=0, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
                 )
                 self._counter_resets.labels(model_group, dep_id).inc()
                 await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=self.cache_ttl)
 
-            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get("litellm_call_id")
             if litellm_call_id:
                 self._cleanup_call_id(litellm_call_id)
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
+                    f"callback_type={callback_type}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"removed={call_id_seen_before_cleanup}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}"
+                )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy async decrement error: {e}")
 
@@ -635,11 +773,20 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             count = self.router_cache.get_cache(key=cache_key, redis_only=True)
             if count is None:
                 none_count += 1
-            result[dep_id] = max(0, int(count)) if count is not None else 0
+            normalized_count = max(0, int(count)) if count is not None else 0
+            result[dep_id] = normalized_count
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted COUNTER-READ] mode=sync "
+                f"model_group={model_group}, deployment_id={dep_id}, "
+                f"cache_key={cache_key}, redis_only=True, "
+                f"redis_configured={self._is_redis_configured()}, "
+                f"raw_count={count}, normalized_count={normalized_count}"
+            )
 
         if none_count == len(healthy_deployments) and none_count > 0:
             verbose_router_logger.warning(
-                "[StickyLeastBusyWeighted WARNING] Redis returned None for all deployments "
+                f"[StickyLeastBusyWeighted WARNING] model_group={model_group}, "
+                "Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
             )
             self._routing_fallback.labels(model_group, "redis_unavailable", "consistent_hashing").inc()
@@ -657,11 +804,20 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             count = await self.router_cache.async_get_cache(key=cache_key, redis_only=True)
             if count is None:
                 none_count += 1
-            result[dep_id] = max(0, int(count)) if count is not None else 0
+            normalized_count = max(0, int(count)) if count is not None else 0
+            result[dep_id] = normalized_count
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted COUNTER-READ] mode=async "
+                f"model_group={model_group}, deployment_id={dep_id}, "
+                f"cache_key={cache_key}, redis_only=True, "
+                f"redis_configured={self._is_redis_configured()}, "
+                f"raw_count={count}, normalized_count={normalized_count}"
+            )
 
         if none_count == len(healthy_deployments) and none_count > 0:
             verbose_router_logger.warning(
-                "[StickyLeastBusyWeighted WARNING] Redis returned None for all deployments "
+                f"[StickyLeastBusyWeighted WARNING] model_group={model_group}, "
+                "Redis returned None for all deployments "
                 "- Redis may be unavailable. Load data will default to 0."
             )
             self._routing_fallback.labels(model_group, "redis_unavailable", "consistent_hashing").inc()
