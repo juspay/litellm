@@ -58,6 +58,21 @@ def reset_singleton():
     StickyLeastBusyWeightedLoggingHandler._instance = None
 
 
+class RecordingDualCache(DualCache):
+    def __init__(self):
+        super().__init__()
+        self.increment_calls = []
+
+    def increment_cache(self, key, value: int, local_only: bool = False, **kwargs) -> int:
+        self.increment_calls.append((key, value))
+        return super().increment_cache(
+            key=key,
+            value=value,
+            local_only=local_only,
+            **kwargs,
+        )
+
+
 class TestWeightedHashRing:
     def test_vnodes_scale_with_weight(self):
         handler = StickyLeastBusyWeightedLoggingHandler(
@@ -212,6 +227,85 @@ class TestCapacityNormalizedSelection:
         request_counts = {"dep-0": 10, "dep-1": 2, "dep-2": 10}
         result = handler._select_deployment(MG, deployments, request_counts, None)
         assert result["model_info"]["id"] == "dep-1"
+
+
+class TestRequestCounters:
+    def test_top_level_metadata_is_counted(self):
+        cache = RecordingDualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        dep_id = "top-level-deployment"
+        cache_key = handler._get_request_count_cache_key(MG, dep_id)
+        kwargs = {
+            "litellm_call_id": "top-level-call",
+            "metadata": {"model_group": MG},
+            "model_info": {"id": dep_id},
+        }
+
+        handler.log_pre_api_call(None, None, kwargs)
+        handler._decrement_request_count(kwargs, callback_type="SYNC-SUCCESS")
+
+        assert cache.increment_calls == [(cache_key, 1), (cache_key, -1)]
+        assert cache.get_cache(key=cache_key, redis_only=True) == 0
+
+    def test_route_map_recovers_missing_callback_metadata(self):
+        cache = RecordingDualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        dep_id = "route-map-deployment"
+        cache_key = handler._get_request_count_cache_key(MG, dep_id)
+        call_id = "route-map-call"
+
+        handler._remember_selected_deployment_for_kwargs(
+            {"litellm_call_id": call_id},
+            MG,
+            _make_deployment(dep_id),
+        )
+        kwargs = {"litellm_call_id": call_id}
+
+        handler.log_pre_api_call(None, None, kwargs)
+        handler._decrement_request_count(kwargs, callback_type="SYNC-SUCCESS")
+
+        assert cache.increment_calls == [(cache_key, 1), (cache_key, -1)]
+        assert cache.get_cache(key=cache_key, redis_only=True) == 0
+
+    def test_duplicate_success_callback_does_not_double_decrement(self):
+        cache = RecordingDualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        dep_id = "duplicate-success-deployment"
+        cache_key = handler._get_request_count_cache_key(MG, dep_id)
+        kwargs = {
+            "litellm_call_id": "duplicate-success-call",
+            "litellm_params": {
+                "metadata": {"model_group": MG},
+                "model_info": {"id": dep_id},
+            },
+        }
+
+        handler.log_pre_api_call(None, None, kwargs)
+        handler._decrement_request_count(kwargs, callback_type="SYNC-SUCCESS")
+        handler._decrement_request_count(kwargs, callback_type="ASYNC-SUCCESS")
+
+        assert cache.increment_calls == [(cache_key, 1), (cache_key, -1)]
+        assert cache.get_cache(key=cache_key, redis_only=True) == 0
+
+    def test_failure_callback_allows_retry_increment_for_same_call_id(self):
+        cache = RecordingDualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        dep_id = "retry-deployment"
+        cache_key = handler._get_request_count_cache_key(MG, dep_id)
+        kwargs = {
+            "litellm_call_id": "retry-call",
+            "litellm_params": {
+                "metadata": {"model_group": MG},
+                "model_info": {"id": dep_id},
+            },
+        }
+
+        handler.log_pre_api_call(None, None, kwargs)
+        handler._decrement_request_count(kwargs, callback_type="SYNC-FAILURE")
+        handler.log_pre_api_call(None, None, kwargs)
+
+        assert cache.increment_calls == [(cache_key, 1), (cache_key, -1), (cache_key, 1)]
+        assert cache.get_cache(key=cache_key, redis_only=True) == 1
 
 
 class TestPrometheusMetrics:

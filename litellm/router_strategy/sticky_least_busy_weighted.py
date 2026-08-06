@@ -104,6 +104,10 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         # log_pre_api_call fires for every SSE chunk in streaming - only increment once.
         self._seen_call_ids: Dict[str, bool] = {}
         self._seen_call_ids_max_size: int = 10000
+        self._completed_call_ids: Dict[str, bool] = {}
+        self._completed_call_ids_max_size: int = 10000
+        self._selected_deployments_by_call_id: Dict[str, Tuple[str, str]] = {}
+        self._selected_deployments_max_size: int = 10000
 
         # Per-model-group consistent hash rings.
         # Each model group (e.g., "llama-70b", "kimi-k2-5-dev") may have different
@@ -435,6 +439,168 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
     def _is_redis_configured(self) -> bool:
         return self.router_cache.redis_cache is not None
 
+    @staticmethod
+    def _extract_litellm_call_id_from_kwargs(kwargs) -> Optional[str]:
+        if kwargs is None:
+            return None
+
+        call_id = kwargs.get("litellm_call_id")
+        if call_id:
+            return str(call_id)
+
+        litellm_params = kwargs.get("litellm_params")
+        if isinstance(litellm_params, dict):
+            call_id = litellm_params.get("litellm_call_id")
+            if call_id:
+                return str(call_id)
+
+            metadata = litellm_params.get("metadata")
+            if isinstance(metadata, dict):
+                call_id = metadata.get("litellm_call_id")
+                if call_id:
+                    return str(call_id)
+
+        metadata = kwargs.get("metadata") or kwargs.get("litellm_metadata")
+        if isinstance(metadata, dict):
+            call_id = metadata.get("litellm_call_id")
+            if call_id:
+                return str(call_id)
+
+        return None
+
+    def _get_counter_tracking_info(self, kwargs) -> Tuple[Optional[str], Optional[str], Optional[str], str, bool]:
+        litellm_call_id = self._extract_litellm_call_id_from_kwargs(kwargs)
+        litellm_params = kwargs.get("litellm_params") if kwargs is not None else None
+        source = "litellm_params"
+
+        metadata = None
+        if isinstance(litellm_params, dict):
+            litellm_metadata = litellm_params.get("metadata")
+            if isinstance(litellm_metadata, dict):
+                metadata = litellm_metadata
+
+        if metadata is None and kwargs is not None:
+            top_level_metadata = kwargs.get("metadata")
+            if isinstance(top_level_metadata, dict):
+                metadata = top_level_metadata
+                source = "metadata"
+            else:
+                litellm_metadata = kwargs.get("litellm_metadata")
+                if isinstance(litellm_metadata, dict):
+                    metadata = litellm_metadata
+                    source = "litellm_metadata"
+
+        model_group = metadata.get("model_group") if isinstance(metadata, dict) else None
+
+        model_info = None
+        if isinstance(litellm_params, dict):
+            litellm_model_info = litellm_params.get("model_info")
+            if isinstance(litellm_model_info, dict):
+                model_info = litellm_model_info
+
+        if model_info is None and kwargs is not None:
+            top_level_model_info = kwargs.get("model_info")
+            if isinstance(top_level_model_info, dict):
+                model_info = top_level_model_info
+                if source == "litellm_params":
+                    source = "model_info"
+
+        if model_info is None and isinstance(metadata, dict):
+            metadata_model_info = metadata.get("model_info")
+            if isinstance(metadata_model_info, dict):
+                model_info = metadata_model_info
+                source = f"{source}.model_info"
+
+        dep_id = model_info.get("id") if isinstance(model_info, dict) else None
+        route_map_hit = False
+        if litellm_call_id and (model_group is None or dep_id is None):
+            selected_deployment = self._selected_deployments_by_call_id.get(litellm_call_id)
+            if selected_deployment is not None:
+                if model_group is None:
+                    model_group = selected_deployment[0]
+                if dep_id is None:
+                    dep_id = selected_deployment[1]
+                route_map_hit = True
+                source = f"{source}+route_map"
+
+        if model_group is not None:
+            model_group = str(model_group)
+        if dep_id is not None:
+            dep_id = str(dep_id)
+
+        return model_group, dep_id, litellm_call_id, source, route_map_hit
+
+    def _get_counter_skip_context(self, kwargs) -> str:
+        if kwargs is None:
+            return "kwargs_none"
+
+        litellm_params = kwargs.get("litellm_params")
+        litellm_metadata = litellm_params.get("metadata") if isinstance(litellm_params, dict) else None
+        top_level_metadata = kwargs.get("metadata")
+        litellm_top_level_metadata = kwargs.get("litellm_metadata")
+        top_level_model_info = kwargs.get("model_info")
+        has_any_metadata = any(
+            isinstance(candidate, dict)
+            for candidate in (
+                litellm_metadata,
+                top_level_metadata,
+                litellm_top_level_metadata,
+            )
+        )
+
+        if not isinstance(litellm_params, dict) and not has_any_metadata:
+            reason = "missing_litellm_params_or_metadata"
+        else:
+            reason = "missing_model_group_or_deployment_id"
+
+        return (
+            f"reason={reason}, has_litellm_params={isinstance(litellm_params, dict)}, "
+            f"has_litellm_metadata={isinstance(litellm_metadata, dict)}, "
+            f"has_top_level_metadata={isinstance(top_level_metadata, dict)}, "
+            f"has_litellm_top_level_metadata={isinstance(litellm_top_level_metadata, dict)}, "
+            f"has_top_level_model_info={isinstance(top_level_model_info, dict)}"
+        )
+
+    def _remember_selected_deployment_for_kwargs(
+        self,
+        request_kwargs: Optional[Dict],
+        model_group: str,
+        selected_deployment: dict,
+    ) -> None:
+        litellm_call_id = self._extract_litellm_call_id_from_kwargs(request_kwargs)
+        if not litellm_call_id:
+            return
+
+        dep_id = (selected_deployment.get("model_info") or {}).get("id")
+        if dep_id is None:
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted ROUTE-MAP-SKIP] reason=missing_deployment_id "
+                f"model_group={model_group}, call_id={self._format_call_id(litellm_call_id)}"
+            )
+            return
+
+        if len(self._selected_deployments_by_call_id) >= self._selected_deployments_max_size:
+            evict_count = max(1, self._selected_deployments_max_size // 10)
+            keys_to_remove = list(self._selected_deployments_by_call_id.keys())[:evict_count]
+            for key in keys_to_remove:
+                self._selected_deployments_by_call_id.pop(key, None)
+
+        self._selected_deployments_by_call_id[litellm_call_id] = (str(model_group), str(dep_id))
+        verbose_router_logger.info(
+            f"[StickyLeastBusyWeighted ROUTE-MAP] action=remember "
+            f"model_group={model_group}, deployment_id={dep_id}, "
+            f"call_id={self._format_call_id(litellm_call_id)}, "
+            f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
+        )
+
+    def _remember_completed_call_id(self, litellm_call_id: str) -> None:
+        if len(self._completed_call_ids) >= self._completed_call_ids_max_size:
+            evict_count = max(1, self._completed_call_ids_max_size // 10)
+            keys_to_remove = list(self._completed_call_ids.keys())[:evict_count]
+            for key in keys_to_remove:
+                self._completed_call_ids.pop(key, None)
+        self._completed_call_ids[litellm_call_id] = True
+
     # =========================================================================
     # TTL Refresh
     # =========================================================================
@@ -468,6 +634,76 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         except Exception:
             pass
 
+    def _reset_negative_counter_if_still_negative(
+        self,
+        cache_key: str,
+        model_group: str,
+        dep_id: str,
+        new_value: object,
+        litellm_call_id: Optional[str],
+        callback_type: str,
+    ) -> None:
+        current_value = self.router_cache.get_cache(key=cache_key, redis_only=True)
+        try:
+            current_int = int(current_value) if current_value is not None else None
+        except (TypeError, ValueError):
+            current_int = None
+
+        if current_int is not None and current_int >= 0:
+            verbose_router_logger.warning(
+                f"[StickyLeastBusyWeighted COUNTER-RESET-SKIP] reason=current_count_non_negative "
+                f"callback_type={callback_type}, model_group={model_group}, "
+                f"deployment_id={dep_id}, cache_key={cache_key}, "
+                f"observed_new_count={new_value}, current_count={current_value}, "
+                f"call_id={self._format_call_id(litellm_call_id)}"
+            )
+            return
+
+        self._counter_resets.labels(model_group, dep_id).inc()
+        self.router_cache.set_cache(key=cache_key, value=0, ttl=self.cache_ttl)
+        verbose_router_logger.warning(
+            f"[StickyLeastBusyWeighted COUNTER-RESET] reason=negative_count "
+            f"callback_type={callback_type}, model_group={model_group}, "
+            f"deployment_id={dep_id}, cache_key={cache_key}, "
+            f"observed_new_count={new_value}, current_count={current_value}, "
+            f"reset_to=0, call_id={self._format_call_id(litellm_call_id)}"
+        )
+
+    async def _async_reset_negative_counter_if_still_negative(
+        self,
+        cache_key: str,
+        model_group: str,
+        dep_id: str,
+        new_value: object,
+        litellm_call_id: Optional[str],
+        callback_type: str,
+    ) -> None:
+        current_value = await self.router_cache.async_get_cache(key=cache_key, redis_only=True)
+        try:
+            current_int = int(current_value) if current_value is not None else None
+        except (TypeError, ValueError):
+            current_int = None
+
+        if current_int is not None and current_int >= 0:
+            verbose_router_logger.warning(
+                f"[StickyLeastBusyWeighted COUNTER-RESET-SKIP] reason=current_count_non_negative "
+                f"callback_type={callback_type}, model_group={model_group}, "
+                f"deployment_id={dep_id}, cache_key={cache_key}, "
+                f"observed_new_count={new_value}, current_count={current_value}, "
+                f"call_id={self._format_call_id(litellm_call_id)}"
+            )
+            return
+
+        self._counter_resets.labels(model_group, dep_id).inc()
+        await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=self.cache_ttl)
+        verbose_router_logger.warning(
+            f"[StickyLeastBusyWeighted COUNTER-RESET] reason=negative_count "
+            f"callback_type={callback_type}, model_group={model_group}, "
+            f"deployment_id={dep_id}, cache_key={cache_key}, "
+            f"observed_new_count={new_value}, current_count={current_value}, "
+            f"reset_to=0, call_id={self._format_call_id(litellm_call_id)}"
+        )
+
     # =========================================================================
     # Streaming Dedup
     # =========================================================================
@@ -484,6 +720,12 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 f"(streaming chunk dedup)"
             )
             return False
+        if litellm_call_id in self._completed_call_ids:
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted DEDUP] Skipping increment for completed "
+                f"call_id={litellm_call_id[:16]}..."
+            )
+            return False
 
         if len(self._seen_call_ids) >= self._seen_call_ids_max_size:
             evict_count = self._seen_call_ids_max_size // 10
@@ -498,8 +740,11 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         self._seen_call_ids[litellm_call_id] = True
         return True
 
-    def _cleanup_call_id(self, litellm_call_id: str) -> None:
+    def _cleanup_call_id(self, litellm_call_id: str, mark_completed: bool) -> None:
         self._seen_call_ids.pop(litellm_call_id, None)
+        self._selected_deployments_by_call_id.pop(litellm_call_id, None)
+        if mark_completed:
+            self._remember_completed_call_id(litellm_call_id)
 
     # =========================================================================
     # CustomLogger Callbacks - Request Tracking
@@ -513,31 +758,29 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             )
             return
         try:
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
-                litellm_call_id = kwargs.get("litellm_call_id")
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
-                    f"reason=missing_litellm_params_or_metadata "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
-                )
-                return
-
-            model_group = litellm_params["metadata"].get("model_group")
-            dep_id = (litellm_params.get("model_info") or {}).get("id")
-            litellm_call_id = kwargs.get("litellm_call_id") or litellm_params.get(
-                "litellm_call_id"
-            )
+            (
+                model_group,
+                dep_id,
+                litellm_call_id,
+                tracking_source,
+                route_map_hit,
+            ) = self._get_counter_tracking_info(kwargs)
             if model_group is None or dep_id is None:
                 verbose_router_logger.info(
                     f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
-                    f"reason=missing_model_group_or_deployment_id "
+                    f"{self._get_counter_skip_context(kwargs)}, "
                     f"model_group={model_group}, deployment_id={dep_id}, "
                     f"call_id={self._format_call_id(litellm_call_id)}"
                 )
                 return
-            if isinstance(dep_id, int):
-                dep_id = str(dep_id)
+
+            if tracking_source != "litellm_params" or route_map_hit:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-RECOVER] action=increment "
+                    f"source={tracking_source}, route_map_hit={route_map_hit}, "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
 
             stream = kwargs.get("stream", False)
             if litellm_call_id and not self._should_increment(litellm_call_id):
@@ -575,30 +818,42 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             )
             return
         try:
-            litellm_call_id = kwargs.get("litellm_call_id")
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
+            litellm_call_id = self._extract_litellm_call_id_from_kwargs(kwargs)
+            if litellm_call_id and litellm_call_id in self._completed_call_ids:
                 verbose_router_logger.info(
                     f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
                     f"callback_type={callback_type}, "
-                    f"reason=missing_litellm_params_or_metadata, "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
+                    f"reason=duplicate_terminal_callback, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"completed_call_ids={len(self._completed_call_ids)}"
                 )
                 return
-            litellm_call_id = litellm_call_id or litellm_params.get("litellm_call_id")
-            model_group = litellm_params["metadata"].get("model_group")
-            dep_id = (litellm_params.get("model_info") or {}).get("id")
+
+            (
+                model_group,
+                dep_id,
+                litellm_call_id,
+                tracking_source,
+                route_map_hit,
+            ) = self._get_counter_tracking_info(kwargs)
             if model_group is None or dep_id is None:
                 verbose_router_logger.info(
                     f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
                     f"callback_type={callback_type}, "
-                    f"reason=missing_model_group_or_deployment_id, "
+                    f"{self._get_counter_skip_context(kwargs)}, "
                     f"model_group={model_group}, deployment_id={dep_id}, "
                     f"call_id={self._format_call_id(litellm_call_id)}"
                 )
                 return
-            if isinstance(dep_id, int):
-                dep_id = str(dep_id)
+
+            if tracking_source != "litellm_params" or route_map_hit:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-RECOVER] action=decrement "
+                    f"callback_type={callback_type}, source={tracking_source}, "
+                    f"route_map_hit={route_map_hit}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
 
             cache_key = self._get_request_count_cache_key(model_group, dep_id)
             call_id_seen_before_cleanup = (
@@ -629,25 +884,28 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                     f"redis_configured={self._is_redis_configured()}"
                 )
             elif new_value < 0:
-                verbose_router_logger.warning(
-                    f"[StickyLeastBusyWeighted COUNTER-RESET] reason=negative_count "
-                    f"callback_type={callback_type}, model_group={model_group}, "
-                    f"deployment_id={dep_id}, cache_key={cache_key}, "
-                    f"new_count={new_value}, reset_to=0, "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
+                self._reset_negative_counter_if_still_negative(
+                    cache_key=cache_key,
+                    model_group=model_group,
+                    dep_id=dep_id,
+                    new_value=new_value,
+                    litellm_call_id=litellm_call_id,
+                    callback_type=callback_type,
                 )
-                self._counter_resets.labels(model_group, dep_id).inc()
-                self.router_cache.set_cache(key=cache_key, value=0, ttl=self.cache_ttl)
 
             if litellm_call_id:
-                self._cleanup_call_id(litellm_call_id)
+                mark_completed = "SUCCESS" in callback_type
+                self._cleanup_call_id(litellm_call_id, mark_completed=mark_completed)
                 verbose_router_logger.info(
                     f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
                     f"callback_type={callback_type}, model_group={model_group}, "
                     f"deployment_id={dep_id}, "
                     f"call_id={self._format_call_id(litellm_call_id)}, "
                     f"removed={call_id_seen_before_cleanup}, "
-                    f"seen_call_ids={len(self._seen_call_ids)}"
+                    f"mark_completed={mark_completed}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}, "
+                    f"completed_call_ids={len(self._completed_call_ids)}, "
+                    f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
                 )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy decrement error: {e}")
@@ -660,30 +918,42 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             )
             return
         try:
-            litellm_call_id = kwargs.get("litellm_call_id")
-            litellm_params = kwargs.get("litellm_params")
-            if litellm_params is None or litellm_params.get("metadata") is None:
+            litellm_call_id = self._extract_litellm_call_id_from_kwargs(kwargs)
+            if litellm_call_id and litellm_call_id in self._completed_call_ids:
                 verbose_router_logger.info(
                     f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
                     f"callback_type={callback_type}, "
-                    f"reason=missing_litellm_params_or_metadata, "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
+                    f"reason=duplicate_terminal_callback, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"completed_call_ids={len(self._completed_call_ids)}"
                 )
                 return
-            litellm_call_id = litellm_call_id or litellm_params.get("litellm_call_id")
-            model_group = litellm_params["metadata"].get("model_group")
-            dep_id = (litellm_params.get("model_info") or {}).get("id")
+
+            (
+                model_group,
+                dep_id,
+                litellm_call_id,
+                tracking_source,
+                route_map_hit,
+            ) = self._get_counter_tracking_info(kwargs)
             if model_group is None or dep_id is None:
                 verbose_router_logger.info(
                     f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
                     f"callback_type={callback_type}, "
-                    f"reason=missing_model_group_or_deployment_id, "
+                    f"{self._get_counter_skip_context(kwargs)}, "
                     f"model_group={model_group}, deployment_id={dep_id}, "
                     f"call_id={self._format_call_id(litellm_call_id)}"
                 )
                 return
-            if isinstance(dep_id, int):
-                dep_id = str(dep_id)
+
+            if tracking_source != "litellm_params" or route_map_hit:
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted COUNTER-RECOVER] action=decrement "
+                    f"callback_type={callback_type}, source={tracking_source}, "
+                    f"route_map_hit={route_map_hit}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
 
             cache_key = self._get_request_count_cache_key(model_group, dep_id)
             call_id_seen_before_cleanup = (
@@ -714,25 +984,28 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                     f"redis_configured={self._is_redis_configured()}"
                 )
             elif new_value < 0:
-                verbose_router_logger.warning(
-                    f"[StickyLeastBusyWeighted COUNTER-RESET] reason=negative_count "
-                    f"callback_type={callback_type}, model_group={model_group}, "
-                    f"deployment_id={dep_id}, cache_key={cache_key}, "
-                    f"new_count={new_value}, reset_to=0, "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
+                await self._async_reset_negative_counter_if_still_negative(
+                    cache_key=cache_key,
+                    model_group=model_group,
+                    dep_id=dep_id,
+                    new_value=new_value,
+                    litellm_call_id=litellm_call_id,
+                    callback_type=callback_type,
                 )
-                self._counter_resets.labels(model_group, dep_id).inc()
-                await self.router_cache.async_set_cache(key=cache_key, value=0, ttl=self.cache_ttl)
 
             if litellm_call_id:
-                self._cleanup_call_id(litellm_call_id)
+                mark_completed = "SUCCESS" in callback_type
+                self._cleanup_call_id(litellm_call_id, mark_completed=mark_completed)
                 verbose_router_logger.info(
                     f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
                     f"callback_type={callback_type}, model_group={model_group}, "
                     f"deployment_id={dep_id}, "
                     f"call_id={self._format_call_id(litellm_call_id)}, "
                     f"removed={call_id_seen_before_cleanup}, "
-                    f"seen_call_ids={len(self._seen_call_ids)}"
+                    f"mark_completed={mark_completed}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}, "
+                    f"completed_call_ids={len(self._completed_call_ids)}, "
+                    f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
                 )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy async decrement error: {e}")
@@ -986,7 +1259,8 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 if preferred_eff < threshold_value:
                     selected = dep_id_to_deployment[preferred_id]
                     verbose_router_logger.info(
-                        f"[StickyLeastBusyWeighted DECISION] STICKY -> deployment_id={preferred_id}, "
+                        f"[StickyLeastBusyWeighted DECISION] STICKY -> model_group={model_group}, "
+                        f"deployment_id={preferred_id}, "
                         f"api_base={selected.get('litellm_params', {}).get('api_base', 'unknown')}, "
                         f"model={selected.get('litellm_params', {}).get('model', 'unknown')}, "
                         f"reason=norm_load_{preferred_eff:.2f}_below_threshold_{threshold_value:.2f}, "
@@ -1034,7 +1308,8 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         load_reduction_pct = (load_difference / avg_load * 100) if avg_load > 0 else 0
 
         verbose_router_logger.info(
-            f"[StickyLeastBusyWeighted DECISION] LEAST-BUSY -> deployment_id={selected_dep_id}, "
+            f"[StickyLeastBusyWeighted DECISION] LEAST-BUSY -> model_group={model_group}, "
+            f"deployment_id={selected_dep_id}, "
             f"api_base={selected.get('litellm_params', {}).get('api_base', 'unknown')}, "
             f"model={selected.get('litellm_params', {}).get('model', 'unknown')}, "
             f"selected_load={min_load}, "
@@ -1068,7 +1343,9 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             request_counts = self._get_request_counts(model_group, healthy_deployments)
             user_id = self._extract_user_id(request_kwargs)
             sticky_key = self.compute_sticky_key(messages, user_id=user_id)
-            return self._select_deployment(model_group, healthy_deployments, request_counts, sticky_key)
+            selected_deployment = self._select_deployment(model_group, healthy_deployments, request_counts, sticky_key)
+            self._remember_selected_deployment_for_kwargs(request_kwargs, model_group, selected_deployment)
+            return selected_deployment
         except Exception as e:
             verbose_router_logger.error(
                 f"[StickyLeastBusyWeighted ERROR] Routing failed, falling back to " f"random selection: {e}"
@@ -1094,7 +1371,9 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             request_counts = await self._async_get_request_counts(model_group, healthy_deployments)
             user_id = self._extract_user_id(request_kwargs)
             sticky_key = self.compute_sticky_key(messages, user_id=user_id)
-            return self._select_deployment(model_group, healthy_deployments, request_counts, sticky_key)
+            selected_deployment = self._select_deployment(model_group, healthy_deployments, request_counts, sticky_key)
+            self._remember_selected_deployment_for_kwargs(request_kwargs, model_group, selected_deployment)
+            return selected_deployment
         except Exception as e:
             verbose_router_logger.error(
                 f"[StickyLeastBusyWeighted ERROR] Async routing failed, falling back to " f"random selection: {e}"

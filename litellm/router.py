@@ -3177,7 +3177,10 @@ class Router:
             function_name=function_name,
         )
 
-        kwargs.setdefault(metadata_variable_name, {}).update(
+        metadata = kwargs.setdefault(metadata_variable_name, {})
+        if metadata.get("model_group") is None:
+            metadata["model_group"] = deployment_model_name
+        metadata.update(
             {
                 "deployment": deployment_litellm_model_name,
                 "model_info": model_info,
