@@ -36,6 +36,14 @@ def _make_weighted_deployment(dep_id: str, weight) -> dict:
 MG = "test-model"  # default model group for tests
 
 
+def _cache_key_for_deployment(
+    handler: StickyLeastBusyWeightedLoggingHandler, model_group: str, deployment: dict
+) -> str:
+    dep_id = str(deployment["model_info"]["id"])
+    load_key, _ = handler._get_load_key_for_deployment(deployment)
+    return handler._get_request_count_cache_key(model_group, dep_id, load_key)
+
+
 def _metric_sample_value(metric, expected_labels: dict) -> float:
     values = [
         sample.value
@@ -251,18 +259,84 @@ class TestRequestCounters:
         cache = RecordingDualCache()
         handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
         dep_id = "route-map-deployment"
-        cache_key = handler._get_request_count_cache_key(MG, dep_id)
+        deployment = _make_deployment(dep_id)
+        cache_key = _cache_key_for_deployment(handler, MG, deployment)
         call_id = "route-map-call"
 
         handler._remember_selected_deployment_for_kwargs(
             {"litellm_call_id": call_id},
             MG,
-            _make_deployment(dep_id),
+            deployment,
         )
         kwargs = {"litellm_call_id": call_id}
 
         handler.log_pre_api_call(None, None, kwargs)
         handler._decrement_request_count(kwargs, callback_type="SYNC-SUCCESS")
+
+        assert cache.increment_calls == [(cache_key, 1), (cache_key, -1)]
+        assert cache.get_cache(key=cache_key, redis_only=True) == 0
+
+    def test_aliases_share_backend_request_count(self):
+        cache = RecordingDualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        glm_deployment = _make_deployment("glm-deployment")
+        open_deployment = _make_deployment("open-deployment")
+        open_deployment["model_name"] = "open-large"
+        open_deployment["litellm_params"] = glm_deployment["litellm_params"].copy()
+        shared_cache_key = _cache_key_for_deployment(handler, "glm-latest", glm_deployment)
+
+        handler.log_pre_api_call(
+            None,
+            None,
+            {
+                "litellm_call_id": "open-large-call",
+                "metadata": {
+                    "model_group": "open-large",
+                    "deployment": open_deployment["litellm_params"]["model"],
+                    "api_base": open_deployment["litellm_params"]["api_base"],
+                },
+                "model_info": open_deployment["model_info"],
+            },
+        )
+
+        request_counts = handler._get_request_counts("glm-latest", [glm_deployment])
+
+        assert cache.increment_calls == [(shared_cache_key, 1)]
+        assert request_counts["glm-deployment"] == 1
+
+    def test_route_map_keeps_decrement_on_backend_key_when_callback_lacks_api_base(self):
+        cache = RecordingDualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        deployment = _make_deployment("backend-deployment")
+        cache_key = _cache_key_for_deployment(handler, MG, deployment)
+        call_id = "metadata-partial-call"
+
+        handler._remember_selected_deployment_for_kwargs(
+            {"litellm_call_id": call_id},
+            MG,
+            deployment,
+        )
+        handler.log_pre_api_call(
+            None,
+            None,
+            {
+                "litellm_call_id": call_id,
+                "metadata": {
+                    "model_group": MG,
+                    "deployment": deployment["litellm_params"]["model"],
+                    "api_base": deployment["litellm_params"]["api_base"],
+                },
+                "model_info": deployment["model_info"],
+            },
+        )
+        handler._decrement_request_count(
+            {
+                "litellm_call_id": call_id,
+                "metadata": {"model_group": MG},
+                "model_info": deployment["model_info"],
+            },
+            callback_type="SYNC-SUCCESS",
+        )
 
         assert cache.increment_calls == [(cache_key, 1), (cache_key, -1)]
         assert cache.get_cache(key=cache_key, redis_only=True) == 0
@@ -302,10 +376,26 @@ class TestRequestCounters:
 
         handler.log_pre_api_call(None, None, kwargs)
         handler._decrement_request_count(kwargs, callback_type="SYNC-FAILURE")
+        handler._decrement_request_count(kwargs, callback_type="ASYNC-FAILURE")
         handler.log_pre_api_call(None, None, kwargs)
 
         assert cache.increment_calls == [(cache_key, 1), (cache_key, -1), (cache_key, 1)]
         assert cache.get_cache(key=cache_key, redis_only=True) == 1
+
+    def test_decrement_without_matching_increment_is_skipped(self):
+        cache = RecordingDualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        kwargs = {
+            "litellm_call_id": "no-increment-call",
+            "litellm_params": {
+                "metadata": {"model_group": MG},
+                "model_info": {"id": "no-increment-deployment"},
+            },
+        }
+
+        handler._decrement_request_count(kwargs, callback_type="SYNC-FAILURE")
+
+        assert cache.increment_calls == []
 
 
 class TestPrometheusMetrics:
@@ -388,7 +478,6 @@ class TestPrometheusMetrics:
     def test_negative_count_increments_reset_counter(self):
         handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
         kwargs = {
-            "litellm_call_id": "counter-reset-call",
             "litellm_params": {
                 "metadata": {"model_group": MG},
                 "model_info": {"id": "counter-reset-deployment"},
