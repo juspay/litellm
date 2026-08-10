@@ -182,6 +182,43 @@ class TestWeightForResolution:
 
 
 class TestCapacityNormalizedSelection:
+    def test_dynamic_imbalance_threshold_for_deployment_count(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(
+            router_cache=DualCache(),
+            imbalance_threshold=1.5,
+            dynamic_imbalance_thresholds={2: 1.35, "4": "1.45"},
+        )
+
+        assert handler._imbalance_threshold_for_deployment_count(2) == 1.35
+        assert handler._imbalance_threshold_for_deployment_count(4) == 1.45
+        assert handler._imbalance_threshold_for_deployment_count(5) == 1.5
+
+    def test_dynamic_threshold_overrides_sticky_for_small_group(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(
+            router_cache=DualCache(),
+            imbalance_threshold=1.5,
+            dynamic_imbalance_thresholds={2: 1.35},
+        )
+        deployments = [
+            _make_weighted_deployment("sticky", 1.0),
+            _make_weighted_deployment("least", 1.0),
+        ]
+        handler._build_hash_ring(MG, {"sticky": 1.0, "least": 1.0})
+        sticky_key = next(
+            k
+            for k in (f"k-{i}" for i in range(2000))
+            if handler._get_deployment_for_key(MG, k) == "sticky"
+        )
+
+        result = handler._select_deployment(
+            MG,
+            deployments,
+            {"sticky": 4, "least": 2},
+            sticky_key,
+        )
+
+        assert result["model_info"]["id"] == "least"
+
     def test_heavy_node_tolerates_higher_raw_load(self):
         """A high-weight node stays sticky at a raw load that would overload an
         equal-weight node, because the load check is capacity-normalized."""
@@ -396,6 +433,83 @@ class TestRequestCounters:
         handler._decrement_request_count(kwargs, callback_type="SYNC-FAILURE")
 
         assert cache.increment_calls == []
+
+
+class TestObservedLoad:
+    def test_parse_vllm_observed_load(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        metrics_text = """
+vllm:num_requests_running{model_name="glm"} 2
+vllm:num_requests_running{model_name="open-large"} 3
+vllm:num_requests_waiting{model_name="glm"} 1
+"""
+
+        assert handler._parse_observed_load(metrics_text) == (6, 5, 1, "vllm")
+
+    def test_parse_sglang_observed_load_uses_rank_max(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        metrics_text = """
+sglang:num_running_reqs{rank="0"} 4
+sglang:num_running_reqs{rank="1"} 4
+sglang:num_queue_reqs{rank="0"} 2
+sglang:num_queue_reqs{rank="1"} 2
+"""
+
+        assert handler._parse_observed_load(metrics_text) == (6, 4, 2, "sglang")
+
+    def test_observed_load_preferred_over_request_count(self):
+        cache = DualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        handler.observed_load_enabled = True
+        deployment = _make_deployment("observed-deployment")
+        dep_id = str(deployment["model_info"]["id"])
+        load_key, _ = handler._get_load_key_for_deployment(deployment)
+        request_key = handler._get_request_count_cache_key(MG, dep_id, load_key)
+        observed_key = handler._get_observed_load_cache_key(load_key)
+        cache.set_cache(key=request_key, value=99, ttl=600)
+        cache.set_cache(key=observed_key, value=5, ttl=15)
+
+        request_counts = handler._get_request_counts(MG, [deployment])
+
+        assert request_counts[dep_id] == 5
+
+    def test_observed_load_falls_back_to_request_count_when_missing(self):
+        cache = DualCache()
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=cache)
+        handler.observed_load_enabled = True
+        deployment = _make_deployment("fallback-deployment")
+        dep_id = str(deployment["model_info"]["id"])
+        load_key, _ = handler._get_load_key_for_deployment(deployment)
+        request_key = handler._get_request_count_cache_key(MG, dep_id, load_key)
+        cache.set_cache(key=request_key, value=9, ttl=600)
+
+        request_counts = handler._get_request_counts(MG, [deployment])
+
+        assert request_counts[dep_id] == 9
+
+    def test_model_list_sync_prunes_removed_backends(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        handler.observed_load_enabled = True
+        deployment = _make_deployment("active-deployment")
+        active_load_key, _ = handler._get_load_key_for_deployment(deployment)
+        handler._observed_load_backends = {"backend:removed": "http://removed-node:8000/v1"}
+        handler._observed_load_backend_last_seen = {"backend:removed": 1}
+        handler._observed_load_last_error_log = {"backend:removed": 1}
+        handler._observed_load_success_logged = {"backend:removed": True}
+
+        handler._sync_observed_load_backends_from_model_list([deployment])
+
+        assert handler._observed_load_backends == {
+            active_load_key: deployment["litellm_params"]["api_base"]
+        }
+        assert "backend:removed" not in handler._observed_load_backend_last_seen
+        assert "backend:removed" not in handler._observed_load_last_error_log
+        assert "backend:removed" not in handler._observed_load_success_logged
+
+    def test_observed_load_sync_runs_without_redis_lock(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+
+        assert handler._should_run_observed_load_sync() is True
 
 
 class TestPrometheusMetrics:

@@ -24,7 +24,13 @@ Independent from the base handler: own singleton, own Prometheus metric names
 """
 
 import hashlib
+import os
 import random
+import socket
+import threading
+import time
+import urllib.parse
+import urllib.request
 from bisect import bisect_right
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -55,6 +61,13 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         imbalance_threshold: float = 1.5,
         virtual_nodes: int = 150,
         cache_ttl: int = 600,
+        observed_load_enabled: bool = False,
+        observed_load_poll_interval: float = 5.0,
+        observed_load_ttl: int = 15,
+        observed_load_timeout: float = 1.0,
+        observed_load_waiting_weight: float = 1.0,
+        dynamic_imbalance_thresholds: Optional[Dict[Union[int, str], float]] = None,
+        model_list: Optional[List[Dict]] = None,
     ):
         """
         Singleton: return existing instance if one exists.
@@ -79,6 +92,13 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         imbalance_threshold: float = 1.5,
         virtual_nodes: int = 150,
         cache_ttl: int = 600,
+        observed_load_enabled: bool = False,
+        observed_load_poll_interval: float = 5.0,
+        observed_load_ttl: int = 15,
+        observed_load_timeout: float = 1.0,
+        observed_load_waiting_weight: float = 1.0,
+        dynamic_imbalance_thresholds: Optional[Dict[Union[int, str], float]] = None,
+        model_list: Optional[List[Dict]] = None,
     ):
         """
         Args:
@@ -92,13 +112,42 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         if hasattr(self, "_initialized") and self._initialized:
             # Always update router_cache (may point to a new Router's cache)
             self.router_cache = router_cache
+            self.imbalance_threshold = imbalance_threshold
+            self.dynamic_imbalance_thresholds = self._normalize_dynamic_imbalance_thresholds(
+                dynamic_imbalance_thresholds
+            )
+            self._configure_observed_load(
+                observed_load_enabled,
+                observed_load_poll_interval,
+                observed_load_ttl,
+                observed_load_timeout,
+                observed_load_waiting_weight,
+            )
+            self._sync_observed_load_backends_from_model_list(model_list)
             return
 
         self._initialized = True
         self.router_cache = router_cache
         self.imbalance_threshold = imbalance_threshold
+        self.dynamic_imbalance_thresholds = self._normalize_dynamic_imbalance_thresholds(
+            dynamic_imbalance_thresholds
+        )
         self.virtual_nodes = virtual_nodes
         self.cache_ttl = cache_ttl
+        self.observed_load_enabled = False
+        self.observed_load_poll_interval = 5.0
+        self.observed_load_ttl = 15
+        self.observed_load_timeout = 1.0
+        self.observed_load_waiting_weight = 1.0
+        self._observed_load_backends: Dict[str, str] = {}
+        self._observed_load_backend_last_seen: Dict[str, float] = {}
+        self._observed_load_lock = threading.Lock()
+        self._observed_load_sync_thread: Optional[threading.Thread] = None
+        self._observed_load_last_error_log: Dict[str, float] = {}
+        self._observed_load_success_logged: Dict[str, bool] = {}
+        self._observed_load_sync_owner = f"{socket.gethostname()}:{os.getpid()}:{id(self)}"
+        self._observed_load_sync_lease_ttl = 15
+        self._observed_load_is_leader = False
 
         # Streaming dedup: track which litellm_call_ids we've already incremented.
         # log_pre_api_call fires for every SSE chunk in streaming - only increment once.
@@ -121,7 +170,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
 
         # Prometheus metrics (lazy init — no-op if prometheus_client not installed)
         try:
-            from prometheus_client import Counter, Gauge
+            from prometheus_client import Counter, Gauge, Histogram
 
             self._routing_decisions = Counter(
                 "litellm_sticky_weighted_routing_decisions_total",
@@ -178,6 +227,11 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 "Load threshold above which a sticky deployment is overridden",
                 ["model_group"],
             )
+            self._effective_imbalance_threshold = Gauge(
+                "litellm_sticky_weighted_effective_imbalance_threshold",
+                "Effective imbalance threshold chosen for a model group by healthy deployment count",
+                ["model_group"],
+            )
             self._counter_resets = Counter(
                 "litellm_sticky_weighted_counter_resets_total",
                 "Negative in-flight counters reset to zero",
@@ -187,6 +241,35 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 "litellm_sticky_weighted_counter_events_total",
                 "In-flight counter bookkeeping events",
                 ["action", "result", "load_key_source"],
+            )
+            self._observed_backend_load = Gauge(
+                "litellm_sticky_weighted_observed_backend_load",
+                "Inference-engine observed backend load used by sticky routing",
+                ["load_key", "source"],
+            )
+            self._observed_load_sync_events = Counter(
+                "litellm_sticky_weighted_observed_load_sync_events_total",
+                "Observed backend load sync events",
+                ["result", "source"],
+            )
+            self._observed_load_sync_leader = Gauge(
+                "litellm_sticky_weighted_observed_load_sync_leader",
+                "Whether this LiteLLM pod currently owns the observed-load sync lease",
+            )
+            self._observed_load_registered_backends = Gauge(
+                "litellm_sticky_weighted_observed_load_registered_backends",
+                "Backends currently registered for observed-load scraping in this LiteLLM pod",
+            )
+            self._observed_load_scrape_duration = Histogram(
+                "litellm_sticky_weighted_observed_load_scrape_duration_seconds",
+                "Observed-load metrics scrape duration by result and inference engine",
+                ["result", "source"],
+                buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+            )
+            self._routing_load_source = Counter(
+                "litellm_sticky_weighted_routing_load_source_total",
+                "Load source used by sticky weighted routing",
+                ["model_group", "source", "load_key_source"],
             )
         except ValueError:
             # Already registered by another handler instance — reuse from registry
@@ -209,8 +292,29 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             self._normalized_load = REGISTRY._names_to_collectors.get("litellm_sticky_weighted_normalized_load")
             self._reference_load = REGISTRY._names_to_collectors.get("litellm_sticky_weighted_reference_load")
             self._threshold_load = REGISTRY._names_to_collectors.get("litellm_sticky_weighted_threshold_load")
+            self._effective_imbalance_threshold = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_weighted_effective_imbalance_threshold"
+            )
             self._counter_resets = REGISTRY._names_to_collectors.get("litellm_sticky_weighted_counter_resets_total")
             self._counter_events = REGISTRY._names_to_collectors.get("litellm_sticky_weighted_counter_events_total")
+            self._observed_backend_load = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_weighted_observed_backend_load"
+            )
+            self._observed_load_sync_events = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_weighted_observed_load_sync_events_total"
+            )
+            self._observed_load_sync_leader = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_weighted_observed_load_sync_leader"
+            )
+            self._observed_load_registered_backends = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_weighted_observed_load_registered_backends"
+            )
+            self._observed_load_scrape_duration = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_weighted_observed_load_scrape_duration_seconds"
+            )
+            self._routing_load_source = REGISTRY._names_to_collectors.get(
+                "litellm_sticky_weighted_routing_load_source_total"
+            )
             # Guard against partial registration — if any lookup returned None,
             # fall back to NoOpMetric to avoid AttributeError on .labels().inc()
             metrics = (
@@ -225,8 +329,15 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 self._normalized_load,
                 self._reference_load,
                 self._threshold_load,
+                self._effective_imbalance_threshold,
                 self._counter_resets,
                 self._counter_events,
+                self._observed_backend_load,
+                self._observed_load_sync_events,
+                self._observed_load_sync_leader,
+                self._observed_load_registered_backends,
+                self._observed_load_scrape_duration,
+                self._routing_load_source,
             )
             if not all(metrics):
                 from litellm.types.integrations.prometheus import NoOpMetric
@@ -242,8 +353,17 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 self._normalized_load = self._normalized_load or NoOpMetric()
                 self._reference_load = self._reference_load or NoOpMetric()
                 self._threshold_load = self._threshold_load or NoOpMetric()
+                self._effective_imbalance_threshold = self._effective_imbalance_threshold or NoOpMetric()
                 self._counter_resets = self._counter_resets or NoOpMetric()
                 self._counter_events = self._counter_events or NoOpMetric()
+                self._observed_backend_load = self._observed_backend_load or NoOpMetric()
+                self._observed_load_sync_events = self._observed_load_sync_events or NoOpMetric()
+                self._observed_load_sync_leader = self._observed_load_sync_leader or NoOpMetric()
+                self._observed_load_registered_backends = (
+                    self._observed_load_registered_backends or NoOpMetric()
+                )
+                self._observed_load_scrape_duration = self._observed_load_scrape_duration or NoOpMetric()
+                self._routing_load_source = self._routing_load_source or NoOpMetric()
         except Exception:
             from litellm.types.integrations.prometheus import NoOpMetric
 
@@ -258,14 +378,34 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             self._normalized_load = NoOpMetric()
             self._reference_load = NoOpMetric()
             self._threshold_load = NoOpMetric()
+            self._effective_imbalance_threshold = NoOpMetric()
             self._counter_resets = NoOpMetric()
             self._counter_events = NoOpMetric()
+            self._observed_backend_load = NoOpMetric()
+            self._observed_load_sync_events = NoOpMetric()
+            self._observed_load_sync_leader = NoOpMetric()
+            self._observed_load_registered_backends = NoOpMetric()
+            self._observed_load_scrape_duration = NoOpMetric()
+            self._routing_load_source = NoOpMetric()
+
+        self._configure_observed_load(
+            observed_load_enabled,
+            observed_load_poll_interval,
+            observed_load_ttl,
+            observed_load_timeout,
+            observed_load_waiting_weight,
+        )
+        self._sync_observed_load_backends_from_model_list(model_list)
 
         verbose_router_logger.info(
             f"[StickyLeastBusyWeighted INIT] Initialized with "
             f"imbalance_threshold={imbalance_threshold}, "
+            f"dynamic_imbalance_thresholds={self.dynamic_imbalance_thresholds}, "
             f"virtual_nodes={virtual_nodes}, "
-            f"cache_ttl={cache_ttl}s"
+            f"cache_ttl={cache_ttl}s, "
+            f"observed_load_enabled={self.observed_load_enabled}, "
+            f"observed_load_poll_interval={self.observed_load_poll_interval}s, "
+            f"observed_load_ttl={self.observed_load_ttl}s"
         )
 
     # =========================================================================
@@ -446,6 +586,350 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         if load_key is None:
             load_key = f"deployment:{deployment_id}"
         return f"sticky_lb_weighted:load:{load_key}:request_count"
+
+    def _get_observed_load_cache_key(self, load_key: str) -> str:
+        return f"sticky_lb_weighted:observed_load:{load_key}"
+
+    @staticmethod
+    def _coerce_positive_float(value: object, default: float, minimum: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed >= minimum else minimum
+
+    @staticmethod
+    def _coerce_positive_int(value: object, default: int, minimum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed >= minimum else minimum
+
+    @staticmethod
+    def _normalize_dynamic_imbalance_thresholds(
+        thresholds: Optional[Dict[Union[int, str], float]]
+    ) -> Dict[int, float]:
+        if not isinstance(thresholds, dict):
+            return {}
+
+        normalized_thresholds: Dict[int, float] = {}
+        for raw_count, raw_threshold in thresholds.items():
+            try:
+                deployment_count = int(raw_count)
+                threshold = float(raw_threshold)
+            except (TypeError, ValueError):
+                continue
+            if deployment_count > 0 and threshold > 0:
+                normalized_thresholds[deployment_count] = threshold
+        return normalized_thresholds
+
+    def _imbalance_threshold_for_deployment_count(self, deployment_count: int) -> float:
+        return self.dynamic_imbalance_thresholds.get(deployment_count, self.imbalance_threshold)
+
+    def _configure_observed_load(
+        self,
+        enabled: bool,
+        poll_interval: float,
+        ttl: int,
+        timeout: float,
+        waiting_weight: float,
+    ) -> None:
+        self.observed_load_enabled = bool(enabled)
+        self.observed_load_poll_interval = self._coerce_positive_float(poll_interval, 5.0, 1.0)
+        self.observed_load_ttl = self._coerce_positive_int(ttl, 15, 1)
+        self.observed_load_timeout = self._coerce_positive_float(timeout, 1.0, 0.1)
+        self.observed_load_waiting_weight = self._coerce_positive_float(waiting_weight, 1.0, 0.0)
+        self._observed_load_sync_lease_ttl = max(
+            int(self.observed_load_poll_interval * 3),
+            self.observed_load_ttl,
+            10,
+        )
+        if self.observed_load_enabled:
+            self._start_observed_load_sync_thread()
+
+    def _start_observed_load_sync_thread(self) -> None:
+        existing_thread = self._observed_load_sync_thread
+        if existing_thread is not None and existing_thread.is_alive():
+            return
+
+        thread = threading.Thread(
+            target=self._observed_load_sync_loop,
+            name="sticky-weighted-observed-load-sync",
+            daemon=True,
+        )
+        self._observed_load_sync_thread = thread
+        thread.start()
+        verbose_router_logger.info(
+            f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=start_sync_thread "
+            f"poll_interval={self.observed_load_poll_interval}s, "
+            f"ttl={self.observed_load_ttl}s, timeout={self.observed_load_timeout}s"
+        )
+
+    def _observed_load_sync_loop(self) -> None:
+        while self.observed_load_enabled:
+            if not self._should_run_observed_load_sync():
+                time.sleep(self.observed_load_poll_interval)
+                continue
+
+            with self._observed_load_lock:
+                now = time.time()
+                stale_after = max(self.observed_load_ttl * 4, int(self.observed_load_poll_interval * 3), 60)
+                stale_load_keys = [
+                    load_key
+                    for load_key, last_seen in self._observed_load_backend_last_seen.items()
+                    if now - last_seen > stale_after
+                ]
+                for load_key in stale_load_keys:
+                    self._observed_load_backends.pop(load_key, None)
+                    self._observed_load_backend_last_seen.pop(load_key, None)
+                    self._observed_load_last_error_log.pop(load_key, None)
+                    self._observed_load_success_logged.pop(load_key, None)
+                backends = list(self._observed_load_backends.items())
+                self._observed_load_registered_backends.set(len(backends))
+
+            for load_key, api_base in backends:
+                if not self.observed_load_enabled:
+                    break
+                self._sync_observed_load_for_backend(load_key, api_base)
+
+            time.sleep(self.observed_load_poll_interval)
+
+    def _get_observed_load_sync_lock_key(self) -> str:
+        return "sticky_lb_weighted:observed_load_sync:lock"
+
+    def _should_run_observed_load_sync(self) -> bool:
+        redis_cache = self.router_cache.redis_cache
+        if (
+            redis_cache is None
+            or not hasattr(redis_cache, "redis_client")
+            or redis_cache.redis_client is None
+        ):
+            self._set_observed_load_leader_state(True, "redis_not_configured")
+            return True
+
+        lock_key = redis_cache.check_and_fix_namespace(key=self._get_observed_load_sync_lock_key())
+        redis_client = redis_cache.redis_client
+        try:
+            acquired = redis_client.set(
+                name=lock_key,
+                value=self._observed_load_sync_owner,
+                ex=self._observed_load_sync_lease_ttl,
+                nx=True,
+            )
+            if acquired:
+                self._set_observed_load_leader_state(True, "acquired")
+                return True
+
+            current_owner = redis_client.get(lock_key)
+            if isinstance(current_owner, bytes):
+                current_owner = current_owner.decode("utf-8", errors="replace")
+            if current_owner == self._observed_load_sync_owner:
+                redis_client.expire(lock_key, self._observed_load_sync_lease_ttl)
+                self._set_observed_load_leader_state(True, "renewed")
+                return True
+
+            self._set_observed_load_leader_state(False, "held_by_other")
+            return False
+        except Exception as exc:
+            self._observed_load_sync_events.labels("lock_error", "leader_lock").inc()
+            self._set_observed_load_leader_state(True, "lock_error")
+            verbose_router_logger.warning(
+                f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=lock_error "
+                f"lock_key={lock_key}, error={exc}, fallback=local_sync"
+            )
+            return True
+
+    def _set_observed_load_leader_state(self, is_leader: bool, reason: str) -> None:
+        self._observed_load_sync_leader.set(1 if is_leader else 0)
+        if self._observed_load_is_leader == is_leader:
+            return
+        self._observed_load_is_leader = is_leader
+        verbose_router_logger.info(
+            f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=leader_state "
+            f"is_leader={is_leader}, reason={reason}, "
+            f"owner={self._observed_load_sync_owner}, "
+            f"lease_ttl={self._observed_load_sync_lease_ttl}s"
+        )
+
+    @classmethod
+    def _metrics_url_from_api_base(cls, api_base: object) -> Optional[str]:
+        normalized_api_base = cls._normalize_load_key_part(api_base)
+        if normalized_api_base is None:
+            return None
+
+        if "://" not in normalized_api_base:
+            normalized_api_base = f"http://{normalized_api_base}"
+
+        parsed = urllib.parse.urlparse(normalized_api_base)
+        if not parsed.scheme or not parsed.netloc:
+            return None
+
+        return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "/metrics", "", "", ""))
+
+    def _register_observed_load_backend(
+        self,
+        deployment: dict,
+        load_key: Optional[str],
+        load_key_source: str,
+    ) -> None:
+        if not self.observed_load_enabled or load_key is None:
+            return
+        if load_key_source not in ("backend_model_api_base", "explicit"):
+            return
+
+        litellm_params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+        api_base = litellm_params.get("api_base") if isinstance(litellm_params, dict) else None
+        metrics_url = self._metrics_url_from_api_base(api_base)
+        if metrics_url is None:
+            return
+
+        with self._observed_load_lock:
+            self._observed_load_backend_last_seen[load_key] = time.time()
+            existing_api_base = self._observed_load_backends.get(load_key)
+            if existing_api_base == api_base:
+                self._observed_load_registered_backends.set(len(self._observed_load_backends))
+                return
+            self._observed_load_backends[load_key] = str(api_base)
+            self._observed_load_registered_backends.set(len(self._observed_load_backends))
+
+        verbose_router_logger.info(
+            f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=register_backend "
+            f"load_key={self._format_load_key(load_key)}, "
+            f"load_key_source={load_key_source}, metrics_url={metrics_url}"
+        )
+
+    def _sync_observed_load_backends_from_model_list(self, model_list: Optional[List[Dict]]) -> None:
+        if not self.observed_load_enabled or model_list is None:
+            return
+
+        active_backends: Dict[str, str] = {}
+        active_last_seen: Dict[str, float] = {}
+        now = time.time()
+        for deployment in model_list:
+            load_key, load_key_source = self._get_load_key_for_deployment(deployment)
+            if load_key is None or load_key_source not in ("backend_model_api_base", "explicit"):
+                continue
+
+            litellm_params = deployment.get("litellm_params") if isinstance(deployment, dict) else None
+            api_base = litellm_params.get("api_base") if isinstance(litellm_params, dict) else None
+            if self._metrics_url_from_api_base(api_base) is None:
+                continue
+
+            active_backends[load_key] = str(api_base)
+            active_last_seen[load_key] = now
+
+        with self._observed_load_lock:
+            removed_load_keys = set(self._observed_load_backends) - set(active_backends)
+            self._observed_load_backends = active_backends
+            self._observed_load_backend_last_seen = active_last_seen
+            for load_key in removed_load_keys:
+                self._observed_load_last_error_log.pop(load_key, None)
+                self._observed_load_success_logged.pop(load_key, None)
+            self._observed_load_registered_backends.set(len(active_backends))
+
+        verbose_router_logger.info(
+            f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=sync_backends_from_model_list "
+            f"active_backends={len(active_backends)}, removed_backends={len(removed_load_keys)}"
+        )
+
+    @staticmethod
+    def _metric_values(metrics_text: str, metric_name: str) -> List[float]:
+        values = []
+        for line in metrics_text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if not (line.startswith(f"{metric_name}{{") or line.startswith(f"{metric_name} ")):
+                continue
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            try:
+                values.append(float(fields[1]))
+            except ValueError:
+                continue
+        return values
+
+    def _parse_observed_load(self, metrics_text: str) -> Optional[Tuple[int, int, int, str]]:
+        vllm_running_values = self._metric_values(metrics_text, "vllm:num_requests_running")
+        vllm_waiting_values = self._metric_values(metrics_text, "vllm:num_requests_waiting")
+        if vllm_running_values or vllm_waiting_values:
+            running = int(sum(vllm_running_values))
+            waiting = int(sum(vllm_waiting_values))
+            load = int(max(0, round(running + self.observed_load_waiting_weight * waiting)))
+            return load, running, waiting, "vllm"
+
+        sglang_running_values = self._metric_values(metrics_text, "sglang:num_running_reqs")
+        sglang_waiting_values = self._metric_values(metrics_text, "sglang:num_queue_reqs")
+        if sglang_running_values or sglang_waiting_values:
+            running = int(max(sglang_running_values, default=0))
+            waiting = int(max(sglang_waiting_values, default=0))
+            load = int(max(0, round(running + self.observed_load_waiting_weight * waiting)))
+            return load, running, waiting, "sglang"
+
+        return None
+
+    def _log_observed_load_sync_failure(
+        self,
+        load_key: str,
+        metrics_url: Optional[str],
+        result: str,
+        error: object,
+    ) -> None:
+        now = time.time()
+        previous_log_time = self._observed_load_last_error_log.get(load_key, 0)
+        if now - previous_log_time < 60:
+            return
+        self._observed_load_last_error_log[load_key] = now
+        verbose_router_logger.warning(
+            f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=sync_failed "
+            f"result={result}, load_key={self._format_load_key(load_key)}, "
+            f"metrics_url={metrics_url}, error={error}"
+        )
+
+    def _sync_observed_load_for_backend(self, load_key: str, api_base: str) -> None:
+        start_time = time.time()
+        metrics_url = self._metrics_url_from_api_base(api_base)
+        if metrics_url is None:
+            self._observed_load_sync_events.labels("invalid_url", "unknown").inc()
+            self._observed_load_scrape_duration.labels("invalid_url", "unknown").observe(time.time() - start_time)
+            self._log_observed_load_sync_failure(load_key, metrics_url, "invalid_url", api_base)
+            return
+
+        try:
+            request = urllib.request.Request(metrics_url, headers={"User-Agent": "litellm-sticky-weighted"})
+            with urllib.request.urlopen(request, timeout=self.observed_load_timeout) as response:
+                metrics_text = response.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            self._observed_load_sync_events.labels("failed_fetch", "unknown").inc()
+            self._observed_load_scrape_duration.labels("failed_fetch", "unknown").observe(time.time() - start_time)
+            self._log_observed_load_sync_failure(load_key, metrics_url, "failed_fetch", exc)
+            return
+
+        parsed_load = self._parse_observed_load(metrics_text)
+        if parsed_load is None:
+            self._observed_load_sync_events.labels("failed_parse", "unknown").inc()
+            self._observed_load_scrape_duration.labels("failed_parse", "unknown").observe(time.time() - start_time)
+            self._log_observed_load_sync_failure(load_key, metrics_url, "failed_parse", "missing_load_metrics")
+            return
+
+        load, running, waiting, source = parsed_load
+        cache_key = self._get_observed_load_cache_key(load_key)
+        self.router_cache.set_cache(key=cache_key, value=load, ttl=self.observed_load_ttl)
+        self._observed_backend_load.labels(load_key, source).set(load)
+        self._observed_load_sync_events.labels("success", source).inc()
+        self._observed_load_scrape_duration.labels("success", source).observe(time.time() - start_time)
+
+        if not self._observed_load_success_logged.get(load_key, False):
+            self._observed_load_success_logged[load_key] = True
+            verbose_router_logger.info(
+                f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=sync_success "
+                f"load_key={self._format_load_key(load_key)}, cache_key={cache_key}, "
+                f"source={source}, running={running}, waiting={waiting}, "
+                f"observed_load={load}, ttl={self.observed_load_ttl}s, "
+                f"metrics_url={metrics_url}"
+            )
 
     @staticmethod
     def _normalize_load_key_part(value: object) -> Optional[str]:
@@ -1266,11 +1750,26 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
             load_key, load_key_source = self._get_load_key_for_deployment(d)
+            self._register_observed_load_backend(d, load_key, load_key_source)
             cache_key = self._get_request_count_cache_key(model_group, dep_id, load_key)
-            count = self.router_cache.get_cache(key=cache_key, redis_only=True)
+            observed_cache_key = self._get_observed_load_cache_key(load_key) if load_key is not None else None
+            observed_count = (
+                self.router_cache.get_cache(key=observed_cache_key, redis_only=True)
+                if self.observed_load_enabled and observed_cache_key is not None
+                else None
+            )
+            request_count = None
+            count_source = "observed_load"
+            count = observed_count
+            if count is None:
+                count_source = "request_count"
+                request_count = self.router_cache.get_cache(key=cache_key, redis_only=True)
+                count = request_count
             if count is None:
                 none_count += 1
             normalized_count = max(0, int(count)) if count is not None else 0
+            metric_count_source = count_source if count is not None else "default_zero"
+            self._routing_load_source.labels(model_group, metric_count_source, load_key_source).inc()
             result[dep_id] = normalized_count
             if load_key is not None:
                 self._routing_redis_count_by_load_key.labels(load_key, load_key_source).set(normalized_count)
@@ -1279,8 +1778,10 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 f"model_group={model_group}, deployment_id={dep_id}, "
                 f"load_key={self._format_load_key(load_key)}, "
                 f"load_key_source={load_key_source}, "
-                f"cache_key={cache_key}, redis_only=True, "
+                f"cache_key={cache_key}, observed_cache_key={observed_cache_key}, "
+                f"count_source={count_source}, redis_only=True, "
                 f"redis_configured={self._is_redis_configured()}, "
+                f"observed_count={observed_count}, request_count={request_count}, "
                 f"raw_count={count}, normalized_count={normalized_count}"
             )
 
@@ -1302,11 +1803,26 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             if isinstance(dep_id, int):
                 dep_id = str(dep_id)
             load_key, load_key_source = self._get_load_key_for_deployment(d)
+            self._register_observed_load_backend(d, load_key, load_key_source)
             cache_key = self._get_request_count_cache_key(model_group, dep_id, load_key)
-            count = await self.router_cache.async_get_cache(key=cache_key, redis_only=True)
+            observed_cache_key = self._get_observed_load_cache_key(load_key) if load_key is not None else None
+            observed_count = (
+                await self.router_cache.async_get_cache(key=observed_cache_key, redis_only=True)
+                if self.observed_load_enabled and observed_cache_key is not None
+                else None
+            )
+            request_count = None
+            count_source = "observed_load"
+            count = observed_count
+            if count is None:
+                count_source = "request_count"
+                request_count = await self.router_cache.async_get_cache(key=cache_key, redis_only=True)
+                count = request_count
             if count is None:
                 none_count += 1
             normalized_count = max(0, int(count)) if count is not None else 0
+            metric_count_source = count_source if count is not None else "default_zero"
+            self._routing_load_source.labels(model_group, metric_count_source, load_key_source).inc()
             result[dep_id] = normalized_count
             if load_key is not None:
                 self._routing_redis_count_by_load_key.labels(load_key, load_key_source).set(normalized_count)
@@ -1315,8 +1831,10 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 f"model_group={model_group}, deployment_id={dep_id}, "
                 f"load_key={self._format_load_key(load_key)}, "
                 f"load_key_source={load_key_source}, "
-                f"cache_key={cache_key}, redis_only=True, "
+                f"cache_key={cache_key}, observed_cache_key={observed_cache_key}, "
+                f"count_source={count_source}, redis_only=True, "
                 f"redis_configured={self._is_redis_configured()}, "
+                f"observed_count={observed_count}, request_count={request_count}, "
                 f"raw_count={count}, normalized_count={normalized_count}"
             )
 
@@ -1432,7 +1950,8 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         # rebalance.
         reference_load = (avg_load + min_load) / 2
         effective_reference = max(reference_load, 1.0)
-        threshold_value = self.imbalance_threshold * effective_reference
+        effective_imbalance_threshold = self._imbalance_threshold_for_deployment_count(len(dep_ids))
+        threshold_value = effective_imbalance_threshold * effective_reference
 
         current_dep_ids = frozenset(dep_ids)
         for did in previous_dep_ids - current_dep_ids:
@@ -1444,6 +1963,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         self._healthy_deployments_count.labels(model_group).set(len(dep_ids))
         self._reference_load.labels(model_group).set(reference_load)
         self._threshold_load.labels(model_group).set(threshold_value)
+        self._effective_imbalance_threshold.labels(model_group).set(effective_imbalance_threshold)
 
         # --- Log node status overview (raw count, weight, and normalized load) ---
         node_summary = ", ".join(
@@ -1469,7 +1989,9 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             f"avg_norm_load={avg_load:.2f}, "
             f"min_norm_load={min_load:.2f}, "
             f"reference_load={reference_load:.2f}, "
-            f"imbalance_threshold={self.imbalance_threshold}, "
+            f"imbalance_threshold={effective_imbalance_threshold}, "
+            f"base_imbalance_threshold={self.imbalance_threshold}, "
+            f"dynamic_imbalance_thresholds={self.dynamic_imbalance_thresholds}, "
             f"loads_per_deployment=[{node_summary}], "
             f"imbalance_ratios=[{', '.join(imbalance_ratios)}]"
         )
@@ -1493,7 +2015,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                     f"effective_reference={effective_reference:.2f}, "
                     f"threshold_value={threshold_value:.2f}, "
                     f"current_imbalance_ratio={current_ratio:.2f}x "
-                    f"(threshold_ratio={self.imbalance_threshold}x)"
+                    f"(threshold_ratio={effective_imbalance_threshold}x)"
                 )
 
                 if preferred_eff < threshold_value:
@@ -1513,7 +2035,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                         f"[StickyLeastBusyWeighted STICKY-OVERRIDE] model_group={model_group}, "
                         f"preferred_deployment={preferred_id} OVERLOADED, "
                         f"norm_load={preferred_eff:.2f} exceeds threshold={threshold_value:.2f}, "
-                        f"imbalance_ratio={current_ratio:.2f}x > {self.imbalance_threshold}x, "
+                        f"imbalance_ratio={current_ratio:.2f}x > {effective_imbalance_threshold}x, "
                         f"falling_back_to=least_busy"
                     )
                     self._routing_decisions.labels(model_group, preferred_id, "override", "consistent_hashing").inc()
