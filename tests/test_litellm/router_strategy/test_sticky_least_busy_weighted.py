@@ -560,6 +560,34 @@ sglang:num_queue_reqs{rank="1"} 2
         }
         assert removed_load_key not in handler._observed_load_backend_last_seen
 
+    def test_empty_initial_model_list_does_not_block_request_registration(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        handler.observed_load_enabled = True
+        deployment = _make_deployment("request-discovered-deployment")
+        load_key, load_key_source = handler._get_load_key_for_deployment(deployment)
+
+        handler._sync_observed_load_backends_from_model_list([])
+        handler._register_observed_load_backend(deployment, load_key, load_key_source)
+
+        assert handler._observed_load_model_list_synced is False
+        assert handler._observed_load_backends == {
+            load_key: deployment["litellm_params"]["api_base"]
+        }
+
+    def test_empty_model_list_prunes_after_authoritative_sync(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        handler.observed_load_enabled = True
+        deployment = _make_deployment("removed-deployment")
+        load_key, load_key_source = handler._get_load_key_for_deployment(deployment)
+
+        handler._sync_observed_load_backends_from_model_list([deployment])
+        handler._sync_observed_load_backends_from_model_list([])
+        handler._register_observed_load_backend(deployment, load_key, load_key_source)
+
+        assert handler._observed_load_model_list_synced is True
+        assert handler._observed_load_backends == {}
+        assert load_key not in handler._observed_load_backend_last_seen
+
     def test_observed_load_sync_runs_without_redis_lock(self):
         handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
 

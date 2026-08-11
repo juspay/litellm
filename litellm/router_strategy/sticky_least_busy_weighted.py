@@ -829,6 +829,15 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             active_last_seen[load_key] = now
 
         with self._observed_load_lock:
+            if not active_backends and not self._observed_load_model_list_synced:
+                self._observed_load_registered_backends.set(len(self._observed_load_backends))
+                verbose_router_logger.info(
+                    f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=sync_backends_from_model_list "
+                    f"active_backends=0, removed_backends=0, status=deferred_empty_model_list, "
+                    f"registered_backends={len(self._observed_load_backends)}"
+                )
+                return
+
             removed_load_keys = set(self._observed_load_backends) - set(active_backends)
             self._observed_load_backends = active_backends
             self._observed_load_model_list_load_keys = set(active_backends)
