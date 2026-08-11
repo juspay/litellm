@@ -32,7 +32,7 @@ import time
 import urllib.parse
 import urllib.request
 from bisect import bisect_right
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
@@ -141,6 +141,8 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         self.observed_load_waiting_weight = 1.0
         self._observed_load_backends: Dict[str, str] = {}
         self._observed_load_backend_last_seen: Dict[str, float] = {}
+        self._observed_load_model_list_load_keys: Set[str] = set()
+        self._observed_load_model_list_synced = False
         self._observed_load_lock = threading.Lock()
         self._observed_load_sync_thread: Optional[threading.Thread] = None
         self._observed_load_last_error_log: Dict[str, float] = {}
@@ -672,21 +674,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 time.sleep(self.observed_load_poll_interval)
                 continue
 
-            with self._observed_load_lock:
-                now = time.time()
-                stale_after = max(self.observed_load_ttl * 4, int(self.observed_load_poll_interval * 3), 60)
-                stale_load_keys = [
-                    load_key
-                    for load_key, last_seen in self._observed_load_backend_last_seen.items()
-                    if now - last_seen > stale_after
-                ]
-                for load_key in stale_load_keys:
-                    self._observed_load_backends.pop(load_key, None)
-                    self._observed_load_backend_last_seen.pop(load_key, None)
-                    self._observed_load_last_error_log.pop(load_key, None)
-                    self._observed_load_success_logged.pop(load_key, None)
-                backends = list(self._observed_load_backends.items())
-                self._observed_load_registered_backends.set(len(backends))
+            backends = self._get_observed_load_backends_for_sync()
 
             for load_key, api_base in backends:
                 if not self.observed_load_enabled:
@@ -694,6 +682,25 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 self._sync_observed_load_for_backend(load_key, api_base)
 
             time.sleep(self.observed_load_poll_interval)
+
+    def _get_observed_load_backends_for_sync(self) -> List[Tuple[str, str]]:
+        with self._observed_load_lock:
+            now = time.time()
+            stale_after = max(self.observed_load_ttl * 4, int(self.observed_load_poll_interval * 3), 60)
+            stale_load_keys = [
+                load_key
+                for load_key in self._observed_load_backends
+                if load_key not in self._observed_load_model_list_load_keys
+                and now - self._observed_load_backend_last_seen.get(load_key, 0) > stale_after
+            ]
+            for load_key in stale_load_keys:
+                self._observed_load_backends.pop(load_key, None)
+                self._observed_load_backend_last_seen.pop(load_key, None)
+                self._observed_load_last_error_log.pop(load_key, None)
+                self._observed_load_success_logged.pop(load_key, None)
+            backends = list(self._observed_load_backends.items())
+            self._observed_load_registered_backends.set(len(backends))
+            return backends
 
     def _get_observed_load_sync_lock_key(self) -> str:
         return "sticky_lb_weighted:observed_load_sync:lock"
@@ -785,9 +792,11 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             return
 
         with self._observed_load_lock:
+            if self._observed_load_model_list_synced and load_key not in self._observed_load_model_list_load_keys:
+                return
             self._observed_load_backend_last_seen[load_key] = time.time()
             existing_api_base = self._observed_load_backends.get(load_key)
-            if existing_api_base == api_base:
+            if existing_api_base == str(api_base):
                 self._observed_load_registered_backends.set(len(self._observed_load_backends))
                 return
             self._observed_load_backends[load_key] = str(api_base)
@@ -822,7 +831,12 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         with self._observed_load_lock:
             removed_load_keys = set(self._observed_load_backends) - set(active_backends)
             self._observed_load_backends = active_backends
-            self._observed_load_backend_last_seen = active_last_seen
+            self._observed_load_model_list_load_keys = set(active_backends)
+            self._observed_load_model_list_synced = True
+            self._observed_load_backend_last_seen = {
+                load_key: self._observed_load_backend_last_seen.get(load_key, active_last_seen[load_key])
+                for load_key in active_backends
+            }
             for load_key in removed_load_keys:
                 self._observed_load_last_error_log.pop(load_key, None)
                 self._observed_load_success_logged.pop(load_key, None)

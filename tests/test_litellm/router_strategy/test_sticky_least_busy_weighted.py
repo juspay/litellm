@@ -494,6 +494,7 @@ sglang:num_queue_reqs{rank="1"} 2
         active_load_key, _ = handler._get_load_key_for_deployment(deployment)
         handler._observed_load_backends = {"backend:removed": "http://removed-node:8000/v1"}
         handler._observed_load_backend_last_seen = {"backend:removed": 1}
+        handler._observed_load_model_list_load_keys = {"backend:removed"}
         handler._observed_load_last_error_log = {"backend:removed": 1}
         handler._observed_load_success_logged = {"backend:removed": True}
 
@@ -503,8 +504,61 @@ sglang:num_queue_reqs{rank="1"} 2
             active_load_key: deployment["litellm_params"]["api_base"]
         }
         assert "backend:removed" not in handler._observed_load_backend_last_seen
+        assert handler._observed_load_model_list_load_keys == {active_load_key}
         assert "backend:removed" not in handler._observed_load_last_error_log
         assert "backend:removed" not in handler._observed_load_success_logged
+
+    def test_model_list_backend_is_not_pruned_when_last_seen_is_stale(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        handler.observed_load_enabled = True
+        deployment = _make_deployment("low-traffic-deployment")
+        load_key, _ = handler._get_load_key_for_deployment(deployment)
+
+        handler._sync_observed_load_backends_from_model_list([deployment])
+        handler._observed_load_backend_last_seen[load_key] = 1
+
+        backends = handler._get_observed_load_backends_for_sync()
+
+        assert backends == [(load_key, deployment["litellm_params"]["api_base"])]
+        assert handler._observed_load_backends == {
+            load_key: deployment["litellm_params"]["api_base"]
+        }
+
+    def test_request_discovered_backend_is_pruned_when_last_seen_is_stale(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        handler.observed_load_enabled = True
+        handler._observed_load_backends = {"backend:lazy": "http://lazy-node:8000/v1"}
+        handler._observed_load_backend_last_seen = {"backend:lazy": 1}
+        handler._observed_load_last_error_log = {"backend:lazy": 1}
+        handler._observed_load_success_logged = {"backend:lazy": True}
+
+        backends = handler._get_observed_load_backends_for_sync()
+
+        assert backends == []
+        assert handler._observed_load_backends == {}
+        assert handler._observed_load_backend_last_seen == {}
+        assert handler._observed_load_last_error_log == {}
+        assert handler._observed_load_success_logged == {}
+
+    def test_removed_model_list_backend_is_not_readded_by_request_registration(self):
+        handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
+        handler.observed_load_enabled = True
+        active_deployment = _make_deployment("active-deployment")
+        removed_deployment = _make_deployment("removed-deployment")
+        active_load_key, _ = handler._get_load_key_for_deployment(active_deployment)
+        removed_load_key, removed_source = handler._get_load_key_for_deployment(removed_deployment)
+
+        handler._sync_observed_load_backends_from_model_list([active_deployment])
+        handler._register_observed_load_backend(
+            removed_deployment,
+            removed_load_key,
+            removed_source,
+        )
+
+        assert handler._observed_load_backends == {
+            active_load_key: active_deployment["litellm_params"]["api_base"]
+        }
+        assert removed_load_key not in handler._observed_load_backend_last_seen
 
     def test_observed_load_sync_runs_without_redis_lock(self):
         handler = StickyLeastBusyWeightedLoggingHandler(router_cache=DualCache())
