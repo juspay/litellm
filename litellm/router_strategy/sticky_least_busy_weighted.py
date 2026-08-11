@@ -24,6 +24,7 @@ Independent from the base handler: own singleton, own Prometheus metric names
 """
 
 import hashlib
+import logging
 import os
 import random
 import socket
@@ -76,7 +77,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         if cls._instance is not None:
             # Update router_cache to the latest Router's cache (may have new Redis connection)
             cls._instance.router_cache = router_cache
-            verbose_router_logger.info(
+            verbose_router_logger.debug(
                 f"[StickyLeastBusyWeighted REUSE] Reusing existing handler "
                 f"(seen_call_ids={len(cls._instance._seen_call_ids)}, "
                 f"rings={len(cls._instance._rings)})"
@@ -440,8 +441,12 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         - Different users with the same system prompt AND same first question
           get different hashes (per-user stickiness, no hotspot).
         """
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
         if not messages:
-            verbose_router_logger.debug("[StickyLeastBusyWeighted STICKY-KEY] No messages provided, sticky_key=None")
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    "[StickyLeastBusyWeighted STICKY-KEY] No messages provided, sticky_key=None"
+                )
             return None
 
         # Extract the first user message content.
@@ -469,7 +474,10 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 break
 
         if first_user_content is None:
-            verbose_router_logger.debug("[StickyLeastBusyWeighted STICKY-KEY] No user message found, sticky_key=None")
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    "[StickyLeastBusyWeighted STICKY-KEY] No user message found, sticky_key=None"
+                )
             return None
 
         # Combine first user message + user identifier for per-user stickiness.
@@ -479,12 +487,13 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             hash_input = f"{user_id}:{first_user_content}"
 
         sticky_key = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()
-        verbose_router_logger.debug(
-            f"[StickyLeastBusyWeighted STICKY-KEY] "
-            f"total_messages={len(messages)}, "
-            f"has_user_id={user_id is not None}, "
-            f"sticky_key={sticky_key[:16]}..."
-        )
+        if debug_enabled:
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted STICKY-KEY] "
+                f"total_messages={len(messages)}, "
+                f"has_user_id={user_id is not None}, "
+                f"sticky_key={sticky_key[:16]}..."
+            )
         return sticky_key
 
     # =========================================================================
@@ -559,9 +568,11 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         """Map a sticky key to a deployment ID via the consistent hash ring."""
         cached = self._rings.get(model_group)
         if not cached or not cached[1]:
-            verbose_router_logger.debug(
-                f"[StickyLeastBusyWeighted RING-LOOKUP] Hash ring for " f"{model_group} is empty, returning None"
-            )
+            if verbose_router_logger.isEnabledFor(logging.DEBUG):
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted RING-LOOKUP] Hash ring for "
+                    f"{model_group} is empty, returning None"
+                )
             return None
 
         ring = cached[1]
@@ -571,11 +582,12 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             idx = 0
 
         result = ring[idx][1]
-        verbose_router_logger.debug(
-            f"[StickyLeastBusyWeighted RING-LOOKUP] "
-            f"model_group={model_group}, "
-            f"sticky_key={sticky_key[:16]}... -> deployment_id={result}"
-        )
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted RING-LOOKUP] "
+                f"model_group={model_group}, "
+                f"sticky_key={sticky_key[:16]}... -> deployment_id={result}"
+            )
         return result
 
     # =========================================================================
@@ -1186,11 +1198,13 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             return
 
         dep_id = (selected_deployment.get("model_info") or {}).get("id")
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
         if dep_id is None:
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted ROUTE-MAP-SKIP] reason=missing_deployment_id "
-                f"model_group={model_group}, call_id={self._format_call_id(litellm_call_id)}"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted ROUTE-MAP-SKIP] reason=missing_deployment_id "
+                    f"model_group={model_group}, call_id={self._format_call_id(litellm_call_id)}"
+                )
             return
 
         if len(self._selected_deployments_by_call_id) >= self._selected_deployments_max_size:
@@ -1201,22 +1215,24 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
 
         load_key, load_key_source = self._get_load_key_for_deployment(selected_deployment)
         if load_key is None:
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted ROUTE-MAP-SKIP] reason=missing_load_key "
-                f"model_group={model_group}, deployment_id={dep_id}, "
-                f"call_id={self._format_call_id(litellm_call_id)}"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted ROUTE-MAP-SKIP] reason=missing_load_key "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}"
+                )
             return
 
         self._selected_deployments_by_call_id[litellm_call_id] = (str(model_group), str(dep_id), load_key)
-        verbose_router_logger.info(
-            f"[StickyLeastBusyWeighted ROUTE-MAP] action=remember "
-            f"model_group={model_group}, deployment_id={dep_id}, "
-            f"load_key={self._format_load_key(load_key)}, "
-            f"load_key_source={load_key_source}, "
-            f"call_id={self._format_call_id(litellm_call_id)}, "
-            f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
-        )
+        if debug_enabled:
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted ROUTE-MAP] action=remember "
+                f"model_group={model_group}, deployment_id={dep_id}, "
+                f"load_key={self._format_load_key(load_key)}, "
+                f"load_key_source={load_key_source}, "
+                f"call_id={self._format_call_id(litellm_call_id)}, "
+                f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
+            )
 
     def _remember_completed_call_id(self, litellm_call_id: str) -> None:
         if len(self._completed_call_ids) >= self._completed_call_ids_max_size:
@@ -1241,12 +1257,13 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             return True
 
         if litellm_call_id in self._decremented_call_ids:
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                f"callback_type={callback_type}, reason=duplicate_terminal_callback, "
-                f"call_id={self._format_call_id(litellm_call_id)}, "
-                f"decremented_call_ids={len(self._decremented_call_ids)}"
-            )
+            if verbose_router_logger.isEnabledFor(logging.DEBUG):
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                    f"callback_type={callback_type}, reason=duplicate_terminal_callback, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"decremented_call_ids={len(self._decremented_call_ids)}"
+                )
             self._counter_events.labels("decrement", "skipped_duplicate_terminal", load_key_source).inc()
             return False
 
@@ -1366,26 +1383,29 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             keys_to_remove = list(self._seen_call_ids.keys())[:evict_count]
             for key in keys_to_remove:
                 self._seen_call_ids.pop(key, None)
-            verbose_router_logger.debug(
-                f"[StickyLeastBusyWeighted DEDUP] Evicted {evict_count} old call_ids "
-                f"(was at capacity {self._seen_call_ids_max_size})"
-            )
+            if verbose_router_logger.isEnabledFor(logging.DEBUG):
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted DEDUP] Evicted {evict_count} old call_ids "
+                    f"(was at capacity {self._seen_call_ids_max_size})"
+                )
 
         self._seen_call_ids[litellm_call_id] = True
 
     def _should_increment(self, litellm_call_id: str) -> bool:
         if litellm_call_id in self._seen_call_ids:
-            verbose_router_logger.debug(
-                f"[StickyLeastBusyWeighted DEDUP] Skipping duplicate increment "
-                f"for call_id={litellm_call_id[:16]}... "
-                f"(streaming chunk dedup)"
-            )
+            if verbose_router_logger.isEnabledFor(logging.DEBUG):
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted DEDUP] Skipping duplicate increment "
+                    f"for call_id={litellm_call_id[:16]}... "
+                    f"(streaming chunk dedup)"
+                )
             return False
         if litellm_call_id in self._completed_call_ids:
-            verbose_router_logger.debug(
-                f"[StickyLeastBusyWeighted DEDUP] Skipping increment for completed "
-                f"call_id={litellm_call_id[:16]}..."
-            )
+            if verbose_router_logger.isEnabledFor(logging.DEBUG):
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted DEDUP] Skipping increment for completed "
+                    f"call_id={litellm_call_id[:16]}..."
+                )
             return False
 
         self._decremented_call_ids.pop(litellm_call_id, None)
@@ -1403,10 +1423,12 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
 
     def log_pre_api_call(self, model, messages, kwargs):
         """Increment in-flight count. Deduped by litellm_call_id for streaming."""
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
         if kwargs is None:
-            verbose_router_logger.info(
-                "[StickyLeastBusyWeighted COUNTER-SKIP] action=increment reason=kwargs_none"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    "[StickyLeastBusyWeighted COUNTER-SKIP] action=increment reason=kwargs_none"
+                )
             return
         try:
             (
@@ -1419,18 +1441,19 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 route_map_hit,
             ) = self._get_counter_tracking_info(kwargs)
             if model_group is None or dep_id is None or load_key is None:
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
-                    f"{self._get_counter_skip_context(kwargs)}, "
-                    f"model_group={model_group}, deployment_id={dep_id}, "
-                    f"load_key={self._format_load_key(load_key)}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
+                        f"{self._get_counter_skip_context(kwargs)}, "
+                        f"model_group={model_group}, deployment_id={dep_id}, "
+                        f"load_key={self._format_load_key(load_key)}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}"
+                    )
                 self._counter_events.labels("increment", "skipped_missing_tracking", load_key_source).inc()
                 return
 
-            if tracking_source != "litellm_params" or route_map_hit:
-                verbose_router_logger.info(
+            if debug_enabled and (tracking_source != "litellm_params" or route_map_hit):
+                verbose_router_logger.debug(
                     f"[StickyLeastBusyWeighted COUNTER-RECOVER] action=increment "
                     f"source={tracking_source}, route_map_hit={route_map_hit}, "
                     f"model_group={model_group}, deployment_id={dep_id}, "
@@ -1441,14 +1464,15 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
 
             stream = kwargs.get("stream", False)
             if litellm_call_id and not self._should_increment(litellm_call_id):
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
-                    f"reason=duplicate_call_id model_group={model_group}, "
-                    f"deployment_id={dep_id}, load_key={self._format_load_key(load_key)}, "
-                    f"stream={stream}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}, "
-                    f"seen_call_ids={len(self._seen_call_ids)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=increment "
+                        f"reason=duplicate_call_id model_group={model_group}, "
+                        f"deployment_id={dep_id}, load_key={self._format_load_key(load_key)}, "
+                        f"stream={stream}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}, "
+                        f"seen_call_ids={len(self._seen_call_ids)}"
+                    )
                 self._counter_events.labels("increment", "skipped_duplicate_call_id", load_key_source).inc()
                 return
 
@@ -1461,38 +1485,42 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 self._routing_in_flight.labels(model_group, dep_id).inc()
             counter_result = "applied" if new_value is not None else "cache_increment_returned_none"
             self._counter_events.labels("increment", counter_result, load_key_source).inc()
-            previous_count = self._previous_count_from_delta(new_value, 1)
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER] action=increment "
-                f"model_group={model_group}, deployment_id={dep_id}, "
-                f"load_key={self._format_load_key(load_key)}, "
-                f"load_key_source={load_key_source}, "
-                f"cache_key={cache_key}, delta=1, previous_count={previous_count}, "
-                f"new_count={new_value}, stream={stream}, "
-                f"call_id={self._format_call_id(litellm_call_id)}, "
-                f"redis_configured={self._is_redis_configured()}, "
-                f"seen_call_ids={len(self._seen_call_ids)}"
-            )
+            if debug_enabled:
+                previous_count = self._previous_count_from_delta(new_value, 1)
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER] action=increment "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"load_key={self._format_load_key(load_key)}, "
+                    f"load_key_source={load_key_source}, "
+                    f"cache_key={cache_key}, delta=1, previous_count={previous_count}, "
+                    f"new_count={new_value}, stream={stream}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"redis_configured={self._is_redis_configured()}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}"
+                )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy log_pre_api_call error: {e}")
 
     def _decrement_request_count(self, kwargs, callback_type: str) -> None:
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
         if kwargs is None:
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                f"callback_type={callback_type}, reason=kwargs_none"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                    f"callback_type={callback_type}, reason=kwargs_none"
+                )
             return
         try:
             litellm_call_id = self._extract_litellm_call_id_from_kwargs(kwargs)
             if litellm_call_id and litellm_call_id in self._completed_call_ids:
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                    f"callback_type={callback_type}, "
-                    f"reason=duplicate_terminal_callback, "
-                    f"call_id={self._format_call_id(litellm_call_id)}, "
-                    f"completed_call_ids={len(self._completed_call_ids)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                        f"callback_type={callback_type}, "
+                        f"reason=duplicate_terminal_callback, "
+                        f"call_id={self._format_call_id(litellm_call_id)}, "
+                        f"completed_call_ids={len(self._completed_call_ids)}"
+                    )
                 self._counter_events.labels("decrement", "skipped_duplicate_terminal", "completed_call_id").inc()
                 return
 
@@ -1506,19 +1534,20 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 route_map_hit,
             ) = self._get_counter_tracking_info(kwargs)
             if model_group is None or dep_id is None or load_key is None:
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                    f"callback_type={callback_type}, "
-                    f"{self._get_counter_skip_context(kwargs)}, "
-                    f"model_group={model_group}, deployment_id={dep_id}, "
-                    f"load_key={self._format_load_key(load_key)}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                        f"callback_type={callback_type}, "
+                        f"{self._get_counter_skip_context(kwargs)}, "
+                        f"model_group={model_group}, deployment_id={dep_id}, "
+                        f"load_key={self._format_load_key(load_key)}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}"
+                    )
                 self._counter_events.labels("decrement", "skipped_missing_tracking", load_key_source).inc()
                 return
 
-            if tracking_source != "litellm_params" or route_map_hit:
-                verbose_router_logger.info(
+            if debug_enabled and (tracking_source != "litellm_params" or route_map_hit):
+                verbose_router_logger.debug(
                     f"[StickyLeastBusyWeighted COUNTER-RECOVER] action=decrement "
                     f"callback_type={callback_type}, source={tracking_source}, "
                     f"route_map_hit={route_map_hit}, model_group={model_group}, "
@@ -1536,15 +1565,16 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
 
             if litellm_call_id and not call_id_seen_before_cleanup:
                 self._decremented_call_ids.pop(litellm_call_id, None)
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                    f"callback_type={callback_type}, reason=no_matching_increment, "
-                    f"model_group={model_group}, deployment_id={dep_id}, "
-                    f"load_key={self._format_load_key(load_key)}, "
-                    f"load_key_source={load_key_source}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}, "
-                    f"seen_call_ids={len(self._seen_call_ids)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                        f"callback_type={callback_type}, reason=no_matching_increment, "
+                        f"model_group={model_group}, deployment_id={dep_id}, "
+                        f"load_key={self._format_load_key(load_key)}, "
+                        f"load_key_source={load_key_source}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}, "
+                        f"seen_call_ids={len(self._seen_call_ids)}"
+                    )
                 self._counter_events.labels("decrement", "skipped_no_matching_increment", load_key_source).inc()
                 return
 
@@ -1556,18 +1586,19 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 self._refresh_cache_ttl(cache_key)
                 self._routing_in_flight.labels(model_group, dep_id).dec()
                 self._counter_events.labels("decrement", "applied", load_key_source).inc()
-            previous_count = self._previous_count_from_delta(new_value, -1)
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER] action=decrement "
-                f"callback_type={callback_type}, model_group={model_group}, "
-                f"deployment_id={dep_id}, load_key={self._format_load_key(load_key)}, "
-                f"load_key_source={load_key_source}, cache_key={cache_key}, delta=-1, "
-                f"previous_count={previous_count}, new_count={new_value}, "
-                f"call_id={self._format_call_id(litellm_call_id)}, "
-                f"call_id_seen_before_cleanup={call_id_seen_before_cleanup}, "
-                f"redis_configured={self._is_redis_configured()}, "
-                f"seen_call_ids={len(self._seen_call_ids)}"
-            )
+            if debug_enabled:
+                previous_count = self._previous_count_from_delta(new_value, -1)
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER] action=decrement "
+                    f"callback_type={callback_type}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, load_key={self._format_load_key(load_key)}, "
+                    f"load_key_source={load_key_source}, cache_key={cache_key}, delta=-1, "
+                    f"previous_count={previous_count}, new_count={new_value}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"call_id_seen_before_cleanup={call_id_seen_before_cleanup}, "
+                    f"redis_configured={self._is_redis_configured()}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}"
+                )
             if new_value is None:
                 if litellm_call_id:
                     self._decremented_call_ids.pop(litellm_call_id, None)
@@ -1594,37 +1625,41 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             if litellm_call_id:
                 mark_completed = "SUCCESS" in callback_type
                 self._cleanup_call_id(litellm_call_id, mark_completed=mark_completed)
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
-                    f"callback_type={callback_type}, model_group={model_group}, "
-                    f"deployment_id={dep_id}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}, "
-                    f"removed={call_id_seen_before_cleanup}, "
-                    f"mark_completed={mark_completed}, "
-                    f"seen_call_ids={len(self._seen_call_ids)}, "
-                    f"completed_call_ids={len(self._completed_call_ids)}, "
-                    f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
+                        f"callback_type={callback_type}, model_group={model_group}, "
+                        f"deployment_id={dep_id}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}, "
+                        f"removed={call_id_seen_before_cleanup}, "
+                        f"mark_completed={mark_completed}, "
+                        f"seen_call_ids={len(self._seen_call_ids)}, "
+                        f"completed_call_ids={len(self._completed_call_ids)}, "
+                        f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
+                    )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy decrement error: {e}")
 
     async def _async_decrement_request_count(self, kwargs, callback_type: str) -> None:
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
         if kwargs is None:
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                f"callback_type={callback_type}, reason=kwargs_none"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                    f"callback_type={callback_type}, reason=kwargs_none"
+                )
             return
         try:
             litellm_call_id = self._extract_litellm_call_id_from_kwargs(kwargs)
             if litellm_call_id and litellm_call_id in self._completed_call_ids:
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                    f"callback_type={callback_type}, "
-                    f"reason=duplicate_terminal_callback, "
-                    f"call_id={self._format_call_id(litellm_call_id)}, "
-                    f"completed_call_ids={len(self._completed_call_ids)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                        f"callback_type={callback_type}, "
+                        f"reason=duplicate_terminal_callback, "
+                        f"call_id={self._format_call_id(litellm_call_id)}, "
+                        f"completed_call_ids={len(self._completed_call_ids)}"
+                    )
                 self._counter_events.labels("decrement", "skipped_duplicate_terminal", "completed_call_id").inc()
                 return
 
@@ -1638,19 +1673,20 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 route_map_hit,
             ) = self._get_counter_tracking_info(kwargs)
             if model_group is None or dep_id is None or load_key is None:
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                    f"callback_type={callback_type}, "
-                    f"{self._get_counter_skip_context(kwargs)}, "
-                    f"model_group={model_group}, deployment_id={dep_id}, "
-                    f"load_key={self._format_load_key(load_key)}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                        f"callback_type={callback_type}, "
+                        f"{self._get_counter_skip_context(kwargs)}, "
+                        f"model_group={model_group}, deployment_id={dep_id}, "
+                        f"load_key={self._format_load_key(load_key)}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}"
+                    )
                 self._counter_events.labels("decrement", "skipped_missing_tracking", load_key_source).inc()
                 return
 
-            if tracking_source != "litellm_params" or route_map_hit:
-                verbose_router_logger.info(
+            if debug_enabled and (tracking_source != "litellm_params" or route_map_hit):
+                verbose_router_logger.debug(
                     f"[StickyLeastBusyWeighted COUNTER-RECOVER] action=decrement "
                     f"callback_type={callback_type}, source={tracking_source}, "
                     f"route_map_hit={route_map_hit}, model_group={model_group}, "
@@ -1668,15 +1704,16 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
 
             if litellm_call_id and not call_id_seen_before_cleanup:
                 self._decremented_call_ids.pop(litellm_call_id, None)
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
-                    f"callback_type={callback_type}, reason=no_matching_increment, "
-                    f"model_group={model_group}, deployment_id={dep_id}, "
-                    f"load_key={self._format_load_key(load_key)}, "
-                    f"load_key_source={load_key_source}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}, "
-                    f"seen_call_ids={len(self._seen_call_ids)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted COUNTER-SKIP] action=decrement "
+                        f"callback_type={callback_type}, reason=no_matching_increment, "
+                        f"model_group={model_group}, deployment_id={dep_id}, "
+                        f"load_key={self._format_load_key(load_key)}, "
+                        f"load_key_source={load_key_source}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}, "
+                        f"seen_call_ids={len(self._seen_call_ids)}"
+                    )
                 self._counter_events.labels("decrement", "skipped_no_matching_increment", load_key_source).inc()
                 return
 
@@ -1688,18 +1725,19 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 await self._async_refresh_cache_ttl(cache_key)
                 self._routing_in_flight.labels(model_group, dep_id).dec()
                 self._counter_events.labels("decrement", "applied", load_key_source).inc()
-            previous_count = self._previous_count_from_delta(new_value, -1)
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER] action=decrement "
-                f"callback_type={callback_type}, model_group={model_group}, "
-                f"deployment_id={dep_id}, load_key={self._format_load_key(load_key)}, "
-                f"load_key_source={load_key_source}, cache_key={cache_key}, delta=-1, "
-                f"previous_count={previous_count}, new_count={new_value}, "
-                f"call_id={self._format_call_id(litellm_call_id)}, "
-                f"call_id_seen_before_cleanup={call_id_seen_before_cleanup}, "
-                f"redis_configured={self._is_redis_configured()}, "
-                f"seen_call_ids={len(self._seen_call_ids)}"
-            )
+            if debug_enabled:
+                previous_count = self._previous_count_from_delta(new_value, -1)
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER] action=decrement "
+                    f"callback_type={callback_type}, model_group={model_group}, "
+                    f"deployment_id={dep_id}, load_key={self._format_load_key(load_key)}, "
+                    f"load_key_source={load_key_source}, cache_key={cache_key}, delta=-1, "
+                    f"previous_count={previous_count}, new_count={new_value}, "
+                    f"call_id={self._format_call_id(litellm_call_id)}, "
+                    f"call_id_seen_before_cleanup={call_id_seen_before_cleanup}, "
+                    f"redis_configured={self._is_redis_configured()}, "
+                    f"seen_call_ids={len(self._seen_call_ids)}"
+                )
             if new_value is None:
                 if litellm_call_id:
                     self._decremented_call_ids.pop(litellm_call_id, None)
@@ -1726,17 +1764,18 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             if litellm_call_id:
                 mark_completed = "SUCCESS" in callback_type
                 self._cleanup_call_id(litellm_call_id, mark_completed=mark_completed)
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
-                    f"callback_type={callback_type}, model_group={model_group}, "
-                    f"deployment_id={dep_id}, "
-                    f"call_id={self._format_call_id(litellm_call_id)}, "
-                    f"removed={call_id_seen_before_cleanup}, "
-                    f"mark_completed={mark_completed}, "
-                    f"seen_call_ids={len(self._seen_call_ids)}, "
-                    f"completed_call_ids={len(self._completed_call_ids)}, "
-                    f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted DEDUP] action=cleanup "
+                        f"callback_type={callback_type}, model_group={model_group}, "
+                        f"deployment_id={dep_id}, "
+                        f"call_id={self._format_call_id(litellm_call_id)}, "
+                        f"removed={call_id_seen_before_cleanup}, "
+                        f"mark_completed={mark_completed}, "
+                        f"seen_call_ids={len(self._seen_call_ids)}, "
+                        f"completed_call_ids={len(self._completed_call_ids)}, "
+                        f"tracked_call_ids={len(self._selected_deployments_by_call_id)}"
+                    )
         except Exception as e:
             verbose_router_logger.error(f"StickyLeastBusy async decrement error: {e}")
 
@@ -1768,6 +1807,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         """Sync: get in-flight counts for all healthy deployments from Redis."""
         result = {}
         none_count = 0
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
         for d in healthy_deployments:
             dep_id = d["model_info"]["id"]
             if isinstance(dep_id, int):
@@ -1796,17 +1836,18 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             result[dep_id] = normalized_count
             if load_key is not None:
                 self._routing_redis_count_by_load_key.labels(load_key, load_key_source).set(normalized_count)
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER-READ] mode=sync "
-                f"model_group={model_group}, deployment_id={dep_id}, "
-                f"load_key={self._format_load_key(load_key)}, "
-                f"load_key_source={load_key_source}, "
-                f"cache_key={cache_key}, observed_cache_key={observed_cache_key}, "
-                f"count_source={count_source}, redis_only=True, "
-                f"redis_configured={self._is_redis_configured()}, "
-                f"observed_count={observed_count}, request_count={request_count}, "
-                f"raw_count={count}, normalized_count={normalized_count}"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER-READ] mode=sync "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"load_key={self._format_load_key(load_key)}, "
+                    f"load_key_source={load_key_source}, "
+                    f"cache_key={cache_key}, observed_cache_key={observed_cache_key}, "
+                    f"count_source={count_source}, redis_only=True, "
+                    f"redis_configured={self._is_redis_configured()}, "
+                    f"observed_count={observed_count}, request_count={request_count}, "
+                    f"raw_count={count}, normalized_count={normalized_count}"
+                )
 
         if none_count == len(healthy_deployments) and none_count > 0:
             verbose_router_logger.warning(
@@ -1821,6 +1862,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         """Async: get in-flight counts for all healthy deployments from Redis."""
         result = {}
         none_count = 0
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
         for d in healthy_deployments:
             dep_id = d["model_info"]["id"]
             if isinstance(dep_id, int):
@@ -1849,17 +1891,18 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             result[dep_id] = normalized_count
             if load_key is not None:
                 self._routing_redis_count_by_load_key.labels(load_key, load_key_source).set(normalized_count)
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted COUNTER-READ] mode=async "
-                f"model_group={model_group}, deployment_id={dep_id}, "
-                f"load_key={self._format_load_key(load_key)}, "
-                f"load_key_source={load_key_source}, "
-                f"cache_key={cache_key}, observed_cache_key={observed_cache_key}, "
-                f"count_source={count_source}, redis_only=True, "
-                f"redis_configured={self._is_redis_configured()}, "
-                f"observed_count={observed_count}, request_count={request_count}, "
-                f"raw_count={count}, normalized_count={normalized_count}"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted COUNTER-READ] mode=async "
+                    f"model_group={model_group}, deployment_id={dep_id}, "
+                    f"load_key={self._format_load_key(load_key)}, "
+                    f"load_key_source={load_key_source}, "
+                    f"cache_key={cache_key}, observed_cache_key={observed_cache_key}, "
+                    f"count_source={count_source}, redis_only=True, "
+                    f"redis_configured={self._is_redis_configured()}, "
+                    f"observed_count={observed_count}, request_count={request_count}, "
+                    f"raw_count={count}, normalized_count={normalized_count}"
+                )
 
         if none_count == len(healthy_deployments) and none_count > 0:
             verbose_router_logger.warning(
@@ -1988,36 +2031,35 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         self._threshold_load.labels(model_group).set(threshold_value)
         self._effective_imbalance_threshold.labels(model_group).set(effective_imbalance_threshold)
 
-        # --- Log node status overview (raw count, weight, and normalized load) ---
-        node_summary = ", ".join(
-            f"{did}={request_counts.get(did, 0)}"
-            f"/w{weights.get(did, 1.0):g}={eff_load[did]:.2f}"
-            f"/load_key={self._format_load_key(load_keys.get(did))}"
-            for did in dep_ids
-        )
+        debug_enabled = verbose_router_logger.isEnabledFor(logging.DEBUG)
+        if debug_enabled:
+            node_summary = ", ".join(
+                f"{did}={request_counts.get(did, 0)}"
+                f"/w{weights.get(did, 1.0):g}={eff_load[did]:.2f}"
+                f"/load_key={self._format_load_key(load_keys.get(did))}"
+                for did in dep_ids
+            )
+            imbalance_ratios = []
+            for did in dep_ids:
+                load = eff_load[did]
+                ref = max(reference_load, 1.0)
+                ratio = load / ref if ref > 0 else 0
+                imbalance_ratios.append(f"{did}={ratio:.2f}")
 
-        # Calculate imbalance ratio for each deployment (on normalized load)
-        imbalance_ratios = []
-        for did in dep_ids:
-            load = eff_load[did]
-            ref = max(reference_load, 1.0)
-            ratio = load / ref if ref > 0 else 0
-            imbalance_ratios.append(f"{did}={ratio:.2f}")
-
-        verbose_router_logger.info(
-            f"[StickyLeastBusyWeighted ROUTING] model_group={model_group}, "
-            f"healthy_deployments={len(dep_ids)}, "
-            f"deployment_ids={dep_ids}, "
-            f"total_in_flight={total_load}, "
-            f"avg_norm_load={avg_load:.2f}, "
-            f"min_norm_load={min_load:.2f}, "
-            f"reference_load={reference_load:.2f}, "
-            f"imbalance_threshold={effective_imbalance_threshold}, "
-            f"base_imbalance_threshold={self.imbalance_threshold}, "
-            f"dynamic_imbalance_thresholds={self.dynamic_imbalance_thresholds}, "
-            f"loads_per_deployment=[{node_summary}], "
-            f"imbalance_ratios=[{', '.join(imbalance_ratios)}]"
-        )
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted ROUTING] model_group={model_group}, "
+                f"healthy_deployments={len(dep_ids)}, "
+                f"deployment_ids={dep_ids}, "
+                f"total_in_flight={total_load}, "
+                f"avg_norm_load={avg_load:.2f}, "
+                f"min_norm_load={min_load:.2f}, "
+                f"reference_load={reference_load:.2f}, "
+                f"imbalance_threshold={effective_imbalance_threshold}, "
+                f"base_imbalance_threshold={self.imbalance_threshold}, "
+                f"dynamic_imbalance_thresholds={self.dynamic_imbalance_thresholds}, "
+                f"loads_per_deployment=[{node_summary}], "
+                f"imbalance_ratios=[{', '.join(imbalance_ratios)}]"
+            )
 
         # Try sticky routing
         if sticky_key:
@@ -2028,81 +2070,85 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 preferred_weight = weights.get(preferred_id, 1.0)
                 current_ratio = preferred_eff / effective_reference if effective_reference > 0 else 0
 
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted STICKY-CHECK] model_group={model_group}, "
-                    f"sticky_key={sticky_key[:16]}..., "
-                    f"preferred_deployment={preferred_id}, "
-                    f"preferred_load={preferred_load}, "
-                    f"preferred_weight={preferred_weight:g}, "
-                    f"preferred_norm_load={preferred_eff:.2f}, "
-                    f"effective_reference={effective_reference:.2f}, "
-                    f"threshold_value={threshold_value:.2f}, "
-                    f"current_imbalance_ratio={current_ratio:.2f}x "
-                    f"(threshold_ratio={effective_imbalance_threshold}x)"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted STICKY-CHECK] model_group={model_group}, "
+                        f"sticky_key={sticky_key[:16]}..., "
+                        f"preferred_deployment={preferred_id}, "
+                        f"preferred_load={preferred_load}, "
+                        f"preferred_weight={preferred_weight:g}, "
+                        f"preferred_norm_load={preferred_eff:.2f}, "
+                        f"effective_reference={effective_reference:.2f}, "
+                        f"threshold_value={threshold_value:.2f}, "
+                        f"current_imbalance_ratio={current_ratio:.2f}x "
+                        f"(threshold_ratio={effective_imbalance_threshold}x)"
+                    )
 
                 if preferred_eff < threshold_value:
                     selected = dep_id_to_deployment[preferred_id]
-                    verbose_router_logger.info(
-                        f"[StickyLeastBusyWeighted DECISION] STICKY -> model_group={model_group}, "
-                        f"deployment_id={preferred_id}, "
-                        f"api_base={selected.get('litellm_params', {}).get('api_base', 'unknown')}, "
-                        f"model={selected.get('litellm_params', {}).get('model', 'unknown')}, "
-                        f"reason=norm_load_{preferred_eff:.2f}_below_threshold_{threshold_value:.2f}, "
-                        f"imbalance_ratio={current_ratio:.2f}x"
-                    )
+                    if debug_enabled:
+                        verbose_router_logger.debug(
+                            f"[StickyLeastBusyWeighted DECISION] STICKY -> model_group={model_group}, "
+                            f"deployment_id={preferred_id}, "
+                            f"api_base={selected.get('litellm_params', {}).get('api_base', 'unknown')}, "
+                            f"model={selected.get('litellm_params', {}).get('model', 'unknown')}, "
+                            f"reason=norm_load_{preferred_eff:.2f}_below_threshold_{threshold_value:.2f}, "
+                            f"imbalance_ratio={current_ratio:.2f}x"
+                        )
                     self._routing_decisions.labels(model_group, preferred_id, "sticky", "consistent_hashing").inc()
                     return selected
                 else:
-                    verbose_router_logger.info(
-                        f"[StickyLeastBusyWeighted STICKY-OVERRIDE] model_group={model_group}, "
-                        f"preferred_deployment={preferred_id} OVERLOADED, "
-                        f"norm_load={preferred_eff:.2f} exceeds threshold={threshold_value:.2f}, "
-                        f"imbalance_ratio={current_ratio:.2f}x > {effective_imbalance_threshold}x, "
-                        f"falling_back_to=least_busy"
-                    )
+                    if debug_enabled:
+                        verbose_router_logger.debug(
+                            f"[StickyLeastBusyWeighted STICKY-OVERRIDE] model_group={model_group}, "
+                            f"preferred_deployment={preferred_id} OVERLOADED, "
+                            f"norm_load={preferred_eff:.2f} exceeds threshold={threshold_value:.2f}, "
+                            f"imbalance_ratio={current_ratio:.2f}x > {effective_imbalance_threshold}x, "
+                            f"falling_back_to=least_busy"
+                        )
                     self._routing_decisions.labels(model_group, preferred_id, "override", "consistent_hashing").inc()
             else:
-                verbose_router_logger.info(
-                    f"[StickyLeastBusyWeighted STICKY-CHECK] model_group={model_group}, "
-                    f"sticky_key={sticky_key[:16]}..., "
-                    f"preferred_deployment={preferred_id} "
-                    f"not_in_healthy_deployments={list(dep_id_to_deployment.keys())}, "
-                    f"falling_back_to=least_busy"
-                )
+                if debug_enabled:
+                    verbose_router_logger.debug(
+                        f"[StickyLeastBusyWeighted STICKY-CHECK] model_group={model_group}, "
+                        f"sticky_key={sticky_key[:16]}..., "
+                        f"preferred_deployment={preferred_id} "
+                        f"not_in_healthy_deployments={list(dep_id_to_deployment.keys())}, "
+                        f"falling_back_to=least_busy"
+                    )
         else:
-            verbose_router_logger.info(
-                f"[StickyLeastBusyWeighted STICKY-CHECK] model_group={model_group}, "
-                f"reason=no_sticky_key, "
-                f"using=least_busy"
-            )
+            if debug_enabled:
+                verbose_router_logger.debug(
+                    f"[StickyLeastBusyWeighted STICKY-CHECK] model_group={model_group}, "
+                    f"reason=no_sticky_key, "
+                    f"using=least_busy"
+                )
 
         # Least-busy fallback with random tie-breaking, on capacity-normalized
         # load (min_load already computed above for reference_load) — so a
         # higher-weight node is preferred at the same raw in-flight count.
         min_deployments = [dep_id_to_deployment[did] for did in dep_ids if eff_load[did] == min_load]
-        min_dep_ids = [d["model_info"]["id"] for d in min_deployments]
 
         selected = random.choice(min_deployments) if min_deployments else random.choice(healthy_deployments)
         selected_dep_id = selected["model_info"]["id"]
         if isinstance(selected_dep_id, int):
             selected_dep_id = str(selected_dep_id)
 
-        # Calculate how much less loaded the selected node is compared to average
-        load_difference = avg_load - min_load if dep_ids else 0
-        load_reduction_pct = (load_difference / avg_load * 100) if avg_load > 0 else 0
-
-        verbose_router_logger.info(
-            f"[StickyLeastBusyWeighted DECISION] LEAST-BUSY -> model_group={model_group}, "
-            f"deployment_id={selected_dep_id}, "
-            f"api_base={selected.get('litellm_params', {}).get('api_base', 'unknown')}, "
-            f"model={selected.get('litellm_params', {}).get('model', 'unknown')}, "
-            f"selected_load={min_load}, "
-            f"avg_load={avg_load:.2f}, "
-            f"load_difference_from_avg={load_difference:.2f} ({load_reduction_pct:.1f}% reduction), "
-            f"candidates_with_min_load={len(min_deployments)}/{len(dep_ids)}, "
-            f"candidate_ids={min_dep_ids}"
-        )
+        if debug_enabled:
+            min_dep_ids = [d["model_info"]["id"] for d in min_deployments]
+            load_difference = avg_load - min_load if dep_ids else 0
+            load_reduction_pct = (load_difference / avg_load * 100) if avg_load > 0 else 0
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted DECISION] LEAST-BUSY -> model_group={model_group}, "
+                f"deployment_id={selected_dep_id}, "
+                f"api_base={selected.get('litellm_params', {}).get('api_base', 'unknown')}, "
+                f"model={selected.get('litellm_params', {}).get('model', 'unknown')}, "
+                f"selected_load={min_load}, "
+                f"avg_load={avg_load:.2f}, "
+                f"load_difference_from_avg={load_difference:.2f} ({load_reduction_pct:.1f}% reduction), "
+                f"candidates_with_min_load={len(min_deployments)}/{len(dep_ids)}, "
+                f"candidate_ids={min_dep_ids}"
+            )
         self._routing_decisions.labels(model_group, selected_dep_id, "least_busy", "consistent_hashing").inc()
         return selected
 
@@ -2117,13 +2163,13 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         messages: Optional[List[Dict[str, str]]] = None,
         request_kwargs: Optional[Dict] = None,
     ) -> dict:
-        # Log available healthy deployments at INFO level for production visibility
-        healthy_ids = [str(d.get("model_info", {}).get("id", "unknown")) for d in healthy_deployments]
-        verbose_router_logger.info(
-            f"[StickyLeastBusyWeighted ROUTING-START] (SYNC) model_group={model_group}, "
-            f"healthy_deployments_count={len(healthy_deployments)}, "
-            f"healthy_deployment_ids={healthy_ids}"
-        )
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            healthy_ids = [str(d.get("model_info", {}).get("id", "unknown")) for d in healthy_deployments]
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted ROUTING-START] (SYNC) model_group={model_group}, "
+                f"healthy_deployments_count={len(healthy_deployments)}, "
+                f"healthy_deployment_ids={healthy_ids}"
+            )
         try:
             request_counts = self._get_request_counts(model_group, healthy_deployments)
             user_id = self._extract_user_id(request_kwargs)
@@ -2145,13 +2191,13 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         messages: Optional[List[Dict[str, str]]] = None,
         request_kwargs: Optional[Dict] = None,
     ) -> dict:
-        # Log available healthy deployments at INFO level for production visibility
-        healthy_ids = [str(d.get("model_info", {}).get("id", "unknown")) for d in healthy_deployments]
-        verbose_router_logger.info(
-            f"[StickyLeastBusyWeighted ROUTING-START] (ASYNC) model_group={model_group}, "
-            f"healthy_deployments_count={len(healthy_deployments)}, "
-            f"healthy_deployment_ids={healthy_ids}"
-        )
+        if verbose_router_logger.isEnabledFor(logging.DEBUG):
+            healthy_ids = [str(d.get("model_info", {}).get("id", "unknown")) for d in healthy_deployments]
+            verbose_router_logger.debug(
+                f"[StickyLeastBusyWeighted ROUTING-START] (ASYNC) model_group={model_group}, "
+                f"healthy_deployments_count={len(healthy_deployments)}, "
+                f"healthy_deployment_ids={healthy_ids}"
+            )
         try:
             request_counts = await self._async_get_request_counts(model_group, healthy_deployments)
             user_id = self._extract_user_id(request_kwargs)
