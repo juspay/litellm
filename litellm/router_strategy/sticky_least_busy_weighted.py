@@ -913,10 +913,11 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         error: object,
     ) -> None:
         now = time.time()
-        previous_log_time = self._observed_load_last_error_log.get(load_key, 0)
-        if now - previous_log_time < 60:
-            return
-        self._observed_load_last_error_log[load_key] = now
+        with self._observed_load_lock:
+            previous_log_time = self._observed_load_last_error_log.get(load_key, 0)
+            if now - previous_log_time < 60:
+                return
+            self._observed_load_last_error_log[load_key] = now
         verbose_router_logger.warning(
             f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=sync_failed "
             f"result={result}, load_key={self._format_load_key(load_key)}, "
@@ -956,8 +957,12 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         self._observed_load_sync_events.labels("success", source).inc()
         self._observed_load_scrape_duration.labels("success", source).observe(time.time() - start_time)
 
-        if not self._observed_load_success_logged.get(load_key, False):
-            self._observed_load_success_logged[load_key] = True
+        with self._observed_load_lock:
+            should_log_success = not self._observed_load_success_logged.get(load_key, False)
+            if should_log_success:
+                self._observed_load_success_logged[load_key] = True
+
+        if should_log_success:
             verbose_router_logger.info(
                 f"[StickyLeastBusyWeighted OBSERVED-LOAD] action=sync_success "
                 f"load_key={self._format_load_key(load_key)}, cache_key={cache_key}, "
