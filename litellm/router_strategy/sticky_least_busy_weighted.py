@@ -705,12 +705,15 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         )
 
     def _observed_load_sync_loop(self) -> None:
+        from litellm._crash_marks import mark as _crash_mark
+
         while self.observed_load_enabled and not self._observed_load_shutdown_event.is_set():
             if not self._should_run_observed_load_sync():
                 self._observed_load_shutdown_event.wait(self.observed_load_poll_interval)
                 continue
 
             backends = self._get_observed_load_backends_for_sync()
+            _crash_mark(f"observed_load_sync:iter backends={len(backends)}")
 
             for load_key, api_base in backends:
                 if not self.observed_load_enabled or self._observed_load_shutdown_event.is_set():
