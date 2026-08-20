@@ -102,3 +102,73 @@ def test_transform_moves_tools_into_the_request_body():
     assert [t["name"] for t in result["tools"]] == ["exec", "wait"]
     assert all(t["type"] == "function" for t in result["tools"])
     assert all(i["type"] != "additional_tools" for i in result["input"])
+
+
+def test_custom_tool_description_is_not_truncated():
+    """Codex ships ~15KB of code-mode API surface in exec's description."""
+    big = "x" * 15000
+    input_items = [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [{**EXEC_TOOL, "description": big}],
+        }
+    ]
+    _, tools, _ = hoist_codex_additional_tools(input_items, [])
+
+    assert tools[0]["description"] == big
+
+
+def test_nameless_builtin_tools_are_forwarded():
+    """web_search / mcp entries carry no name and must not be dropped."""
+    input_items = [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [{"type": "web_search"}, {"type": "mcp", "server_label": "x"}],
+        }
+    ]
+    _, tools, _ = hoist_codex_additional_tools(input_items, [])
+
+    assert [t["type"] for t in tools] == ["web_search", "mcp"]
+
+
+def test_nested_namespaces_are_expanded_recursively():
+    """A leftover inner namespace would re-introduce the unsupported type."""
+    input_items = [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "outer",
+                    "tools": [{"type": "namespace", "name": "inner", "tools": [WAIT_TOOL]}],
+                }
+            ],
+        }
+    ]
+    _, tools, _ = hoist_codex_additional_tools(input_items, [])
+
+    assert [t["name"] for t in tools] == ["wait"]
+    assert all(t["type"] != "namespace" for t in tools)
+
+
+def test_colliding_names_across_namespaces_keep_the_first():
+    """Flattening loses namespace qualification; document the consequence."""
+    read_a = {"type": "function", "name": "read", "description": "fs read"}
+    read_b = {"type": "function", "name": "read", "description": "git read"}
+    input_items = [
+        {
+            "type": "additional_tools",
+            "role": "developer",
+            "tools": [
+                {"type": "namespace", "name": "fs", "tools": [read_a]},
+                {"type": "namespace", "name": "git", "tools": [read_b]},
+            ],
+        }
+    ]
+    _, tools, _ = hoist_codex_additional_tools(input_items, [])
+
+    assert len(tools) == 1
+    assert tools[0]["description"] == "fs read"

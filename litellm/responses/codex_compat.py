@@ -33,19 +33,24 @@ provider-agnostic version.
 
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from litellm._logging import verbose_logger
+
 ADDITIONAL_TOOLS_TYPE = "additional_tools"
 NAMESPACE_TOOL_TYPE = "namespace"
 CUSTOM_TOOL_TYPE = "custom"
 
-_MAX_DESCRIPTION_CHARS = 1024
-
 
 def _shim_custom_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
-    """Represent a freeform ``custom`` tool as a single-string-arg function."""
+    """Represent a freeform ``custom`` tool as a single-string-arg function.
+
+    The description is forwarded verbatim. Codex ships the whole code-mode API
+    surface in it (~15KB for ``exec``), and the model cannot write valid calls
+    against a truncated one.
+    """
     return {
         "type": "function",
         "name": tool.get("name"),
-        "description": (tool.get("description") or "")[:_MAX_DESCRIPTION_CHARS],
+        "description": tool.get("description") or "",
         "parameters": {
             "type": "object",
             "properties": {
@@ -60,10 +65,20 @@ def _shim_custom_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _expand_namespace(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Namespace entries wrap the real tools one level down."""
-    if entry.get("type") == NAMESPACE_TOOL_TYPE:
-        return [t for t in (entry.get("tools") or []) if isinstance(t, dict)]
-    return [entry]
+    """Flatten namespace entries into the tools they wrap.
+
+    Recursive: Codex nests a namespace per MCP server, and leaving an inner
+    ``namespace`` entry in place would put the very tool type we are removing
+    back into ``tools``.
+    """
+    if entry.get("type") != NAMESPACE_TOOL_TYPE:
+        return [entry]
+
+    expanded: List[Dict[str, Any]] = []
+    for tool in entry.get("tools") or []:
+        if isinstance(tool, dict):
+            expanded.extend(_expand_namespace(tool))
+    return expanded
 
 
 def hoist_codex_additional_tools(
@@ -106,11 +121,23 @@ def hoist_codex_additional_tools(
         return input, tools, False
 
     merged: List[Any] = list(tools or [])
-    seen = {t.get("name") for t in merged if isinstance(t, dict)}
+    seen = {t.get("name") for t in merged if isinstance(t, dict) and t.get("name")}
     for tool in hoisted:
         name = tool.get("name")
-        if name and name not in seen:
+        if not name:
+            # Built-ins such as {"type": "web_search"} carry no name. Forward
+            # them rather than dropping the capability on the floor.
             merged.append(tool)
-            seen.add(name)
+            continue
+        if name in seen:
+            verbose_logger.warning(
+                "codex_compat: dropping duplicate hoisted tool %r; a tool with "
+                "that name is already declared. Namespaces are flattened, so "
+                "same-named tools in different namespaces collide.",
+                name,
+            )
+            continue
+        merged.append(tool)
+        seen.add(name)
 
     return remaining_input, merged, True
