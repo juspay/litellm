@@ -49,6 +49,7 @@ export type LogEntry = {
   total_tokens: number;
   prompt_tokens: number;
   completion_tokens: number;
+  cache_read_input_tokens?: number | null;
   startTime: string;
   endTime: string;
   user?: string;
