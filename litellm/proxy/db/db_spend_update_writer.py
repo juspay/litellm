@@ -64,6 +64,7 @@ from litellm.proxy.db.db_transaction_queue.tool_discovery_queue import (
     ToolDiscoveryQueue,
 )
 from litellm.proxy.route_llm_request import ROUTE_ENDPOINT_MAPPING
+from litellm.proxy.spend_tracking.cache_tokens import extract_cache_token_counts
 from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
 
 if TYPE_CHECKING:
@@ -73,29 +74,21 @@ else:
     ProxyLogging = Any
 
 
-def _extract_cache_read_tokens(usage_obj: dict) -> int:
+def _extract_cache_read_tokens(usage_obj: object) -> int:
     """
     Anthropic: top-level cache_read_input_tokens field.
     OpenAI-compatible (moonshotai, openai, deepseek, etc.): prompt_tokens_details.cached_tokens.
     """
-    explicit = usage_obj.get("cache_read_input_tokens", 0) or 0
-    if explicit:
-        return int(explicit)
-    details = usage_obj.get("prompt_tokens_details") or {}
-    return int(details.get("cached_tokens", 0) or 0)
+    return extract_cache_token_counts(usage_obj).read or 0
 
 
-def _extract_cache_creation_tokens(usage_obj: dict) -> int:
+def _extract_cache_creation_tokens(usage_obj: object) -> int:
     """
     Anthropic: top-level cache_creation_input_tokens field.
-    OpenAI-compatible (kimi-k2 etc.): prompt_tokens_details.cache_write_tokens
-    or prompt_tokens_details.cache_creation_tokens.
+    OpenAI-compatible (kimi-k2 etc.): prompt_tokens_details.cache_write_tokens,
+    prompt_tokens_details.cache_creation_tokens or prompt_tokens_details.created_cache_tokens.
     """
-    explicit = usage_obj.get("cache_creation_input_tokens", 0) or 0
-    if explicit:
-        return int(explicit)
-    details = usage_obj.get("prompt_tokens_details") or {}
-    return int(details.get("cache_write_tokens", 0) or details.get("cache_creation_tokens", 0) or 0)
+    return extract_cache_token_counts(usage_obj).creation or 0
 
 
 class DBSpendUpdateWriter:
@@ -190,9 +183,7 @@ class DBSpendUpdateWriter:
                 _litellm_model = litellm_params.get("model")
 
             free_models_env = os.getenv("FREE_MODELS", "")
-            free_models = {
-                m.strip().lower() for m in free_models_env.split(",") if m.strip()
-            }
+            free_models = {m.strip().lower() for m in free_models_env.split(",") if m.strip()}
 
             is_free_model = False
             matched_free_model = None
@@ -1879,23 +1870,17 @@ class DBSpendUpdateWriter:
                         "create": {
                             "user_id": transaction["user_id"],
                             "date": transaction["date"],
-                            "total_request_duration_ms": transaction[
-                                "total_request_duration_ms"
-                            ],
+                            "total_request_duration_ms": transaction["total_request_duration_ms"],
                             "api_requests": transaction["api_requests"],
                         },
                         "update": {
-                            "total_request_duration_ms": {
-                                "increment": transaction["total_request_duration_ms"]
-                            },
+                            "total_request_duration_ms": {"increment": transaction["total_request_duration_ms"]},
                             "api_requests": {"increment": transaction["api_requests"]},
                         },
                     },
                 )
             except Exception as e:
-                verbose_proxy_logger.debug(
-                    "update_daily_user_request_duration upsert failed: %s", e
-                )
+                verbose_proxy_logger.debug("update_daily_user_request_duration upsert failed: %s", e)
 
     async def _common_add_spend_log_transaction_to_daily_transaction(
         self,
@@ -1941,7 +1926,7 @@ class DBSpendUpdateWriter:
         request_status = prisma_client.get_request_status(payload)
         verbose_proxy_logger.debug(f"Logged request status: {request_status}")
         _metadata: SpendLogsMetadata = json.loads(payload["metadata"])
-        usage_obj = _metadata.get("usage_object", {}) or {}
+        usage_obj: object = _metadata.get("usage_object", {}) or {}
         if isinstance(payload["startTime"], datetime):
             start_time = payload["startTime"].isoformat()
             date = start_time.split("T")[0]
@@ -2039,9 +2024,7 @@ class DBSpendUpdateWriter:
             total_request_duration_ms=duration_ms,
             api_requests=1,
         )
-        await self.daily_user_request_duration_queue.add_update(
-            update={transaction_key: transaction}
-        )
+        await self.daily_user_request_duration_queue.add_update(update={transaction_key: transaction})
 
     async def add_spend_log_transaction_to_daily_team_transaction(
         self,

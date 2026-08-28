@@ -1,4 +1,4 @@
-import { getSpendString } from "@/utils/dataUtils";
+import { formatNumberWithCommas, getSpendString } from "@/utils/dataUtils";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Badge, Button } from "@tremor/react";
 import { Tooltip } from "antd";
@@ -49,6 +49,7 @@ export type LogEntry = {
   total_tokens: number;
   prompt_tokens: number;
   completion_tokens: number;
+  cache_read_input_tokens?: number | null;
   startTime: string;
   endTime: string;
   user?: string;
@@ -403,6 +404,32 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
           <span className="text-gray-400 text-xs ml-1">
             ({String(row.prompt_tokens || "0")}+{String(row.completion_tokens || "0")})
           </span>
+        </span>
+      );
+    },
+  },
+  {
+    header: "Cache",
+    accessorKey: "cache_read_input_tokens",
+    size: 130,
+    cell: (info: any) => {
+      const row: LogEntry = info.row.original;
+      const providerCacheReadTokens: number | null =
+        row.cache_read_input_tokens ??
+        row.metadata?.additional_usage_values?.cache_read_input_tokens ??
+        row.metadata?.additional_usage_values?.prompt_tokens_details?.cached_tokens ??
+        null;
+
+      if (providerCacheReadTokens == null) {
+        return <span className="text-sm text-gray-400">-</span>;
+      }
+
+      const ratio = row.prompt_tokens > 0 ? (providerCacheReadTokens / row.prompt_tokens) * 100 : null;
+
+      return (
+        <span className="text-sm">
+          {formatNumberWithCommas(providerCacheReadTokens)}
+          {ratio != null && <span className="text-gray-400 text-xs ml-1">({ratio.toFixed(1)}%)</span>}
         </span>
       );
     },

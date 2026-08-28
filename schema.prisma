@@ -586,6 +586,7 @@ model LiteLLM_SpendLogs {
   total_tokens        Int     @default(0)
   prompt_tokens       Int     @default(0)
   completion_tokens   Int     @default(0)
+  cache_read_input_tokens Int?
   startTime           DateTime // Assuming start_time is a DateTime field
   endTime             DateTime // Assuming end_time is a DateTime field
   request_duration_ms Int?

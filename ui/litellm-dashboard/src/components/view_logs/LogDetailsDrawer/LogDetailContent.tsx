@@ -147,7 +147,11 @@ export function LogDetailContent({ logEntry, isLoadingDetails = false, accessTok
         completionTokens={logEntry.completion_tokens}
         cacheHit={logEntry.cache_hit}
         rawInputTokens={metadata?.additional_usage_values?.prompt_tokens_details?.text_tokens}
-        cacheReadTokens={metadata?.additional_usage_values?.cache_read_input_tokens}
+        cacheReadTokens={
+          logEntry.cache_read_input_tokens ??
+          metadata?.additional_usage_values?.cache_read_input_tokens ??
+          metadata?.additional_usage_values?.prompt_tokens_details?.cached_tokens
+        }
         cacheCreationTokens={metadata?.additional_usage_values?.cache_creation_input_tokens}
       />
 
@@ -285,10 +289,18 @@ function MetricsSection({ logEntry, metadata }: { logEntry: LogEntry; metadata: 
       ? new Date(completionStartTime).getTime() - new Date(logEntry.startTime).getTime()
       : null;
 
-  const hasCacheActivity =
-    logEntry.cache_hit ||
-    (metadata?.additional_usage_values?.cache_read_input_tokens &&
-      metadata.additional_usage_values.cache_read_input_tokens > 0);
+  const providerCacheReadTokens: number | null =
+    logEntry.cache_read_input_tokens ??
+    metadata?.additional_usage_values?.cache_read_input_tokens ??
+    metadata?.additional_usage_values?.prompt_tokens_details?.cached_tokens ??
+    null;
+
+  const cacheHitRatio =
+    providerCacheReadTokens != null && logEntry.prompt_tokens > 0
+      ? (providerCacheReadTokens / logEntry.prompt_tokens) * 100
+      : null;
+
+  const hasCacheActivity = logEntry.cache_hit || providerCacheReadTokens != null;
 
   const cacheHitValue = String(logEntry.cache_hit ?? "None");
   const cacheHitColor =
@@ -331,10 +343,13 @@ function MetricsSection({ logEntry, metadata }: { logEntry: LogEntry; metadata: 
               <Descriptions.Item label="Cache Hit">
                 <Tag color={cacheHitColor}>{cacheHitValue}</Tag>
               </Descriptions.Item>
-              {metadata?.additional_usage_values?.cache_read_input_tokens > 0 && (
+              {providerCacheReadTokens != null && (
                 <Descriptions.Item label="Cache Read Tokens">
-                  {formatNumberWithCommas(metadata.additional_usage_values.cache_read_input_tokens)}
+                  {formatNumberWithCommas(providerCacheReadTokens)}
                 </Descriptions.Item>
+              )}
+              {cacheHitRatio != null && (
+                <Descriptions.Item label="Cache Hit Ratio">{cacheHitRatio.toFixed(1)}%</Descriptions.Item>
               )}
               {metadata?.additional_usage_values?.cache_creation_input_tokens > 0 && (
                 <Descriptions.Item label="Cache Creation Tokens">

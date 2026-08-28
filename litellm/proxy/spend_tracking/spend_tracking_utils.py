@@ -26,6 +26,7 @@ from litellm.litellm_core_utils.core_helpers import (
 )
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps, strip_null_bytes
 from litellm.proxy._types import SpendLogsMetadata, SpendLogsPayload
+from litellm.proxy.spend_tracking.cache_tokens import extract_cache_token_counts
 from litellm.proxy.spend_tracking.spend_log_error_logger import spend_log_error
 from litellm.proxy.utils import PrismaClient, hash_token
 from litellm.types.utils import (
@@ -406,6 +407,7 @@ def get_logging_payload(kwargs, response_obj, start_time, end_time) -> SpendLogs
             total_tokens=usage.get("total_tokens", standard_logging_total_tokens),
             prompt_tokens=usage.get("prompt_tokens", standard_logging_prompt_tokens),
             completion_tokens=usage.get("completion_tokens", standard_logging_completion_tokens),
+            cache_read_input_tokens=extract_cache_token_counts(usage).read,
             request_tags=request_tags,
             end_user=end_user_id or "",
             api_base=litellm_params.get("api_base", ""),
@@ -478,10 +480,10 @@ def _get_request_duration_ms(start_time: datetime, end_time: datetime) -> Option
             "_get_request_duration_ms: start_time=%s (type=%s, tzinfo=%s), end_time=%s (type=%s, tzinfo=%s)",
             start_time,
             type(start_time).__name__,
-            getattr(start_time, 'tzinfo', None),
+            getattr(start_time, "tzinfo", None),
             end_time,
             type(end_time).__name__,
-            getattr(end_time, 'tzinfo', None),
+            getattr(end_time, "tzinfo", None),
         )
         result = int((end_time - start_time).total_seconds() * 1000)
         verbose_proxy_logger.info("_get_request_duration_ms: SUCCESS result=%s", result)

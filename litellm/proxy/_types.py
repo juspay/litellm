@@ -3135,6 +3135,7 @@ class SpendLogsPayload(TypedDict):
     total_tokens: int
     prompt_tokens: int
     completion_tokens: int
+    cache_read_input_tokens: Optional[int]
     startTime: Union[datetime, str]
     endTime: Union[datetime, str]
     completionStartTime: Optional[Union[datetime, str]]
