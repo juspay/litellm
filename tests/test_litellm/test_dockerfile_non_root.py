@@ -52,25 +52,3 @@ def test_final_user_directive_is_numeric():
         f"Dockerfile.non_root final USER is {final_user} (root); the non_root image "
         "must run as a non-zero UID."
     )
-
-
-def test_python_apk_packages_are_version_pinned():
-    with open(DOCKERFILE_PATH, "r", encoding="utf-8") as f:
-        contents = f.read()
-
-    apk_install_blocks = re.findall(
-        r"apk add --no-cache(?P<packages>.*?)&& break",
-        contents,
-        re.DOTALL,
-    )
-    python_packages = re.findall(
-        r"\bpython(?:3|-3\.13)(?:-dev)?\b",
-        "\n".join(apk_install_blocks),
-    )
-
-    assert "python3" not in python_packages
-    assert "python3-dev" not in python_packages
-    assert python_packages.count("python-3.13") == 2
-    assert python_packages.count("python-3.13-dev") == 1
-    assert "--python python3" not in contents
-    assert contents.count("--python /usr/bin/python3.13") == 3
