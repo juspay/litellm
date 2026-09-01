@@ -3,21 +3,27 @@ Production Logger with GCS Support for LiteLLM Proxy Server
 Logs to separate GCS buckets for success/error events with custom folder structures
 """
 
+import json
+import os
+import time
+import uuid
+from datetime import datetime
+from typing import Optional
+
+import anyio
+
+import litellm
+from litellm._logging import verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.gcs_bucket.gcs_bucket_base import GCSBucketBase
 from litellm.integrations.gcs_bucket.redaction import (
+    REDACT_ENABLED,
+    redact_dict_values,
     redact_messages,
     redact_text,
-    redact_dict_values,
 )
-from litellm._logging import verbose_logger
-import litellm
-import json
-import time
-import uuid
-import os
-from datetime import datetime
-from typing import Optional
+
+_GCS_REDACTION_LIMITER = anyio.CapacityLimiter(1)
 
 
 def _sanitize_for_json(obj, seen=None):
@@ -40,6 +46,41 @@ def _sanitize_for_json(obj, seen=None):
         except Exception:
             return str(obj)
     return str(obj)
+
+
+async def _redact_messages_async(messages):
+    if not REDACT_ENABLED:
+        return messages
+    return await anyio.to_thread.run_sync(
+        redact_messages,
+        messages,
+        abandon_on_cancel=True,
+        limiter=_GCS_REDACTION_LIMITER,
+    )
+
+
+async def _redact_text_async(text):
+    if not REDACT_ENABLED:
+        return text
+    return await anyio.to_thread.run_sync(
+        redact_text,
+        text,
+        abandon_on_cancel=True,
+        limiter=_GCS_REDACTION_LIMITER,
+    )
+
+
+def _sanitize_and_redact_dict_values(value):
+    return redact_dict_values(_sanitize_for_json(value))
+
+
+async def _sanitize_and_redact_dict_values_async(value):
+    return await anyio.to_thread.run_sync(
+        _sanitize_and_redact_dict_values,
+        value,
+        abandon_on_cancel=True,
+        limiter=_GCS_REDACTION_LIMITER,
+    )
 
 
 class ProductionGCSLogger(CustomLogger):
@@ -205,7 +246,7 @@ class ProductionGCSLogger(CustomLogger):
                     "mode": metadata.get("model_info", {}).get("mode"),
                 },
                 "conversation": {
-                    "messages": redact_messages(
+                    "messages": await _redact_messages_async(
                         kwargs.get("input", kwargs.get("messages", []))
                     ),
                     "temperature": kwargs.get("temperature"),
@@ -235,8 +276,8 @@ class ProductionGCSLogger(CustomLogger):
             
             if not success_log["user"]["email"]:
                 try:
-                    success_log["litellm_kwargs"] = redact_dict_values(
-                        _sanitize_for_json(kwargs)
+                    success_log["litellm_kwargs"] = (
+                        await _sanitize_and_redact_dict_values_async(kwargs)
                     )
                 except Exception as e:
                     verbose_logger.info(f"Failed to serialize litellm_kwargs: {e}")
@@ -254,7 +295,7 @@ class ProductionGCSLogger(CustomLogger):
 
                 if hasattr(choice, "message"):
                     message = choice.message
-                    success_log["response"]["content"] = redact_text(
+                    success_log["response"]["content"] = await _redact_text_async(
                         getattr(message, "content", None)
                     )
                     reasoning = getattr(
@@ -262,8 +303,8 @@ class ProductionGCSLogger(CustomLogger):
                     ) or getattr(
                         message, "reasoning", None
                     )
-                    success_log["response"]["reasoning_content"] = redact_text(
-                        reasoning
+                    success_log["response"]["reasoning_content"] = (
+                        await _redact_text_async(reasoning)
                     )
                     success_log["response"]["tool_calls"] = _sanitize_for_json(
                         getattr(message, "tool_calls", None)
@@ -277,7 +318,9 @@ class ProductionGCSLogger(CustomLogger):
                     if isinstance(thinking_blocks, list):
                         for block in thinking_blocks:
                             if isinstance(block, dict) and "thinking" in block:
-                                block["thinking"] = redact_text(block["thinking"])
+                                block["thinking"] = await _redact_text_async(
+                                    block["thinking"]
+                                )
                     success_log["response"]["thinking_blocks"] = thinking_blocks
                     success_log["response"]["reasoning_items"] = _sanitize_for_json(
                         getattr(message, "reasoning_items", None)
@@ -372,7 +415,8 @@ class ProductionGCSLogger(CustomLogger):
                 "request": {
                     "messages_count": len(kwargs.get("messages", [])),
                     "first_message": json.dumps(
-                        redact_messages(kwargs.get("messages", [])), default=str
+                        await _redact_messages_async(kwargs.get("messages", [])),
+                        default=str,
                     ),
                     "max_tokens": kwargs.get("max_tokens"),
                     "route": metadata.get("user_api_key_request_route"),
