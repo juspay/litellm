@@ -127,6 +127,61 @@ async def _record_streaming_client_disconnect_if_needed(
     return True
 
 
+async def _log_non_streaming_client_disconnect(
+    request: Request | None,
+    request_data: dict,
+    cancelled_error: asyncio.CancelledError,
+) -> None:
+    """
+    Write a failure spend log row for a non-streaming request whose client
+    disconnected (CancelledError) mid-await.
+
+    The streaming generators already do this in
+    ``_finalize_streaming_generator_cleanup`` (stamp ``client_disconnected``
+    + ``error_code=499`` metadata, then fire the logging callbacks). The
+    non-streaming endpoints only released the max_parallel_requests slot on
+    cancellation and re-raised — no spend log row was ever written, so
+    spend-log-based reconciliation under-counted every client-cancelled
+    request even though its MPR lease was released correctly.
+
+    Must be called from inside the endpoint's ``except CancelledError``
+    handler. Every await here is wrapped in ``anyio.CancelScope(shield=True)``
+    so the teardown of the cancelled request task cannot also cancel the
+    logging we are trying to perform. Idempotent:
+    ``Logging.async_failure_handler`` -> ``should_run_logging`` bails if a
+    failure row was already written for this call.
+    """
+    try:
+        with anyio.CancelScope(shield=True):
+            # Stamp 499 / client_disconnected metadata into the logging
+            # object's channels so the spend log row carries error_code=499
+            # (same helper the streaming path uses; endpoint-agnostic).
+            await _record_streaming_client_disconnect_if_needed(
+                request,
+                request_data,
+                client_disconnected=True,
+            )
+            # Fire any deferred stream logging (no-op when none was set —
+            # e.g. the request failed before the router returned a stream).
+            ProxyLogging._fire_deferred_stream_logging(request_data)
+
+            litellm_logging_obj = request_data.get("litellm_logging_obj")
+            if litellm_logging_obj is not None:
+                await litellm_logging_obj.async_failure_handler(
+                    exception=cancelled_error,
+                    traceback_exception=traceback.format_exc(),
+                )
+    except asyncio.CancelledError:
+        # The shielding above should prevent this; if it still propagates,
+        # prefer finishing the cancellation unwind over the log row.
+        raise cancelled_error
+    except Exception:
+        verbose_proxy_logger.exception(
+            "Failed to write client-disconnect spend log for litellm_call_id=%s",
+            request_data.get("litellm_call_id"),
+        )
+
+
 async def _cancel_pending_gather_tasks(tasks: list["asyncio.Task[Any]"]) -> None:
     pending_tasks = [task for task in tasks if not task.done()]
     for task in pending_tasks:

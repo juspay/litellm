@@ -19,6 +19,7 @@ from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_request_processing import (
     ProxyBaseLLMRequestProcessing,
+    _log_non_streaming_client_disconnect,
     create_response,
 )
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
@@ -141,6 +142,14 @@ async def anthropic_response(
             verbose_proxy_logger.exception(
                 "litellm.proxy.proxy_server.anthropic_response(): failure hook errored during cancellation cleanup"
             )
+        # Write the 499 client-disconnect spend log row before unwinding —
+        # without this, cancelled non-streaming requests release their MPR
+        # slot but never appear in spend_logs.
+        await _log_non_streaming_client_disconnect(
+            request=request,
+            request_data=base_llm_response_processor.data,
+            cancelled_error=_ce,
+        )
         raise
     except ModifyResponseException as e:
         # Guardrail flagged content in passthrough mode - return 200 with violation message
