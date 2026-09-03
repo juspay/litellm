@@ -230,7 +230,7 @@ async def test_gcs_completion_cost_does_not_cross_thread_boundary(monkeypatch):
 @pytest.mark.parametrize(
     "callback_name", ["async_log_success_event", "async_log_failure_event"]
 )
-async def test_gcs_callback_drops_new_log_instead_of_waiting_for_cpu_slot(
+async def test_gcs_callback_queues_new_log_while_waiting_for_cpu_slot(
     monkeypatch, callback_name
 ):
     redaction_started = threading.Event()
@@ -261,14 +261,12 @@ async def test_gcs_callback_drops_new_log_instead_of_waiting_for_cpu_slot(
                 while not redaction_started.is_set():
                     await anyio.sleep(0)
 
-            with anyio.move_on_after(0.05) as second_call_scope:
-                await callback(
-                    *_success_call_args(),
-                )
-
-            assert not second_call_scope.cancelled_caught
+            task_group.start_soon(callback, *_success_call_args())
+            await anyio.sleep(0.05)
             assert redaction_calls == 1
             release_redaction.set()
+
+        assert redaction_calls == 2
     finally:
         release_redaction.set()
 
@@ -310,7 +308,7 @@ async def test_gcs_slow_upload_does_not_hold_redaction_slot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gcs_logging_worker_timeout_keeps_cpu_work_bounded(monkeypatch):
+async def test_gcs_logging_worker_timeout_keeps_cpu_work_alive(monkeypatch):
     redaction_started = threading.Event()
     release_redaction = threading.Event()
     redaction_calls = 0
@@ -337,16 +335,12 @@ async def test_gcs_logging_worker_timeout_keeps_cpu_work_bounded(monkeypatch):
                 await anyio.sleep(0)
             await worker.flush()
 
-        await logger.async_log_failure_event(*_success_call_args())
-        assert redaction_calls == 1
-
         release_redaction.set()
         with anyio.fail_after(1):
             while gcs_logger._GCS_CALLBACK_LIMITER.borrowed_tokens:
                 await anyio.sleep(0)
 
-        await logger.async_log_failure_event(*_success_call_args())
-        assert redaction_calls == 2
+        assert redaction_calls == 1
     finally:
         release_redaction.set()
         await worker.stop()

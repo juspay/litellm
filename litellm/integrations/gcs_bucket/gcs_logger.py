@@ -25,8 +25,6 @@ from litellm.integrations.gcs_bucket.redaction import (
     redact_text,
 )
 
-# LoggingWorker runs many callbacks concurrently. Fail-fast admission keeps those
-# callbacks from retaining request payloads while they wait for CPU-heavy redaction.
 _GCS_CALLBACK_LIMITER = anyio.CapacityLimiter(1)
 _GCS_PROCESS_THRESHOLD_BYTES = 64 * 1024
 _T = TypeVar("_T")
@@ -133,21 +131,20 @@ async def _serialize_logprobs_async(logprobs):
 
 async def _run_with_gcs_callback_slot(
     callback: Callable[[], Awaitable[_T]],
-) -> Tuple[bool, Optional[_T]]:
+) -> _T:
     borrower = object()
-    try:
-        _GCS_CALLBACK_LIMITER.acquire_on_behalf_of_nowait(borrower)
-    except anyio.WouldBlock:
-        return False, None
 
     async def run_callback() -> _T:
+        await _GCS_CALLBACK_LIMITER.acquire_on_behalf_of(borrower)
         try:
             return await callback()
         finally:
             _GCS_CALLBACK_LIMITER.release_on_behalf_of(borrower)
 
+    # LoggingWorker can time out an individual callback. The queued CPU work must
+    # still finish and upload its audit record after that timeout.
     task = asyncio.create_task(run_callback())
-    return True, await asyncio.shield(task)
+    return await asyncio.shield(task)
 
 
 class ProductionGCSLogger(CustomLogger):
@@ -244,14 +241,9 @@ class ProductionGCSLogger(CustomLogger):
         log_type: str,
     ) -> None:
         if REDACT_ENABLED:
-            admitted, prepared_log = await _run_with_gcs_callback_slot(
+            prepared_log = await _run_with_gcs_callback_slot(
                 lambda: self._prepare_log_for_upload(build_log, bucket_name)
             )
-            if not admitted:
-                verbose_logger.debug(
-                    f"GCS Logger: dropping {log_type} log while PII redaction is busy"
-                )
-                return
         else:
             data = await build_log()
             prepared_log = (data, None) if data is not None else None
