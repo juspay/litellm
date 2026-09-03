@@ -151,6 +151,18 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 \
     PRISMA_OFFLINE_MODE=true
 
+# Juspay: trust our private CA for the self-hosted vLLM endpoints (Tata/Neysa).
+# Appended to certifi because httpx reads that bundle rather than the OS store;
+# also appended to the OS bundle when present. Must run before USER 65534, and
+# after the venv COPY above so certifi exists.
+COPY docker/certs/juspay-gpu-root.crt /usr/local/share/ca-certificates/juspay-gpu-root.crt
+RUN cat /usr/local/share/ca-certificates/juspay-gpu-root.crt \
+        >> "$(python -c 'import certifi; print(certifi.where())')" && \
+    if [ -f /etc/ssl/certs/ca-certificates.crt ]; then \
+      cat /usr/local/share/ca-certificates/juspay-gpu-root.crt \
+        >> /etc/ssl/certs/ca-certificates.crt; \
+    fi
+
 RUN mkdir -p /nonexistent /var/lib/litellm/assets /var/lib/litellm/ui && \
     chown -R nobody:nogroup /app /var/lib/litellm/ui /var/lib/litellm/assets /nonexistent && \
     PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \

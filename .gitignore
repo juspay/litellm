@@ -132,3 +132,7 @@ crash.*.log
 .coverage
 
 ui/litellm-dashboard/out/
+
+# never commit private keys
+*.key
+*.srl
