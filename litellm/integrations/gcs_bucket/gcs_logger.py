@@ -74,7 +74,7 @@ async def _sanitize_and_redact_dict_values_async(value):
 
 def _string_content_size(value, seen=None) -> int:
     if isinstance(value, str):
-        return len(value.encode())
+        return len(value.encode(errors="surrogatepass"))
     if seen is None:
         seen = set()
     if id(value) in seen:
