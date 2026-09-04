@@ -266,7 +266,7 @@ const AddModelForm: React.FC<AddModelFormProps> = ({
                             <span className="px-4 text-gray-500 text-sm">OR</span>
                             <div className="grow border-t border-gray-200"></div>
                           </div>
-                          <ProviderSpecificFields selectedProvider={selectedProvider} uploadProps={uploadProps} />
+                          <ProviderSpecificFields selectedProvider={selectedProvider} uploadProps={uploadProps} requireApiKey />
                         </>
                       );
                     }
