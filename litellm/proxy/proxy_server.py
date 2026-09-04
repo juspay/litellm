@@ -287,6 +287,7 @@ from litellm.proxy.caching_routes import router as caching_router
 from litellm.proxy.common_request_processing import (
     ProxyBaseLLMRequestProcessing,
     _is_azure_model_router_request,
+    _log_non_streaming_client_disconnect,
     create_response,
 )
 from litellm.proxy.common_utils.callback_utils import initialize_callbacks_on_proxy
@@ -8611,6 +8612,14 @@ async def chat_completion(
             verbose_proxy_logger.exception(
                 "chat_completion(): failure hook errored during cancellation cleanup"
             )
+        # Write the 499 client-disconnect spend log row before unwinding —
+        # without this, cancelled non-streaming requests release their MPR
+        # slot but never appear in spend_logs.
+        await _log_non_streaming_client_disconnect(
+            request=request,
+            request_data=base_llm_response_processor.data,
+            cancelled_error=_ce,
+        )
         raise
     except ModifyResponseException as e:
         # Guardrail flagged content in passthrough mode - return 200 with violation message

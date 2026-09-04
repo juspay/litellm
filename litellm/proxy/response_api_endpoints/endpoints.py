@@ -16,7 +16,10 @@ from litellm.proxy.auth.user_api_key_auth import (
     user_api_key_auth,
     user_api_key_auth_websocket,
 )
-from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
+from litellm.proxy.common_request_processing import (
+    ProxyBaseLLMRequestProcessing,
+    _log_non_streaming_client_disconnect,
+)
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from litellm.types.responses.main import DeleteResponseResult
 
@@ -254,6 +257,30 @@ async def responses_api(
                         )
 
         return response
+    except asyncio.CancelledError as _ce:
+        # post_call_failure_hook is internally shielded — DECR completes even
+        # though this task is being torn down.
+        try:
+            await proxy_logging_obj.post_call_failure_hook(
+                user_api_key_dict=user_api_key_dict,
+                original_exception=_ce,
+                request_data=processor.data,
+            )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            verbose_proxy_logger.exception(
+                "responses_api(): failure hook errored during cancellation cleanup"
+            )
+        # Write the 499 client-disconnect spend log row before unwinding —
+        # without this, cancelled non-streaming requests release their MPR
+        # slot but never appear in spend_logs.
+        await _log_non_streaming_client_disconnect(
+            request=request,
+            request_data=processor.data,
+            cancelled_error=_ce,
+        )
+        raise
     except ModifyResponseException as e:
         # Guardrail passthrough: return violation message in Responses API format (200)
         _data = e.request_data

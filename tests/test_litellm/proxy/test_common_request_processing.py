@@ -3422,6 +3422,119 @@ class TestStreamingClientDisconnectLogging:
         assert request_data["metadata"]["error_information"]["error_code"] == "499"
 
         ProxyLogging._callback_capabilities_cache.clear()
+
+
+class TestNonStreamingClientDisconnectLogging:
+    """
+    Coverage for _log_non_streaming_client_disconnect: the helper the
+    non-streaming endpoints call from their ``except CancelledError``
+    handlers to write a 499 failure spend log row before unwinding.
+    """
+
+    @pytest.mark.asyncio
+    async def test_writes_failure_log_with_499_metadata(self, monkeypatch):
+        from litellm.proxy.common_request_processing import (
+            _log_non_streaming_client_disconnect,
+        )
+
+        fire_spy = MagicMock()
+        monkeypatch.setattr(
+            "litellm.proxy.utils.ProxyLogging._fire_deferred_stream_logging",
+            fire_spy,
+        )
+
+        mock_logging_obj = MagicMock()
+        mock_logging_obj.async_failure_handler = AsyncMock()
+        mock_logging_obj.model_call_details = {"litellm_params": {}, "metadata": {}}
+        mock_request = MagicMock(spec=Request)
+        request_data = {
+            "litellm_call_id": "test-call-id",
+            "litellm_logging_obj": mock_logging_obj,
+            "metadata": {},
+            "litellm_params": {"metadata": {}},
+        }
+        cancelled_error = asyncio.CancelledError()
+
+        await _log_non_streaming_client_disconnect(
+            request=mock_request,
+            request_data=request_data,
+            cancelled_error=cancelled_error,
+        )
+
+        # 499 / client_disconnected metadata stamped into the logging channels
+        assert request_data["metadata"]["client_disconnected"] is True
+        assert (
+            request_data["metadata"]["error_information"]["error_code"] == "499"
+        )
+        # Deferred stream logging fired (no-op when none was pending)
+        fire_spy.assert_called_once_with(request_data)
+        # Failure spend log row written via the logging object
+        mock_logging_obj.async_failure_handler.assert_awaited_once()
+        _args, _kwargs = (
+            mock_logging_obj.async_failure_handler.await_args
+        )
+        assert _kwargs["exception"] is cancelled_error or _args[0] is cancelled_error
+
+    @pytest.mark.asyncio
+    async def test_no_logging_obj_still_records_metadata(self, monkeypatch):
+        from litellm.proxy.common_request_processing import (
+            _log_non_streaming_client_disconnect,
+        )
+
+        fire_spy = MagicMock()
+        monkeypatch.setattr(
+            "litellm.proxy.utils.ProxyLogging._fire_deferred_stream_logging",
+            fire_spy,
+        )
+
+        mock_request = MagicMock(spec=Request)
+        request_data = {
+            "litellm_call_id": "test-call-id-no-logging-obj",
+            "metadata": {},
+            "litellm_params": {"metadata": {}},
+        }
+
+        # Must not raise even when the request never got a logging object
+        await _log_non_streaming_client_disconnect(
+            request=mock_request,
+            request_data=request_data,
+            cancelled_error=asyncio.CancelledError(),
+        )
+
+        assert request_data["metadata"]["client_disconnected"] is True
+
+    @pytest.mark.asyncio
+    async def test_failure_handler_exception_is_swallowed(self, monkeypatch):
+        from litellm.proxy.common_request_processing import (
+            _log_non_streaming_client_disconnect,
+        )
+
+        monkeypatch.setattr(
+            "litellm.proxy.utils.ProxyLogging._fire_deferred_stream_logging",
+            MagicMock(),
+        )
+
+        mock_logging_obj = MagicMock()
+        mock_logging_obj.async_failure_handler = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+        mock_logging_obj.model_call_details = {"litellm_params": {}, "metadata": {}}
+        mock_request = MagicMock(spec=Request)
+        request_data = {
+            "litellm_call_id": "test-call-id-handler-error",
+            "litellm_logging_obj": mock_logging_obj,
+            "metadata": {},
+            "litellm_params": {"metadata": {}},
+        }
+
+        # Must not raise — the endpoint's cancellation unwind must proceed
+        await _log_non_streaming_client_disconnect(
+            request=mock_request,
+            request_data=request_data,
+            cancelled_error=asyncio.CancelledError(),
+        )
+
+
 class TestCancelOnDisconnect:
     """
     Coverage for the opt-in `general_settings.cancel_on_disconnect` flag:
