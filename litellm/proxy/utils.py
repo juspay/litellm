@@ -2142,9 +2142,7 @@ class ProxyLogging:
             litellm_logging_obj=_litellm_logging_obj,
             original_exception=original_exception,
         )
-        request_data["_litellm_failure_start_time"] = resolve_failure_start_time(
-            _litellm_logging_obj
-        )
+        request_data["_litellm_failure_start_time"] = resolve_failure_start_time(_litellm_logging_obj)
 
         # Remove before callbacks iterate — not serialisable
         request_data.pop("litellm_logging_obj", None)
@@ -4605,9 +4603,7 @@ class PrismaClient:
             self._cleanup_engine_watcher()
 
             async def _do_heavy_reconnect() -> None:
-                db_url = getattr(self, "database_url", None) or os.getenv(
-                    "DATABASE_URL", ""
-                )
+                db_url = getattr(self, "database_url", None) or os.getenv("DATABASE_URL", "")
                 if not db_url:
                     verbose_proxy_logger.error("DATABASE_URL not set; cannot recreate Prisma client.")
                     raise RuntimeError("DATABASE_URL not set")
@@ -4852,9 +4848,7 @@ class PrismaClient:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                if isinstance(
-                    e, asyncio.TimeoutError
-                ) or PrismaDBExceptionHandler.is_database_connection_error(e):
+                if isinstance(e, asyncio.TimeoutError) or PrismaDBExceptionHandler.is_database_connection_error(e):
                     # force=True so the watchdog can always run. Busy auth-path
                     # reconnect attempts continuously refresh
                     # _db_last_reconnect_attempt_ts; without this, the cooldown
@@ -6153,6 +6147,7 @@ async def get_available_models_for_user(
     from litellm.proxy.auth.auth_checks import get_team_object
     from litellm.proxy.auth.model_checks import (
         get_complete_model_list,
+        get_dormant_model_names,
         get_key_models,
         get_team_models,
     )
@@ -6213,7 +6208,15 @@ async def get_available_models_for_user(
         team_id=effective_team_id,
     )
 
-    return all_models
+    dormant_models = get_dormant_model_names(
+        granted_models=[*key_models, *team_models],
+        proxy_model_list=proxy_model_list,
+        model_access_groups=model_access_groups,
+    )
+    if not dormant_models:
+        return all_models
+
+    return [model for model in all_models if model not in dormant_models]
 
 
 def create_model_info_response(
