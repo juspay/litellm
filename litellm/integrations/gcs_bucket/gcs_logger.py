@@ -3,14 +3,16 @@ Production Logger with GCS Support for LiteLLM Proxy Server
 Logs to separate GCS buckets for success/error events with custom folder structures
 """
 
+import asyncio
 import json
 import os
 import time
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Awaitable, Callable, Optional, Tuple, TypeVar
 
 import anyio
+import anyio.to_process
 
 import litellm
 from litellm._logging import verbose_logger
@@ -23,7 +25,9 @@ from litellm.integrations.gcs_bucket.redaction import (
     redact_text,
 )
 
-_GCS_REDACTION_LIMITER = anyio.CapacityLimiter(1)
+_GCS_CALLBACK_LIMITER = anyio.CapacityLimiter(1)
+_GCS_PROCESS_THRESHOLD_BYTES = 64 * 1024
+_T = TypeVar("_T")
 
 
 def _sanitize_for_json(obj, seen=None):
@@ -51,23 +55,13 @@ def _sanitize_for_json(obj, seen=None):
 async def _redact_messages_async(messages):
     if not REDACT_ENABLED:
         return messages
-    return await anyio.to_thread.run_sync(
-        redact_messages,
-        messages,
-        abandon_on_cancel=True,
-        limiter=_GCS_REDACTION_LIMITER,
-    )
+    return await _run_gcs_cpu_work(redact_messages, messages)
 
 
 async def _redact_text_async(text):
     if not REDACT_ENABLED:
         return text
-    return await anyio.to_thread.run_sync(
-        redact_text,
-        text,
-        abandon_on_cancel=True,
-        limiter=_GCS_REDACTION_LIMITER,
-    )
+    return await _run_gcs_cpu_work(redact_text, text)
 
 
 def _sanitize_and_redact_dict_values(value):
@@ -75,12 +69,82 @@ def _sanitize_and_redact_dict_values(value):
 
 
 async def _sanitize_and_redact_dict_values_async(value):
+    return await _run_gcs_cpu_work(_sanitize_and_redact_dict_values, value)
+
+
+def _string_content_size(value, seen=None) -> int:
+    if isinstance(value, str):
+        return len(value.encode(errors="surrogatepass"))
+    if seen is None:
+        seen = set()
+    if id(value) in seen:
+        return 0
+    seen.add(id(value))
+    if isinstance(value, dict):
+        return sum(_string_content_size(item, seen) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_string_content_size(item, seen) for item in value)
+    return 0
+
+
+async def _run_gcs_cpu_work(callback, value):
+    if _string_content_size(value) >= _GCS_PROCESS_THRESHOLD_BYTES:
+        return await anyio.to_process.run_sync(callback, value)
+    return await anyio.to_thread.run_sync(callback, value)
+
+
+async def _sanitize_for_json_async(value):
+    if not REDACT_ENABLED:
+        return _sanitize_for_json(value)
     return await anyio.to_thread.run_sync(
-        _sanitize_and_redact_dict_values,
+        _sanitize_for_json,
         value,
-        abandon_on_cancel=True,
-        limiter=_GCS_REDACTION_LIMITER,
     )
+
+
+def _serialize_for_gcs(data):
+    return json.dumps(data, default=str)
+
+
+async def _serialize_for_gcs_async(data):
+    if not REDACT_ENABLED:
+        return _serialize_for_gcs(data)
+    return await _run_gcs_cpu_work(_serialize_for_gcs, data)
+
+
+def _serialize_logprobs(logprobs):
+    if hasattr(logprobs, "model_dump"):
+        return logprobs.model_dump()
+    if hasattr(logprobs, "to_dict"):
+        return logprobs.to_dict()
+    return logprobs
+
+
+async def _serialize_logprobs_async(logprobs):
+    if not REDACT_ENABLED:
+        return _serialize_logprobs(logprobs)
+    return await anyio.to_thread.run_sync(
+        _serialize_logprobs,
+        logprobs,
+    )
+
+
+async def _run_with_gcs_callback_slot(
+    callback: Callable[[], Awaitable[_T]],
+) -> _T:
+    borrower = object()
+
+    async def run_callback() -> _T:
+        await _GCS_CALLBACK_LIMITER.acquire_on_behalf_of(borrower)
+        try:
+            return await callback()
+        finally:
+            _GCS_CALLBACK_LIMITER.release_on_behalf_of(borrower)
+
+    # LoggingWorker can time out an individual callback. The queued CPU work must
+    # still finish and upload its audit record after that timeout.
+    task = asyncio.create_task(run_callback())
+    return await asyncio.shield(task)
 
 
 class ProductionGCSLogger(CustomLogger):
@@ -104,7 +168,13 @@ class ProductionGCSLogger(CustomLogger):
                 f"✅ GCS initialized: {self.success_bucket_name}, {self.error_bucket_name}"
             )
 
-    async def _upload_to_gcs_async(self, data: dict, bucket_name: str, log_type: str):
+    async def _upload_to_gcs_async(
+        self,
+        data: dict,
+        bucket_name: str,
+        log_type: str,
+        serialized_data: Optional[str] = None,
+    ):
         """Upload log data to GCS bucket using async I/O"""
         if not bucket_name:
             return
@@ -133,7 +203,9 @@ class ProductionGCSLogger(CustomLogger):
 
             # Upload using the GCS REST API
             # Note: No indent - BigQuery requires single-line JSON (NEWLINE_DELIMITED_JSON format)
-            json_data = json.dumps(data, default=str)
+            json_data = serialized_data
+            if json_data is None:
+                json_data = await _serialize_for_gcs_async(data)
             await self.gcs_base._log_json_data_on_gcs(
                 headers=headers,
                 bucket_name=bucket_name,
@@ -143,6 +215,47 @@ class ProductionGCSLogger(CustomLogger):
 
         except Exception as e:
             verbose_logger.exception(f"❌ GCS upload error: {e}")
+
+    async def _prepare_log_for_upload(
+        self,
+        build_log: Callable[[], Awaitable[Optional[dict]]],
+        bucket_name: Optional[str],
+    ) -> Optional[Tuple[dict, Optional[str]]]:
+        try:
+            data = await build_log()
+            if data is None:
+                return None
+            data = await _sanitize_and_redact_dict_values_async(data)
+            serialized_data = (
+                await _serialize_for_gcs_async(data) if bucket_name else None
+            )
+            return data, serialized_data
+        except Exception as e:
+            verbose_logger.exception(f"Error preparing GCS log: {e}")
+            return None
+
+    async def _process_log_event(
+        self,
+        build_log: Callable[[], Awaitable[Optional[dict]]],
+        bucket_name: Optional[str],
+        log_type: str,
+    ) -> None:
+        if REDACT_ENABLED:
+            prepared_log = await _run_with_gcs_callback_slot(
+                lambda: self._prepare_log_for_upload(build_log, bucket_name)
+            )
+        else:
+            data = await build_log()
+            prepared_log = (data, None) if data is not None else None
+
+        if prepared_log is not None and bucket_name:
+            data, serialized_data = prepared_log
+            await self._upload_to_gcs_async(
+                data,
+                bucket_name,
+                log_type,
+                serialized_data=serialized_data,
+            )
 
     def log_pre_api_call(self, model, messages, kwargs):
         pass
@@ -209,6 +322,20 @@ class ProductionGCSLogger(CustomLogger):
             print("[GCS Logger] Skipping logging due to x-litellm-disable-logging header", flush=True)
             return
 
+        await self._process_log_event(
+            lambda: self._build_success_log(
+                kwargs=kwargs,
+                response_obj=response_obj,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+            self.success_bucket_name,
+            "success",
+        )
+
+    async def _build_success_log(
+        self, kwargs, response_obj, start_time, end_time
+    ):
         try:
             correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
             litellm_params = kwargs.get("litellm_params", {})
@@ -272,15 +399,6 @@ class ProductionGCSLogger(CustomLogger):
                 },
                 "headers": metadata.get("headers"),
             }
-
-            
-            if not success_log["user"]["email"]:
-                try:
-                    success_log["litellm_kwargs"] = (
-                        await _sanitize_and_redact_dict_values_async(kwargs)
-                    )
-                except Exception as e:
-                    verbose_logger.info(f"Failed to serialize litellm_kwargs: {e}")
             if hasattr(response_obj, "choices") and response_obj.choices:
                 choice = response_obj.choices[0]
                 success_log["response"] = {
@@ -306,13 +424,17 @@ class ProductionGCSLogger(CustomLogger):
                     success_log["response"]["reasoning_content"] = (
                         await _redact_text_async(reasoning)
                     )
-                    success_log["response"]["tool_calls"] = _sanitize_for_json(
-                        getattr(message, "tool_calls", None)
+                    success_log["response"]["tool_calls"] = (
+                        await _sanitize_for_json_async(
+                            getattr(message, "tool_calls", None)
+                        )
                     )
-                    success_log["response"]["function_call"] = _sanitize_for_json(
-                        getattr(message, "function_call", None)
+                    success_log["response"]["function_call"] = (
+                        await _sanitize_for_json_async(
+                            getattr(message, "function_call", None)
+                        )
                     )
-                    thinking_blocks = _sanitize_for_json(
+                    thinking_blocks = await _sanitize_for_json_async(
                         getattr(message, "thinking_blocks", None)
                     )
                     if isinstance(thinking_blocks, list):
@@ -322,19 +444,18 @@ class ProductionGCSLogger(CustomLogger):
                                     block["thinking"]
                                 )
                     success_log["response"]["thinking_blocks"] = thinking_blocks
-                    success_log["response"]["reasoning_items"] = _sanitize_for_json(
-                        getattr(message, "reasoning_items", None)
+                    success_log["response"]["reasoning_items"] = (
+                        await _sanitize_for_json_async(
+                            getattr(message, "reasoning_items", None)
+                        )
                     )
 
                 # --- RL training fields: logprobs + token_ids ---
                 if hasattr(choice, "logprobs") and choice.logprobs is not None:
                     try:
-                        if hasattr(choice.logprobs, "model_dump"):
-                            success_log["response"]["logprobs"] = choice.logprobs.model_dump()
-                        elif hasattr(choice.logprobs, "to_dict"):
-                            success_log["response"]["logprobs"] = choice.logprobs.to_dict()
-                        else:
-                            success_log["response"]["logprobs"] = choice.logprobs
+                        success_log["response"]["logprobs"] = (
+                            await _serialize_logprobs_async(choice.logprobs)
+                        )
                     except Exception:
                         success_log["response"]["logprobs"] = str(choice.logprobs)
 
@@ -367,13 +488,11 @@ class ProductionGCSLogger(CustomLogger):
             except Exception:
                 success_log["cost"] = 0
 
-            if self.success_bucket_name:
-                await self._upload_to_gcs_async(
-                    success_log, self.success_bucket_name, "success"
-                )
+            return success_log
 
         except Exception as e:
             verbose_logger.exception(f"Error logging success: {e}")
+            return None
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         """Log failed requests for debugging"""
@@ -381,6 +500,20 @@ class ProductionGCSLogger(CustomLogger):
         if self._should_skip_logging(kwargs):
             return
 
+        await self._process_log_event(
+            lambda: self._build_failure_log(
+                kwargs=kwargs,
+                response_obj=response_obj,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+            self.error_bucket_name,
+            "error",
+        )
+
+    async def _build_failure_log(
+        self, kwargs, response_obj, start_time, end_time
+    ):
         try:
             correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
             litellm_params = kwargs.get("litellm_params", {})
@@ -414,9 +547,8 @@ class ProductionGCSLogger(CustomLogger):
                 },
                 "request": {
                     "messages_count": len(kwargs.get("messages", [])),
-                    "first_message": json.dumps(
+                    "first_message": await _serialize_for_gcs_async(
                         await _redact_messages_async(kwargs.get("messages", [])),
-                        default=str,
                     ),
                     "max_tokens": kwargs.get("max_tokens"),
                     "route": metadata.get("user_api_key_request_route"),
@@ -439,13 +571,11 @@ class ProductionGCSLogger(CustomLogger):
                 },
             }
 
-            if self.error_bucket_name:
-                await self._upload_to_gcs_async(
-                    error_log, self.error_bucket_name, "error"
-                )
+            return error_log
 
         except Exception as e:
             verbose_logger.exception(f"Error logging failure: {e}")
+            return None
 
 
 # Handler instance
