@@ -9495,3 +9495,73 @@ class TestEmitTeamMembersMetric:
         # A metric failure must be swallowed, not propagated to the handler.
         _emit_team_members_metric(self._team(1))
         fake_logger.set_team_members_metric.assert_called_once()
+
+
+def test_resolve_team_dormant_models_flags_grants_with_no_deployment():
+    """A granted name whose deployments were all deleted is reported as dormant.
+
+    team.models keeps the grant so re-adding a deployment restores access, so the
+    dashboard needs this field to leave it out of the team's model list until then.
+    """
+    from litellm import Router
+    from litellm.proxy._types import TeamInfoResponseObjectTeamTable
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        _resolve_team_dormant_models,
+    )
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-x"},
+            }
+        ]
+    )
+    team_info = TeamInfoResponseObjectTeamTable(team_id="t1", models=["glm-latest", "gpt-4o"])
+
+    with patch("litellm.proxy.proxy_server.llm_router", router):
+        _resolve_team_dormant_models(team_info)
+
+    assert team_info.dormant_models == ["glm-latest"]
+
+
+def test_resolve_team_dormant_models_empty_when_every_grant_is_backed():
+    from litellm import Router
+    from litellm.proxy._types import TeamInfoResponseObjectTeamTable
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        _resolve_team_dormant_models,
+    )
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-x"},
+            },
+            {
+                "model_name": "glm-latest",
+                "litellm_params": {"model": "openai/glm-latest", "api_key": "sk-z"},
+            },
+        ]
+    )
+    team_info = TeamInfoResponseObjectTeamTable(team_id="t1", models=["glm-latest", "gpt-4o"])
+
+    with patch("litellm.proxy.proxy_server.llm_router", router):
+        _resolve_team_dormant_models(team_info)
+
+    assert team_info.dormant_models == []
+
+
+def test_resolve_team_dormant_models_without_router_reports_nothing_dormant():
+    """With no router there is no inventory to compare against, so nothing is hidden."""
+    from litellm.proxy._types import TeamInfoResponseObjectTeamTable
+    from litellm.proxy.management_endpoints.team_endpoints import (
+        _resolve_team_dormant_models,
+    )
+
+    team_info = TeamInfoResponseObjectTeamTable(team_id="t1", models=["glm-latest"])
+
+    with patch("litellm.proxy.proxy_server.llm_router", None):
+        _resolve_team_dormant_models(team_info)
+
+    assert team_info.dormant_models == []

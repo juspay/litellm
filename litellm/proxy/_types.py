@@ -3663,6 +3663,8 @@ class TeamInfoResponseObjectTeamTable(LiteLLM_TeamTable):
     access_group_models: Optional[List[str]] = None
     access_group_mcp_server_ids: Optional[List[str]] = None
     access_group_agent_ids: Optional[List[str]] = None
+    # Subset of `models` that no deployment currently backs
+    dormant_models: Optional[List[str]] = None
 
 
 class TeamInfoResponseObject(TypedDict):

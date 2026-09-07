@@ -3405,6 +3405,31 @@ async def _add_team_member_budget_table(
     return team_info_response_object
 
 
+def _resolve_team_dormant_models(_team_info: TeamInfoResponseObjectTeamTable) -> None:
+    """Populate `dormant_models`: the granted names no deployment currently backs.
+
+    `team.models` holds plain strings rather than foreign keys, so a grant outlives the
+    deployments that served it. The name is kept so re-adding a deployment restores access
+    without an admin re-granting it, and this field lets the dashboard leave it out of the
+    team's model list until something serves it again.
+    """
+    from litellm.proxy.auth.model_checks import get_dormant_model_names
+    from litellm.proxy.proxy_server import llm_router
+
+    granted_models = _team_info.models or []
+    if not granted_models or llm_router is None:
+        _team_info.dormant_models = []
+        return
+
+    _team_info.dormant_models = sorted(
+        get_dormant_model_names(
+            granted_models=granted_models,
+            proxy_model_list=llm_router.get_model_names(),
+            model_access_groups=llm_router.get_model_access_groups(),
+        )
+    )
+
+
 async def _resolve_team_access_group_resources(_team_info: Any) -> None:
     """Populate access_group_models / mcp_server_ids / agent_ids on the team
     info response by resolving inherited resources from its access groups."""
@@ -3526,6 +3551,7 @@ async def team_info(
 
         # Resolve resources inherited from access groups
         await _resolve_team_access_group_resources(_team_info)
+        _resolve_team_dormant_models(_team_info)
 
         response_object = TeamInfoResponseObject(
             team_id=team_id,

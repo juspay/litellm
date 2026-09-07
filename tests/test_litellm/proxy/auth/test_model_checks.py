@@ -709,3 +709,192 @@ def test_expand_wildcard_invalid_litellm_params_passthrough():
     # Even if LiteLLM_Params construction fails the deployment should survive
     result = expand_wildcard_deployments_for_model_info([deployment])
     assert result == [deployment]
+
+
+def test_get_dormant_model_names_flags_grant_with_no_backing_deployment():
+    """A granted name that no deployment serves is dormant."""
+    from litellm.proxy.auth.model_checks import get_dormant_model_names
+
+    result = get_dormant_model_names(
+        granted_models=["glm-latest", "gpt-4o"],
+        proxy_model_list=["gpt-4o"],
+        model_access_groups={},
+    )
+
+    assert result == {"glm-latest"}
+
+
+def test_get_dormant_model_names_ignores_grant_with_surviving_deployment():
+    """A grant is not dormant while at least one deployment still serves the name."""
+    from litellm.proxy.auth.model_checks import get_dormant_model_names
+
+    result = get_dormant_model_names(
+        granted_models=["glm-latest", "gpt-4o"],
+        proxy_model_list=["glm-latest", "gpt-4o"],
+        model_access_groups={},
+    )
+
+    assert result == set()
+
+
+def test_get_dormant_model_names_never_flags_wildcards_or_sentinels():
+    """Wildcards and the all-* sentinels legitimately never appear in proxy_model_list."""
+    from litellm.proxy.auth.model_checks import get_dormant_model_names
+
+    result = get_dormant_model_names(
+        granted_models=[
+            "openai/*",
+            "*",
+            "all-proxy-models",
+            "all-team-models",
+            "no-default-models",
+        ],
+        proxy_model_list=["gpt-4o"],
+        model_access_groups={},
+    )
+
+    assert result == set()
+
+
+def test_get_dormant_model_names_flags_access_group_that_resolves_to_nothing():
+    """A granted access group is dormant once no deployment carries its tag."""
+    from litellm.proxy.auth.model_checks import get_dormant_model_names
+
+    result = get_dormant_model_names(
+        granted_models=["glm-family", "claude-family"],
+        proxy_model_list=["claude-3-5-sonnet"],
+        model_access_groups={"claude-family": ["claude-3-5-sonnet"]},
+    )
+
+    assert result == {"glm-family"}
+
+
+@pytest.mark.asyncio
+async def test_get_available_models_for_user_hides_dormant_team_grant():
+    """Deleting every deployment behind a granted name must drop it from /v1/models.
+
+    team.models is a plain string array, not a foreign key, so the grant survives the
+    deletion of the deployments that backed it. Before this filter the name was still
+    advertised to clients that could no longer call it.
+    """
+    from litellm import Router
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.utils import get_available_models_for_user
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-x"},
+            }
+        ]
+    )
+
+    result = await get_available_models_for_user(
+        user_api_key_dict=UserAPIKeyAuth(
+            api_key="sk-test",
+            models=[],
+            team_id="team-1",
+            team_models=["glm-latest", "gpt-4o"],
+        ),
+        llm_router=router,
+        general_settings={},
+        user_model=None,
+    )
+
+    assert "glm-latest" not in result
+    assert "gpt-4o" in result
+
+
+@pytest.mark.asyncio
+async def test_get_available_models_for_user_all_dormant_team_gets_no_models():
+    """A team whose every grant is dormant must get zero models, never every model.
+
+    Regression guard: `models=[]` is treated as "unrestricted" in several places
+    (`_check_model_access_helper`, `_get_v1_model_info_allowed_model_names`), so a
+    dormant filter applied to the grant lists instead of the resolved output would
+    turn a restricted team into an unrestricted one.
+    """
+    from litellm import Router
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.utils import get_available_models_for_user
+
+    router = Router(
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-x"},
+            },
+            {
+                "model_name": "claude-3-5-sonnet",
+                "litellm_params": {
+                    "model": "anthropic/claude-3-5-sonnet",
+                    "api_key": "sk-y",
+                },
+            },
+        ]
+    )
+
+    result = await get_available_models_for_user(
+        user_api_key_dict=UserAPIKeyAuth(
+            api_key="sk-test",
+            models=[],
+            team_id="team-1",
+            team_models=["glm-latest"],
+        ),
+        llm_router=router,
+        general_settings={},
+        user_model=None,
+    )
+
+    assert result == []
+    assert "gpt-4o" not in result
+    assert "claude-3-5-sonnet" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_available_models_for_user_restores_grant_when_deployment_returns():
+    """Re-adding a deployment restores the team's access with no write to team.models."""
+    from litellm import Router
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.utils import get_available_models_for_user
+
+    team_grants = ["glm-latest", "gpt-4o"]
+
+    def _list_models(router):
+        return get_available_models_for_user(
+            user_api_key_dict=UserAPIKeyAuth(
+                api_key="sk-test",
+                models=[],
+                team_id="team-1",
+                team_models=team_grants,
+            ),
+            llm_router=router,
+            general_settings={},
+            user_model=None,
+        )
+
+    without_glm = Router(
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-x"},
+            }
+        ]
+    )
+    assert "glm-latest" not in await _list_models(without_glm)
+
+    with_glm = Router(
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-x"},
+            },
+            {
+                "model_name": "glm-latest",
+                "litellm_params": {"model": "openai/glm-latest", "api_key": "sk-z"},
+            },
+        ]
+    )
+    assert "glm-latest" in await _list_models(with_glm)
+    assert team_grants == ["glm-latest", "gpt-4o"]

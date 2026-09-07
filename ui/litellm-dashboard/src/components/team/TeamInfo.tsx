@@ -114,6 +114,7 @@ export interface TeamData {
     access_group_models?: string[];
     access_group_mcp_server_ids?: string[];
     access_group_agent_ids?: string[];
+    dormant_models?: string[];
     router_settings?: Record<string, any>;
     guardrails?: string[];
     policies?: string[];
@@ -151,6 +152,17 @@ export interface TeamInfoProps {
   editTeam: boolean;
   premiumUser?: boolean;
 }
+
+// The edit form only offers models that are currently servable, so a dormant grant would be
+// dropped from `values.models` and revoked on save. Carry it back through. Special values
+// replace the whole list, so leave those selections exactly as the admin made them.
+export const mergeDormantGrants = (selected: string[], dormant: Set<string>): string[] => {
+  if (selected.some((model) => model === "all-proxy-models" || model === "no-default-models")) {
+    return selected;
+  }
+  const preserved = Array.from(dormant).filter((model) => !selected.includes(model));
+  return [...selected, ...preserved];
+};
 
 const getOrganizationModels = (organization: Organization | null, userModels: string[]) => {
   let tempModelsToPick = [];
@@ -220,17 +232,25 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
     return org?.members?.some((m: any) => m.user_id === userId && m.user_role === "org_admin") ?? false;
   }, [teamData, userOrganizations, userId]);
 
+  // Grants whose deployments have all been deleted. team.models keeps them so re-adding a
+  // deployment restores access, but they are left out of the team's model list until then.
+  const dormantModels = useMemo(() => new Set(teamData?.team_info?.dormant_models ?? []), [teamData]);
+  const activeTeamModels = useMemo(
+    () => (teamData?.team_info?.models ?? []).filter((model: string) => !dormantModels.has(model)),
+    [teamData, dormantModels],
+  );
+
   // Models currently selected in the team edit form, used to scope the per-model
   // rate limit dropdown to models this team actually has access to.
   const selectedModelsInForm = Form.useWatch("models", form) as string[] | undefined;
   const killSwitchOn = Form.useWatch("disable_global_guardrails", form) as boolean | undefined;
   const availableRateLimitModels = useMemo(() => {
-    const selected = selectedModelsInForm ?? teamData?.team_info?.models ?? [];
+    const selected = selectedModelsInForm ?? activeTeamModels;
     if (selected.includes("all-proxy-models") || selected.includes("all-team-models")) {
       return userModels;
     }
     return unfurlWildcardModelsInList(selected, userModels);
-  }, [selectedModelsInForm, teamData, userModels]);
+  }, [selectedModelsInForm, activeTeamModels, userModels]);
 
   const canEditTeam = is_team_admin || is_proxy_admin || is_org_admin || isOrgAdminForTeam;
   const visibleTabs = useMemo(() => getTeamInfoVisibleTabs(canEditTeam), [canEditTeam]);
@@ -516,7 +536,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
       const updateData: any = {
         team_id: teamId,
         team_alias: values.team_alias,
-        models: values.models,
+        models: mergeDormantGrants(values.models, dormantModels),
         tpm_limit: sanitizeNumeric(values.tpm_limit),
         rpm_limit: sanitizeNumeric(values.rpm_limit),
         model_tpm_limit: modelTpmLimit,
@@ -786,7 +806,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       <Badge color="red">All proxy models</Badge>
                     ) : (
                       <>
-                        {info.models.map((model: string, index: number) => (
+                        {activeTeamModels.map((model: string, index: number) => (
                           <Badge key={`direct-${index}`} color="blue">
                             {model}
                           </Badge>
@@ -931,7 +951,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                     initialValues={{
                       ...info,
                       team_alias: info.team_alias,
-                      models: info.models,
+                      models: activeTeamModels,
                       tpm_limit: info.tpm_limit,
                       rpm_limit: info.rpm_limit,
                       object_permission_search_tools: info.object_permission?.search_tools || [],
@@ -1501,7 +1521,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                     <div>
                       <Text className="font-medium">Models</Text>
                       <div className="flex flex-wrap gap-2 mt-1">
-                        {info.models.map((model, index) => (
+                        {activeTeamModels.map((model, index) => (
                           <Badge key={index} color="red">
                             {model}
                           </Badge>
@@ -1744,7 +1764,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                 </span>
               ),
               type: "multi-select" as const,
-              options: (info.models || []).map((m: string) => ({ label: m, value: m })),
+              options: activeTeamModels.map((m: string) => ({ label: m, value: m })),
               placeholder: "Leave empty to inherit all team models",
             },
           ],

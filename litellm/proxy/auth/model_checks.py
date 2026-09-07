@@ -67,6 +67,36 @@ def _get_models_from_access_groups(
     return all_models
 
 
+def get_dormant_model_names(
+    granted_models: List[str],
+    proxy_model_list: List[str],
+    model_access_groups: Dict[str, List[str]],
+) -> Set[str]:
+    """
+    Returns the granted model names that no deployment currently backs.
+
+    A grant in `team.models` / `key.models` is a durable string, not a foreign key, so it
+    outlives every deployment that once served it. Such a grant is still returned by
+    `/v1/models` even though the router can no longer route it, so clients are told about
+    a model they cannot call. These names are "dormant": kept as a grant so re-adding a
+    deployment restores access without an admin re-granting it, but hidden from client
+    listings for as long as nothing serves them.
+
+    Wildcards, access groups that still resolve, and the `all-*` sentinels are never
+    dormant; they legitimately do not appear in `proxy_model_list`.
+    """
+    servable_models = frozenset(proxy_model_list)
+    sentinel_names = frozenset(special.value for special in SpecialModelNames)
+    return {
+        model
+        for model in granted_models
+        if model not in servable_models
+        and model not in model_access_groups
+        and model not in sentinel_names
+        and not _check_wildcard_routing(model=model)
+    }
+
+
 async def get_mcp_server_ids(
     user_api_key_dict: UserAPIKeyAuth,
 ) -> List[str]:
