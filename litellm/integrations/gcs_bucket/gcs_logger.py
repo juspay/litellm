@@ -133,16 +133,17 @@ async def _run_with_gcs_callback_slot(
     callback: Callable[[], Awaitable[_T]],
 ) -> _T:
     borrower = object()
+    await _GCS_CALLBACK_LIMITER.acquire_on_behalf_of(borrower)
 
     async def run_callback() -> _T:
-        await _GCS_CALLBACK_LIMITER.acquire_on_behalf_of(borrower)
         try:
             return await callback()
         finally:
             _GCS_CALLBACK_LIMITER.release_on_behalf_of(borrower)
 
-    # LoggingWorker can time out an individual callback. The queued CPU work must
-    # still finish and upload its audit record after that timeout.
+    # LoggingWorker can time out an individual callback. Waiting work must be
+    # cancellable before it gets a slot, while active preparation releases the
+    # slot only after it finishes.
     task = asyncio.create_task(run_callback())
     return await asyncio.shield(task)
 

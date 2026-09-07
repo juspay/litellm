@@ -347,6 +347,42 @@ async def test_gcs_logging_worker_timeout_keeps_cpu_work_alive(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gcs_callback_timeout_cancels_waiting_slot():
+    # Given
+    active_callback_started = anyio.Event()
+    release_active_callback = anyio.Event()
+    waiting_callback_started = anyio.Event()
+
+    async def active_callback():
+        active_callback_started.set()
+        await release_active_callback.wait()
+
+    async def waiting_callback():
+        waiting_callback_started.set()
+
+    try:
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(
+                gcs_logger._run_with_gcs_callback_slot,
+                active_callback,
+            )
+            with anyio.fail_after(1):
+                await active_callback_started.wait()
+
+            # When
+            with anyio.move_on_after(0.01) as cancel_scope:
+                await gcs_logger._run_with_gcs_callback_slot(waiting_callback)
+
+            # Then
+            assert cancel_scope.cancel_called
+            assert gcs_logger._GCS_CALLBACK_LIMITER.statistics().tasks_waiting == 0
+            assert not waiting_callback_started.is_set()
+            release_active_callback.set()
+    finally:
+        release_active_callback.set()
+
+
+@pytest.mark.asyncio
 async def test_gcs_callbacks_remain_concurrent_when_redaction_is_disabled(monkeypatch):
     callbacks_started = 0
     both_callbacks_started = anyio.Event()
