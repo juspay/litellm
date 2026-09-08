@@ -107,6 +107,7 @@ from litellm.proxy.common_utils.callback_utils import (
     normalize_callback_names,
     process_callback,
 )
+from litellm.proxy.common_utils.event_loop_stall_monitor import EventLoopStallMonitor
 from litellm.proxy.common_utils.realtime_utils import _realtime_request_body
 from litellm.router_utils.add_retry_fallback_headers import (
     get_fallback_errors_from_headers,
@@ -846,6 +847,8 @@ async def proxy_startup_event(app: FastAPI):
     import json
 
     init_verbose_loggers()
+    event_loop_stall_monitor = EventLoopStallMonitor()
+    event_loop_stall_monitor.start()
 
     ## RUN WORKER STARTUP HOOKS (e.g., gflags initialization) ##
     _startup_hooks_env = os.environ.get("LITELLM_WORKER_STARTUP_HOOKS", "")
@@ -1071,6 +1074,7 @@ async def proxy_startup_event(app: FastAPI):
     # Shutdown event - drain in-flight requests before tearing down dependencies
     # so SIGTERM (rolling update, scale-down, liveness kill) doesn't drop them.
     GracefulShutdownManager.start_shutdown()
+    await event_loop_stall_monitor.stop()
     if llm_router is not None:
         try:
             llm_router.shutdown_routing_strategy()
