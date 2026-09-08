@@ -134,7 +134,7 @@ async def anthropic_response(
             await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=_ce,
-                request_data=base_llm_response_processor.data,
+                request_data=data,
             )
         except asyncio.CancelledError:
             pass
@@ -207,7 +207,7 @@ async def anthropic_response(
             await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=e,
-                request_data=base_llm_response_processor.data,
+                request_data=data,
             )
         body = AnthropicExceptionMapping.transform_to_anthropic_error(
             status_code=e.status_code,
@@ -222,7 +222,7 @@ async def anthropic_response(
             await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=e,
-                request_data=base_llm_response_processor.data,
+                request_data=data,
             )
         except asyncio.CancelledError:
             pass
