@@ -96,6 +96,16 @@ def test_gcs_error_log_keeps_first_message_json_string(monkeypatch):
     assert "jane.doe@example.com" not in error_log["request"]["first_message"]
 
 
+def test_gcs_enabled_path_defers_field_sanitization(monkeypatch):
+    value = object()
+
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
+    assert gcs_logger._sanitize_before_building_log(value) is value
+
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", False)
+    assert gcs_logger._sanitize_before_building_log(value) == str(value)
+
+
 def test_gcs_backlog_warning_is_rate_limited(monkeypatch):
     warnings = []
     timestamps = iter([100.0, 110.0, 161.0])

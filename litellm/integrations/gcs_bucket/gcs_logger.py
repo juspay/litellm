@@ -53,6 +53,12 @@ def _sanitize_for_json(obj, seen=None):
     return str(obj)
 
 
+def _sanitize_before_building_log(obj):
+    if REDACT_ENABLED:
+        return obj
+    return _sanitize_for_json(obj)
+
+
 def _redact_and_serialize_log(value, log_type):
     if log_type == "success":
         conversation = value.get("conversation")
@@ -302,13 +308,15 @@ class ProductionGCSLogger(CustomLogger):
                     success_log["response"]["content"] = getattr(message, "content", None)
                     reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
                     success_log["response"]["reasoning_content"] = reasoning
-                    success_log["response"]["tool_calls"] = _sanitize_for_json(getattr(message, "tool_calls", None))
-                    success_log["response"]["function_call"] = _sanitize_for_json(
+                    success_log["response"]["tool_calls"] = _sanitize_before_building_log(
+                        getattr(message, "tool_calls", None)
+                    )
+                    success_log["response"]["function_call"] = _sanitize_before_building_log(
                         getattr(message, "function_call", None)
                     )
-                    thinking_blocks = _sanitize_for_json(getattr(message, "thinking_blocks", None))
+                    thinking_blocks = _sanitize_before_building_log(getattr(message, "thinking_blocks", None))
                     success_log["response"]["thinking_blocks"] = thinking_blocks
-                    success_log["response"]["reasoning_items"] = _sanitize_for_json(
+                    success_log["response"]["reasoning_items"] = _sanitize_before_building_log(
                         getattr(message, "reasoning_items", None)
                     )
 
