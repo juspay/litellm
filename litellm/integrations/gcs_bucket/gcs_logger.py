@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 import anyio
+import anyio.to_process
 
 import litellm
 from litellm._logging import verbose_logger
@@ -18,12 +19,12 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.gcs_bucket.gcs_bucket_base import GCSBucketBase
 from litellm.integrations.gcs_bucket.redaction import (
     REDACT_ENABLED,
-    redact_dict_values,
     redact_messages,
     redact_text,
 )
 
-_GCS_REDACTION_LIMITER = anyio.CapacityLimiter(1)
+_GCS_REDACTION_PROCESS_LIMITER = anyio.CapacityLimiter(1)
+_GCS_SERIALIZATION_THREAD_LIMITER = anyio.CapacityLimiter(1)
 
 
 def _sanitize_for_json(obj, seen=None):
@@ -51,35 +52,35 @@ def _sanitize_for_json(obj, seen=None):
 async def _redact_messages_async(messages):
     if not REDACT_ENABLED:
         return messages
-    return await anyio.to_thread.run_sync(
+    return await anyio.to_process.run_sync(
         redact_messages,
         messages,
-        abandon_on_cancel=True,
-        limiter=_GCS_REDACTION_LIMITER,
+        cancellable=True,
+        limiter=_GCS_REDACTION_PROCESS_LIMITER,
     )
 
 
 async def _redact_text_async(text):
     if not REDACT_ENABLED:
         return text
-    return await anyio.to_thread.run_sync(
+    return await anyio.to_process.run_sync(
         redact_text,
         text,
-        abandon_on_cancel=True,
-        limiter=_GCS_REDACTION_LIMITER,
+        cancellable=True,
+        limiter=_GCS_REDACTION_PROCESS_LIMITER,
     )
 
 
-def _sanitize_and_redact_dict_values(value):
-    return redact_dict_values(_sanitize_for_json(value))
+def _serialize_json(value):
+    return json.dumps(value, default=str)
 
 
-async def _sanitize_and_redact_dict_values_async(value):
+async def _serialize_json_async(value):
     return await anyio.to_thread.run_sync(
-        _sanitize_and_redact_dict_values,
+        _serialize_json,
         value,
         abandon_on_cancel=True,
-        limiter=_GCS_REDACTION_LIMITER,
+        limiter=_GCS_SERIALIZATION_THREAD_LIMITER,
     )
 
 
@@ -133,7 +134,7 @@ class ProductionGCSLogger(CustomLogger):
 
             # Upload using the GCS REST API
             # Note: No indent - BigQuery requires single-line JSON (NEWLINE_DELIMITED_JSON format)
-            json_data = json.dumps(data, default=str)
+            json_data = await _serialize_json_async(data)
             await self.gcs_base._log_json_data_on_gcs(
                 headers=headers,
                 bucket_name=bucket_name,
@@ -272,15 +273,6 @@ class ProductionGCSLogger(CustomLogger):
                 },
                 "headers": metadata.get("headers"),
             }
-
-            
-            if not success_log["user"]["email"]:
-                try:
-                    success_log["litellm_kwargs"] = (
-                        await _sanitize_and_redact_dict_values_async(kwargs)
-                    )
-                except Exception as e:
-                    verbose_logger.info(f"Failed to serialize litellm_kwargs: {e}")
             if hasattr(response_obj, "choices") and response_obj.choices:
                 choice = response_obj.choices[0]
                 success_log["response"] = {
@@ -414,9 +406,8 @@ class ProductionGCSLogger(CustomLogger):
                 },
                 "request": {
                     "messages_count": len(kwargs.get("messages", [])),
-                    "first_message": json.dumps(
-                        await _redact_messages_async(kwargs.get("messages", [])),
-                        default=str,
+                    "first_message": await _serialize_json_async(
+                        await _redact_messages_async(kwargs.get("messages", []))
                     ),
                     "max_tokens": kwargs.get("max_tokens"),
                     "route": metadata.get("user_api_key_request_route"),

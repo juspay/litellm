@@ -2,9 +2,59 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 
+import anyio.to_process
+import anyio.to_thread
 import pytest
 
+from litellm.integrations.gcs_bucket import gcs_logger
 from litellm.integrations.gcs_bucket.gcs_logger import ProductionGCSLogger
+
+
+@pytest.mark.asyncio
+async def test_gcs_redaction_uses_bounded_process_worker(monkeypatch):
+    process_calls = []
+
+    async def capture_process_worker(callback, value, *, cancellable, limiter):
+        process_calls.append((callback, cancellable, limiter))
+        return callback(value)
+
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
+    monkeypatch.setattr(anyio.to_process, "run_sync", capture_process_worker)
+
+    result = await gcs_logger._redact_text_async("no pii")
+
+    assert result == "no pii"
+    assert process_calls == [
+        (
+            gcs_logger.redact_text,
+            True,
+            gcs_logger._GCS_REDACTION_PROCESS_LIMITER,
+        )
+    ]
+    assert gcs_logger._GCS_REDACTION_PROCESS_LIMITER.total_tokens == 1
+
+
+@pytest.mark.asyncio
+async def test_gcs_json_serialization_uses_bounded_thread_worker(monkeypatch):
+    thread_calls = []
+
+    async def capture_thread_worker(callback, value, *, abandon_on_cancel, limiter):
+        thread_calls.append((callback, abandon_on_cancel, limiter))
+        return callback(value)
+
+    monkeypatch.setattr(anyio.to_thread, "run_sync", capture_thread_worker)
+
+    result = await gcs_logger._serialize_json_async({"message": "hello"})
+
+    assert json.loads(result) == {"message": "hello"}
+    assert thread_calls == [
+        (
+            gcs_logger._serialize_json,
+            True,
+            gcs_logger._GCS_SERIALIZATION_THREAD_LIMITER,
+        )
+    ]
+    assert gcs_logger._GCS_SERIALIZATION_THREAD_LIMITER.total_tokens == 1
 
 
 @pytest.mark.asyncio
