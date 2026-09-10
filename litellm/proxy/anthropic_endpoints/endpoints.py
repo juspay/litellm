@@ -134,7 +134,13 @@ async def anthropic_response(
             await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=_ce,
-                request_data=data,
+                # base_llm_response_processor.data, not the outer `data`:
+                # pre-call processing can rebind self.data (guardrail
+                # pipeline copies) after stashing the MPR lease id and
+                # litellm_logging_obj on it. The stale outer dict lacks
+                # both, so the failure hook would skip the MPR release
+                # and orphan the spend-log row.
+                request_data=base_llm_response_processor.data,
             )
         except asyncio.CancelledError:
             pass
@@ -207,7 +213,10 @@ async def anthropic_response(
             await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=e,
-                request_data=data,
+                # Post-pre-call dict: carries the MPR lease id / increment
+                # flag / litellm_logging_obj the hook needs (see the
+                # CancelledError handler above for the full rationale).
+                request_data=base_llm_response_processor.data,
             )
         body = AnthropicExceptionMapping.transform_to_anthropic_error(
             status_code=e.status_code,
@@ -222,7 +231,10 @@ async def anthropic_response(
             await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=e,
-                request_data=data,
+                # Post-pre-call dict: carries the MPR lease id / increment
+                # flag / litellm_logging_obj the hook needs (see the
+                # CancelledError handler above for the full rationale).
+                request_data=base_llm_response_processor.data,
             )
         except asyncio.CancelledError:
             pass
