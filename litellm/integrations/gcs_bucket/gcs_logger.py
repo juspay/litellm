@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 from datetime import datetime
+from functools import lru_cache
 from typing import Optional
 
 import anyio
@@ -23,8 +24,11 @@ from litellm.integrations.gcs_bucket.redaction import (
     redact_text,
 )
 
+_GCS_INFLIGHT_LOG_LIMITER = anyio.CapacityLimiter(16)
+_GCS_PREPARATION_LIMITER = anyio.CapacityLimiter(1)
 _GCS_REDACTION_PROCESS_LIMITER = anyio.CapacityLimiter(1)
-_GCS_SERIALIZATION_THREAD_LIMITER = anyio.CapacityLimiter(1)
+_GCS_SANITIZATION_THREAD_LIMITER = anyio.CapacityLimiter(1)
+_GCS_BACKLOG_WARNING_INTERVAL_SECONDS = 60
 
 
 def _sanitize_for_json(obj, seen=None):
@@ -49,39 +53,56 @@ def _sanitize_for_json(obj, seen=None):
     return str(obj)
 
 
-async def _redact_messages_async(messages):
-    if not REDACT_ENABLED:
-        return messages
-    return await anyio.to_process.run_sync(
-        redact_messages,
-        messages,
-        cancellable=True,
-        limiter=_GCS_REDACTION_PROCESS_LIMITER,
-    )
+def _redact_and_serialize_log(value, log_type):
+    if log_type == "success":
+        conversation = value.get("conversation")
+        if isinstance(conversation, dict):
+            conversation["messages"] = redact_messages(conversation.get("messages"))
 
+        response = value.get("response")
+        if isinstance(response, dict):
+            if "content" in response:
+                response["content"] = redact_text(response["content"])
+            if "reasoning_content" in response:
+                response["reasoning_content"] = redact_text(response["reasoning_content"])
+            thinking_blocks = response.get("thinking_blocks")
+            if isinstance(thinking_blocks, list):
+                for block in thinking_blocks:
+                    if isinstance(block, dict) and "thinking" in block:
+                        block["thinking"] = redact_text(block["thinking"])
+    else:
+        request = value.get("request")
+        if isinstance(request, dict):
+            request["first_message"] = json.dumps(redact_messages(request.get("first_message")), default=str)
 
-async def _redact_text_async(text):
-    if not REDACT_ENABLED:
-        return text
-    return await anyio.to_process.run_sync(
-        redact_text,
-        text,
-        cancellable=True,
-        limiter=_GCS_REDACTION_PROCESS_LIMITER,
-    )
-
-
-def _serialize_json(value):
     return json.dumps(value, default=str)
 
 
-async def _serialize_json_async(value):
-    return await anyio.to_thread.run_sync(
-        _serialize_json,
-        value,
-        abandon_on_cancel=True,
-        limiter=_GCS_SERIALIZATION_THREAD_LIMITER,
-    )
+async def _prepare_gcs_payload_async(value, log_type):
+    async with _GCS_PREPARATION_LIMITER:
+        sanitized = await anyio.to_thread.run_sync(
+            _sanitize_for_json,
+            value,
+            abandon_on_cancel=True,
+            limiter=_GCS_SANITIZATION_THREAD_LIMITER,
+        )
+        return await anyio.to_process.run_sync(
+            _redact_and_serialize_log,
+            sanitized,
+            log_type,
+            cancellable=True,
+            limiter=_GCS_REDACTION_PROCESS_LIMITER,
+        )
+
+
+@lru_cache(maxsize=2)
+def _warn_redaction_backlog_full_once(log_type, interval):
+    verbose_logger.warning(f"GCS Logger: dropping {log_type} log while redaction backlog is full")
+
+
+def _warn_redaction_backlog_full(log_type):
+    interval = int(time.monotonic() // _GCS_BACKLOG_WARNING_INTERVAL_SECONDS)
+    _warn_redaction_backlog_full_once(log_type, interval)
 
 
 class ProductionGCSLogger(CustomLogger):
@@ -97,18 +118,23 @@ class ProductionGCSLogger(CustomLogger):
         self.gcs_base = GCSBucketBase(bucket_name=self.success_bucket_name)
 
         if not self.success_bucket_name or not self.error_bucket_name:
-            verbose_logger.warning(
-                "⚠️  GCS bucket names not set. GCS logging disabled."
-            )
+            verbose_logger.warning("⚠️  GCS bucket names not set. GCS logging disabled.")
         else:
-            verbose_logger.info(
-                f"✅ GCS initialized: {self.success_bucket_name}, {self.error_bucket_name}"
-            )
+            verbose_logger.info(f"✅ GCS initialized: {self.success_bucket_name}, {self.error_bucket_name}")
 
     async def _upload_to_gcs_async(self, data: dict, bucket_name: str, log_type: str):
         """Upload log data to GCS bucket using async I/O"""
         if not bucket_name:
             return
+
+        borrower = None
+        if REDACT_ENABLED:
+            borrower = object()
+            try:
+                _GCS_INFLIGHT_LOG_LIMITER.acquire_on_behalf_of_nowait(borrower)
+            except anyio.WouldBlock:
+                _warn_redaction_backlog_full(log_type)
+                return
 
         try:
             timestamp = datetime.utcnow().strftime("%H-%M-%S")
@@ -127,14 +153,14 @@ class ProductionGCSLogger(CustomLogger):
                 filename = f"{timestamp}_{correlation_id}.json"
                 gcs_path = f"failure/date={date}/{filename}"
 
-            # Use async httpx to upload to GCS
+            if REDACT_ENABLED:
+                json_data = await _prepare_gcs_payload_async(data, log_type)
+            else:
+                json_data = json.dumps(data, default=str)
+
             headers = await self.gcs_base.construct_request_headers(
                 service_account_json=self.service_account_path, vertex_instance=None
             )
-
-            # Upload using the GCS REST API
-            # Note: No indent - BigQuery requires single-line JSON (NEWLINE_DELIMITED_JSON format)
-            json_data = await _serialize_json_async(data)
             await self.gcs_base._log_json_data_on_gcs(
                 headers=headers,
                 bucket_name=bucket_name,
@@ -144,6 +170,9 @@ class ProductionGCSLogger(CustomLogger):
 
         except Exception as e:
             verbose_logger.exception(f"❌ GCS upload error: {e}")
+        finally:
+            if borrower is not None:
+                _GCS_INFLIGHT_LOG_LIMITER.release_on_behalf_of(borrower)
 
     def log_pre_api_call(self, model, messages, kwargs):
         pass
@@ -184,40 +213,31 @@ class ProductionGCSLogger(CustomLogger):
             litellm_params = kwargs.get("litellm_params", {})
             request_headers = get_proxy_server_request_headers(litellm_params)
 
-            disable_logging_header = request_headers.get(
-                "x-litellm-disable-logging", ""
-            )
+            disable_logging_header = request_headers.get("x-litellm-disable-logging", "")
 
             # Check if header value is "true" (case-insensitive)
             if disable_logging_header.lower().strip() == "true":
-                verbose_logger.debug(
-                    "GCS Logger: Skipping logging due to x-litellm-disable-logging header"
-                )
+                verbose_logger.debug("GCS Logger: Skipping logging due to x-litellm-disable-logging header")
                 return True
 
             return False
         except Exception as e:
             # Don't fail logging if header check fails
-            verbose_logger.debug(
-                f"GCS Logger: Error checking disable-logging header: {e}"
-            )
+            verbose_logger.debug(f"GCS Logger: Error checking disable-logging header: {e}")
             return False
 
     async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
         """Log successful requests for LLM training history"""
         # Check if logging should be skipped via header
         if self._should_skip_logging(kwargs):
-            print("[GCS Logger] Skipping logging due to x-litellm-disable-logging header", flush=True)
             return
 
         try:
             correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
             litellm_params = kwargs.get("litellm_params", {})
-            metadata = litellm_params.get(
-                "metadata", litellm_params.get("litellm_metadata", {})
-            ) or litellm_params.get("litellm_metadata", {})
-            # Extract date and session_id for queryability
-            log_date = datetime.utcnow().strftime("%Y-%m-%d")
+            metadata = litellm_params.get("metadata", litellm_params.get("litellm_metadata", {})) or litellm_params.get(
+                "litellm_metadata", {}
+            )
             session_id = self._get_session_id(kwargs, litellm_params, metadata)
 
             success_log = {
@@ -235,9 +255,7 @@ class ProductionGCSLogger(CustomLogger):
                     ),
                     "user_id": metadata.get("user_api_key_user_id"),
                     "team_alias": metadata.get("user_api_key_team_alias"),
-                    "department": (metadata.get("user_api_key_metadata") or {}).get(
-                        "department", "unknown"
-                    ),
+                    "department": (metadata.get("user_api_key_metadata") or {}).get("department", "unknown"),
                 },
                 "model": {
                     "requested": kwargs.get("model"),
@@ -247,9 +265,7 @@ class ProductionGCSLogger(CustomLogger):
                     "mode": metadata.get("model_info", {}).get("mode"),
                 },
                 "conversation": {
-                    "messages": await _redact_messages_async(
-                        kwargs.get("input", kwargs.get("messages", []))
-                    ),
+                    "messages": kwargs.get("input", kwargs.get("messages", [])),
                     "temperature": kwargs.get("temperature"),
                     "max_tokens": kwargs.get("max_tokens"),
                     "top_p": kwargs.get("top_p"),
@@ -264,11 +280,7 @@ class ProductionGCSLogger(CustomLogger):
                 "timing": {
                     "start_time": str(start_time),
                     "end_time": str(end_time),
-                    "duration_seconds": (
-                        (end_time - start_time).total_seconds()
-                        if start_time and end_time
-                        else None
-                    ),
+                    "duration_seconds": ((end_time - start_time).total_seconds() if start_time and end_time else None),
                     "llm_api_duration_ms": metadata.get("llm_api_duration_ms"),
                 },
                 "headers": metadata.get("headers"),
@@ -287,32 +299,14 @@ class ProductionGCSLogger(CustomLogger):
 
                 if hasattr(choice, "message"):
                     message = choice.message
-                    success_log["response"]["content"] = await _redact_text_async(
-                        getattr(message, "content", None)
-                    )
-                    reasoning = getattr(
-                        message, "reasoning_content", None
-                    ) or getattr(
-                        message, "reasoning", None
-                    )
-                    success_log["response"]["reasoning_content"] = (
-                        await _redact_text_async(reasoning)
-                    )
-                    success_log["response"]["tool_calls"] = _sanitize_for_json(
-                        getattr(message, "tool_calls", None)
-                    )
+                    success_log["response"]["content"] = getattr(message, "content", None)
+                    reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+                    success_log["response"]["reasoning_content"] = reasoning
+                    success_log["response"]["tool_calls"] = _sanitize_for_json(getattr(message, "tool_calls", None))
                     success_log["response"]["function_call"] = _sanitize_for_json(
                         getattr(message, "function_call", None)
                     )
-                    thinking_blocks = _sanitize_for_json(
-                        getattr(message, "thinking_blocks", None)
-                    )
-                    if isinstance(thinking_blocks, list):
-                        for block in thinking_blocks:
-                            if isinstance(block, dict) and "thinking" in block:
-                                block["thinking"] = await _redact_text_async(
-                                    block["thinking"]
-                                )
+                    thinking_blocks = _sanitize_for_json(getattr(message, "thinking_blocks", None))
                     success_log["response"]["thinking_blocks"] = thinking_blocks
                     success_log["response"]["reasoning_items"] = _sanitize_for_json(
                         getattr(message, "reasoning_items", None)
@@ -341,7 +335,6 @@ class ProductionGCSLogger(CustomLogger):
                 if provider_fields:
                     success_log["response"]["provider_specific_fields"] = provider_fields
 
-
             if hasattr(response_obj, "prompt_token_ids"):
                 success_log["prompt_token_ids"] = response_obj.prompt_token_ids
             if hasattr(response_obj, "usage"):
@@ -353,16 +346,12 @@ class ProductionGCSLogger(CustomLogger):
                 }
 
             try:
-                success_log["cost"] = litellm.completion_cost(
-                    completion_response=response_obj
-                )
+                success_log["cost"] = litellm.completion_cost(completion_response=response_obj)
             except Exception:
                 success_log["cost"] = 0
 
             if self.success_bucket_name:
-                await self._upload_to_gcs_async(
-                    success_log, self.success_bucket_name, "success"
-                )
+                await self._upload_to_gcs_async(success_log, self.success_bucket_name, "success")
 
         except Exception as e:
             verbose_logger.exception(f"Error logging success: {e}")
@@ -376,11 +365,9 @@ class ProductionGCSLogger(CustomLogger):
         try:
             correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
             litellm_params = kwargs.get("litellm_params", {})
-            metadata = litellm_params.get(
-                "metadata", litellm_params.get("litellm_metadata", {})
-            ) or litellm_params.get("litellm_metadata", {})
-            # Extract date and session_id for queryability
-            log_date = datetime.utcnow().strftime("%Y-%m-%d")
+            metadata = litellm_params.get("metadata", litellm_params.get("litellm_metadata", {})) or litellm_params.get(
+                "litellm_metadata", {}
+            )
             session_id = self._get_session_id(kwargs, litellm_params, metadata)
 
             error_log = {
@@ -393,9 +380,7 @@ class ProductionGCSLogger(CustomLogger):
                     "email": metadata.get("user_api_key_user_email"),
                     "user_id": metadata.get("user_api_key_user_id"),
                     "team_alias": metadata.get("user_api_key_team_alias"),
-                    "department": (metadata.get("user_api_key_metadata") or {}).get(
-                        "department"
-                    ),
+                    "department": (metadata.get("user_api_key_metadata") or {}).get("department"),
                 },
                 "model": {
                     "requested": kwargs.get("model"),
@@ -406,8 +391,10 @@ class ProductionGCSLogger(CustomLogger):
                 },
                 "request": {
                     "messages_count": len(kwargs.get("messages", [])),
-                    "first_message": await _serialize_json_async(
-                        await _redact_messages_async(kwargs.get("messages", []))
+                    "first_message": (
+                        kwargs.get("messages", [])
+                        if REDACT_ENABLED
+                        else json.dumps(kwargs.get("messages", []), default=str)
                     ),
                     "max_tokens": kwargs.get("max_tokens"),
                     "route": metadata.get("user_api_key_request_route"),
@@ -421,40 +408,16 @@ class ProductionGCSLogger(CustomLogger):
                 "timing": {
                     "start_time": str(start_time),
                     "end_time": str(end_time),
-                    "duration_seconds": (
-                        (end_time - start_time).total_seconds()
-                        if start_time and end_time
-                        else None
-                    ),
+                    "duration_seconds": ((end_time - start_time).total_seconds() if start_time and end_time else None),
                     "llm_api_duration_ms": metadata.get("llm_api_duration_ms"),
                 },
             }
 
             if self.error_bucket_name:
-                await self._upload_to_gcs_async(
-                    error_log, self.error_bucket_name, "error"
-                )
+                await self._upload_to_gcs_async(error_log, self.error_bucket_name, "error")
 
         except Exception as e:
             verbose_logger.exception(f"Error logging failure: {e}")
 
 
-# Handler instance
 logger_instance = ProductionGCSLogger()
-
-
-if __name__ == "__main__":
-    print("=" * 80)
-    print("Production Logger with GCS Support")
-    print("=" * 80)
-    print("\n📝 Logs to:")
-    print("   • GCS_SUCCESS_BUCKET_NAME (cloud)")
-    print("   • GCS_ERROR_BUCKET_NAME (cloud)")
-    print("\n🔧 Environment Variables:")
-    print("   GCS_SUCCESS_BUCKET_NAME - Success logs bucket")
-    print("   GCS_ERROR_BUCKET_NAME - Error logs bucket")
-    print("   GCS_PATH_SERVICE_ACCOUNT - Service account JSON (optional)")
-    print("\n📝 Config usage:")
-    print("litellm_settings:")
-    print("  callbacks: gcs_logger.logger_instance")
-    print("=" * 80)
