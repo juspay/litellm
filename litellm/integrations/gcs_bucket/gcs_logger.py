@@ -8,7 +8,6 @@ import os
 import time
 import uuid
 from datetime import datetime
-from functools import lru_cache
 from typing import Optional
 
 import anyio
@@ -24,11 +23,9 @@ from litellm.integrations.gcs_bucket.redaction import (
     redact_text,
 )
 
-_GCS_INFLIGHT_LOG_LIMITER = anyio.CapacityLimiter(16)
 _GCS_PREPARATION_LIMITER = anyio.CapacityLimiter(1)
 _GCS_REDACTION_PROCESS_LIMITER = anyio.CapacityLimiter(1)
 _GCS_SANITIZATION_THREAD_LIMITER = anyio.CapacityLimiter(1)
-_GCS_BACKLOG_WARNING_INTERVAL_SECONDS = 60
 
 
 def _sanitize_for_json(obj, seen=None):
@@ -101,16 +98,6 @@ async def _prepare_gcs_payload_async(value, log_type):
         )
 
 
-@lru_cache(maxsize=2)
-def _warn_redaction_backlog_full_once(log_type, interval):
-    verbose_logger.warning(f"GCS Logger: dropping {log_type} log while redaction backlog is full")
-
-
-def _warn_redaction_backlog_full(log_type):
-    interval = int(time.monotonic() // _GCS_BACKLOG_WARNING_INTERVAL_SECONDS)
-    _warn_redaction_backlog_full_once(log_type, interval)
-
-
 class ProductionGCSLogger(CustomLogger):
     """Production logger with async GCS bucket support using custom folder structures"""
 
@@ -132,15 +119,6 @@ class ProductionGCSLogger(CustomLogger):
         """Upload log data to GCS bucket using async I/O"""
         if not bucket_name:
             return
-
-        borrower = None
-        if REDACT_ENABLED:
-            borrower = object()
-            try:
-                _GCS_INFLIGHT_LOG_LIMITER.acquire_on_behalf_of_nowait(borrower)
-            except anyio.WouldBlock:
-                _warn_redaction_backlog_full(log_type)
-                return
 
         try:
             timestamp = datetime.utcnow().strftime("%H-%M-%S")
@@ -176,9 +154,6 @@ class ProductionGCSLogger(CustomLogger):
 
         except Exception as e:
             verbose_logger.exception(f"❌ GCS upload error: {e}")
-        finally:
-            if borrower is not None:
-                _GCS_INFLIGHT_LOG_LIMITER.release_on_behalf_of(borrower)
 
     def log_pre_api_call(self, model, messages, kwargs):
         pass

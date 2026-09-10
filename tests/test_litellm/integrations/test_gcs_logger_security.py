@@ -106,27 +106,11 @@ def test_gcs_enabled_path_defers_field_sanitization(monkeypatch):
     assert gcs_logger._sanitize_before_building_log(value) == str(value)
 
 
-def test_gcs_backlog_warning_is_rate_limited(monkeypatch):
-    warnings = []
-    timestamps = iter([100.0, 110.0, 161.0])
-
-    gcs_logger._warn_redaction_backlog_full_once.cache_clear()
-    monkeypatch.setattr(gcs_logger.time, "monotonic", lambda: next(timestamps))
-    monkeypatch.setattr(gcs_logger.verbose_logger, "warning", lambda message: warnings.append(message))
-
-    gcs_logger._warn_redaction_backlog_full("success")
-    gcs_logger._warn_redaction_backlog_full("success")
-    gcs_logger._warn_redaction_backlog_full("success")
-
-    assert len(warnings) == 2
-
-
 @pytest.mark.asyncio
-async def test_gcs_redaction_backlog_is_bounded(monkeypatch):
+async def test_gcs_concurrent_redaction_logs_wait_and_upload(monkeypatch):
     preparation_started = anyio.Event()
     release_preparation = anyio.Event()
     uploaded_payloads = []
-    dropped_log_types = []
 
     async def blocking_thread_worker(callback, value, *, abandon_on_cancel, limiter):
         preparation_started.set()
@@ -142,16 +126,11 @@ async def test_gcs_redaction_backlog_is_bounded(monkeypatch):
     async def capture_upload(headers, bucket_name, object_name, logging_payload):
         uploaded_payloads.append(logging_payload)
 
-    monkeypatch.setattr(gcs_logger, "_GCS_INFLIGHT_LOG_LIMITER", anyio.CapacityLimiter(1))
+    monkeypatch.setattr(gcs_logger, "_GCS_PREPARATION_LIMITER", anyio.CapacityLimiter(1))
     monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
     monkeypatch.setattr(gcs_redaction, "REDACT_ENABLED", True)
     monkeypatch.setattr(anyio.to_thread, "run_sync", blocking_thread_worker)
     monkeypatch.setattr(anyio.to_process, "run_sync", capture_process_worker)
-    monkeypatch.setattr(
-        gcs_logger,
-        "_warn_redaction_backlog_full",
-        lambda log_type: dropped_log_types.append(log_type),
-    )
     logger = ProductionGCSLogger()
     monkeypatch.setattr(logger.gcs_base, "construct_request_headers", capture_headers)
     monkeypatch.setattr(logger.gcs_base, "_log_json_data_on_gcs", capture_upload)
@@ -168,7 +147,8 @@ async def test_gcs_redaction_backlog_is_bounded(monkeypatch):
             "success",
         )
         await preparation_started.wait()
-        await logger._upload_to_gcs_async(
+        task_group.start_soon(
+            logger._upload_to_gcs_async,
             {
                 "correlation_id": "second",
                 "conversation": {"messages": []},
@@ -179,38 +159,7 @@ async def test_gcs_redaction_backlog_is_bounded(monkeypatch):
         )
         release_preparation.set()
 
-    assert dropped_log_types == ["success"]
-    assert len(uploaded_payloads) == 1
-    assert json.loads(uploaded_payloads[0])["correlation_id"] == "first"
-
-
-@pytest.mark.asyncio
-async def test_gcs_redaction_slot_is_released_after_worker_failure(monkeypatch):
-    inflight_limiter = anyio.CapacityLimiter(1)
-
-    async def capture_thread_worker(callback, value, *, abandon_on_cancel, limiter):
-        return callback(value)
-
-    async def fail_process_worker(callback, value, log_type, *, cancellable, limiter):
-        raise RuntimeError("worker failed")
-
-    monkeypatch.setattr(gcs_logger, "_GCS_INFLIGHT_LOG_LIMITER", inflight_limiter)
-    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
-    monkeypatch.setattr(anyio.to_thread, "run_sync", capture_thread_worker)
-    monkeypatch.setattr(anyio.to_process, "run_sync", fail_process_worker)
-    logger = ProductionGCSLogger()
-
-    await logger._upload_to_gcs_async(
-        {
-            "correlation_id": "request-1",
-            "conversation": {"messages": []},
-            "response": {},
-        },
-        "success-bucket",
-        "success",
-    )
-
-    assert inflight_limiter.borrowed_tokens == 0
+    assert {json.loads(payload)["correlation_id"] for payload in uploaded_payloads} == {"first", "second"}
 
 
 @pytest.mark.asyncio
