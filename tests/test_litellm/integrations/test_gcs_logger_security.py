@@ -2,9 +2,195 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 
+import anyio
+import anyio.to_process
+import anyio.to_thread
 import pytest
 
+from litellm.integrations.gcs_bucket import gcs_logger
+from litellm.integrations.gcs_bucket import redaction as gcs_redaction
 from litellm.integrations.gcs_bucket.gcs_logger import ProductionGCSLogger
+
+
+@pytest.mark.asyncio
+async def test_gcs_prepares_complete_log_in_one_bounded_process_call(monkeypatch):
+    process_calls = []
+    thread_calls = []
+
+    async def capture_process_worker(callback, value, log_type, *, cancellable, limiter):
+        process_calls.append((callback, log_type, cancellable, limiter))
+        return callback(value, log_type)
+
+    async def capture_thread_worker(callback, value, *, abandon_on_cancel, limiter):
+        thread_calls.append((callback, abandon_on_cancel, limiter))
+        return callback(value)
+
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
+    monkeypatch.setattr(gcs_redaction, "REDACT_ENABLED", True)
+    monkeypatch.setattr(anyio.to_process, "run_sync", capture_process_worker)
+    monkeypatch.setattr(anyio.to_thread, "run_sync", capture_thread_worker)
+
+    result = await gcs_logger._prepare_gcs_payload_async(
+        {
+            "conversation": {"messages": [{"role": "user", "content": "jane.doe@example.com"}]},
+            "response": {
+                "content": "jane.doe@example.com",
+                "reasoning_content": "jane.doe@example.com",
+                "thinking_blocks": [{"thinking": "jane.doe@example.com"}],
+            },
+        },
+        "success",
+    )
+
+    assert result is not None
+    assert "jane.doe@example.com" not in result
+    assert result.count("[REDACTED_") == 4
+    assert process_calls == [
+        (
+            gcs_logger._redact_and_serialize_log,
+            "success",
+            True,
+            gcs_logger._GCS_REDACTION_PROCESS_LIMITER,
+        )
+    ]
+    assert thread_calls == [
+        (
+            gcs_logger._sanitize_for_json,
+            True,
+            gcs_logger._GCS_SANITIZATION_THREAD_LIMITER,
+        )
+    ]
+    assert gcs_logger._GCS_REDACTION_PROCESS_LIMITER.total_tokens == 1
+
+
+@pytest.mark.asyncio
+async def test_gcs_real_process_worker_redacts_and_serializes(monkeypatch):
+    monkeypatch.setenv("GCS_REDACT_PII", "true")
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
+    monkeypatch.setattr(gcs_redaction, "REDACT_ENABLED", True)
+
+    result = await gcs_logger._prepare_gcs_payload_async(
+        {
+            "conversation": {"messages": [{"role": "user", "content": "jane.doe@example.com"}]},
+            "response": {},
+        },
+        "success",
+    )
+
+    assert result is not None
+    assert "jane.doe@example.com" not in result
+    assert "[REDACTED_" in result
+    assert json.loads(result)["response"] == {}
+
+
+def test_gcs_error_log_keeps_first_message_json_string(monkeypatch):
+    monkeypatch.setattr(gcs_redaction, "REDACT_ENABLED", True)
+
+    result = gcs_logger._redact_and_serialize_log(
+        {"request": {"first_message": [{"role": "user", "content": "jane.doe@example.com"}]}},
+        "error",
+    )
+
+    error_log = json.loads(result)
+    assert isinstance(error_log["request"]["first_message"], str)
+    assert "jane.doe@example.com" not in error_log["request"]["first_message"]
+
+
+def test_gcs_enabled_path_defers_field_sanitization(monkeypatch):
+    value = object()
+
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
+    assert gcs_logger._sanitize_before_building_log(value) is value
+
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", False)
+    assert gcs_logger._sanitize_before_building_log(value) == str(value)
+
+
+@pytest.mark.asyncio
+async def test_gcs_concurrent_redaction_logs_wait_and_upload(monkeypatch):
+    preparation_started = anyio.Event()
+    release_preparation = anyio.Event()
+    uploaded_payloads = []
+
+    async def blocking_thread_worker(callback, value, *, abandon_on_cancel, limiter):
+        preparation_started.set()
+        await release_preparation.wait()
+        return callback(value)
+
+    async def capture_process_worker(callback, value, log_type, *, cancellable, limiter):
+        return callback(value, log_type)
+
+    async def capture_headers(service_account_json, vertex_instance):
+        return {}
+
+    async def capture_upload(headers, bucket_name, object_name, logging_payload):
+        uploaded_payloads.append(logging_payload)
+
+    monkeypatch.setattr(gcs_logger, "_GCS_PREPARATION_LIMITER", anyio.CapacityLimiter(1))
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", True)
+    monkeypatch.setattr(gcs_redaction, "REDACT_ENABLED", True)
+    monkeypatch.setattr(anyio.to_thread, "run_sync", blocking_thread_worker)
+    monkeypatch.setattr(anyio.to_process, "run_sync", capture_process_worker)
+    logger = ProductionGCSLogger()
+    monkeypatch.setattr(logger.gcs_base, "construct_request_headers", capture_headers)
+    monkeypatch.setattr(logger.gcs_base, "_log_json_data_on_gcs", capture_upload)
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(
+            logger._upload_to_gcs_async,
+            {
+                "correlation_id": "first",
+                "conversation": {"messages": []},
+                "response": {},
+            },
+            "success-bucket",
+            "success",
+        )
+        await preparation_started.wait()
+        task_group.start_soon(
+            logger._upload_to_gcs_async,
+            {
+                "correlation_id": "second",
+                "conversation": {"messages": []},
+                "response": {},
+            },
+            "success-bucket",
+            "success",
+        )
+        release_preparation.set()
+
+    assert {json.loads(payload)["correlation_id"] for payload in uploaded_payloads} == {"first", "second"}
+
+
+@pytest.mark.asyncio
+async def test_gcs_disabled_path_does_not_start_workers(monkeypatch):
+    captured_payload = None
+
+    async def fail_if_called(*args, **kwargs):
+        pytest.fail("worker should not run while redaction is disabled")
+
+    async def capture_headers(service_account_json, vertex_instance):
+        return {}
+
+    async def capture_upload(headers, bucket_name, object_name, logging_payload):
+        nonlocal captured_payload
+        captured_payload = logging_payload
+
+    monkeypatch.setattr(gcs_logger, "REDACT_ENABLED", False)
+    monkeypatch.setattr(anyio.to_thread, "run_sync", fail_if_called)
+    monkeypatch.setattr(anyio.to_process, "run_sync", fail_if_called)
+    logger = ProductionGCSLogger()
+    monkeypatch.setattr(logger.gcs_base, "construct_request_headers", capture_headers)
+    monkeypatch.setattr(logger.gcs_base, "_log_json_data_on_gcs", capture_upload)
+
+    await logger._upload_to_gcs_async(
+        {"correlation_id": "request-1", "message": "hello"},
+        "success-bucket",
+        "success",
+    )
+
+    assert captured_payload is not None
+    assert json.loads(captured_payload)["message"] == "hello"
 
 
 @pytest.mark.asyncio
