@@ -77,6 +77,38 @@ class _CombinedChunkSplitter:
 
     @staticmethod
     def _split(chunk: Any) -> List[Any]:
+        """Decompose one upstream chunk into the ordered sequence of chunks the
+        downstream ``AnthropicStreamWrapper`` state machine can process one at a
+        time.
+
+        Three independent decompositions are applied, in order, because a single
+        upstream chunk can violate more than one of the wrapper's one-thing-per-chunk
+        assumptions at once:
+
+        1. ``_split_finish`` — content/tool_calls/reasoning + ``finish_reason``
+           in the same chunk (fake-streamed providers).
+        2. ``_split_reasoning_and_content`` — a reasoning→answer boundary chunk
+           carrying BOTH ``reasoning_content`` and ``content`` (e.g. GLM). The
+           translator's return precedence lets ``reasoning_content`` preempt the
+           first answer token, silently dropping it.
+        3. ``_split_tool_calls`` — a chunk batching MORE THAN ONE ``tool_calls``
+           delta (e.g. GLM emitting several complete tool calls at once). The
+           content-block classifier only reads ``tool_calls[0]`` while the delta
+           translator concatenates every tool's ``arguments`` into ONE
+           ``partial_json``, so both calls land in a single ``tool_use`` block as
+           ``{...}{...}`` — invalid JSON with an ``Extra data`` seam.
+
+        Each stage is identity for chunks it does not apply to, so a well-formed
+        single-purpose chunk passes through untouched.
+        """
+        result: List[Any] = []
+        for finished in _CombinedChunkSplitter._split_finish(chunk):
+            for reasoned in _CombinedChunkSplitter._split_reasoning_and_content(finished):
+                result.extend(_CombinedChunkSplitter._split_tool_calls(reasoned))
+        return result
+
+    @staticmethod
+    def _split_finish(chunk: Any) -> List[Any]:
         """Return ``[chunk]``, or ``[content_chunk, finish_chunk]`` if combined."""
         if not _CombinedChunkSplitter._is_combined(chunk):
             return [chunk]
@@ -96,6 +128,91 @@ class _CombinedChunkSplitter:
         if hasattr(finish_delta, "thinking_blocks"):
             finish_delta.thinking_blocks = None
         return [content_chunk, finish_chunk]
+
+    @staticmethod
+    def _split_reasoning_and_content(chunk: Any) -> List[Any]:
+        """Split a chunk carrying BOTH ``reasoning_content`` and ``content`` into a
+        reasoning-only chunk followed by a content-only chunk.
+
+        At the reasoning→answer boundary some models (e.g. GLM) emit one chunk that
+        holds the tail of the thinking stream AND the first answer token. The delta
+        translator returns ``thinking_delta`` before it ever looks at accumulated
+        ``text`` (return precedence: partial_json → reasoning_content → signature →
+        text), so the first answer token is silently discarded. Emitting the
+        reasoning first preserves Anthropic's thinking-before-text block ordering;
+        the content piece then triggers a normal thinking→text block transition and
+        its first token is re-queued by ``_trigger_delta_has_content``.
+        """
+        choices = getattr(chunk, "choices", None)
+        if not choices:
+            return [chunk]
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            return [chunk]
+        reasoning_content = getattr(delta, "reasoning_content", None)
+        content = getattr(delta, "content", None)
+        if not (reasoning_content and content):
+            return [chunk]
+
+        # Reasoning piece: keep reasoning_content (+ thinking_blocks/signature),
+        # drop the answer content.
+        reasoning_chunk = copy.deepcopy(chunk)
+        reasoning_chunk.choices[0].delta.content = None
+
+        # Content piece: keep content, drop the reasoning so the translator falls
+        # through to text_delta instead of being preempted by thinking_delta.
+        content_chunk = copy.deepcopy(chunk)
+        content_delta = content_chunk.choices[0].delta
+        if hasattr(content_delta, "reasoning_content"):
+            content_delta.reasoning_content = None
+        if hasattr(content_delta, "thinking_blocks"):
+            content_delta.thinking_blocks = None
+        return [reasoning_chunk, content_chunk]
+
+    @staticmethod
+    def _split_tool_calls(chunk: Any) -> List[Any]:
+        """Split a chunk batching more than one ``tool_calls`` delta into one chunk
+        per tool call, preserving order.
+
+        The downstream classifier
+        (``_translate_streaming_openai_chunk_to_anthropic_content_block``) only
+        inspects ``tool_calls[0]`` to decide the content block, while the delta
+        translator (``_translate_streaming_openai_chunk_to_anthropic``) concatenates
+        EVERY tool's ``arguments`` into a single ``partial_json``. A chunk carrying N
+        complete tool calls therefore collapses into ONE ``tool_use`` block whose
+        input is ``{...}{...}`` — concatenated JSON objects that fail to parse. By
+        handing the wrapper one tool call at a time, each named call flips
+        ``_should_start_new_content_block`` and lands in its own well-formed
+        ``tool_use`` block. Identity for chunks with 0 or 1 tool calls, so normal
+        one-tool-per-chunk streaming (including multi-chunk argument continuations)
+        is unaffected.
+        """
+        choices = getattr(chunk, "choices", None)
+        if not choices:
+            return [chunk]
+        delta = getattr(choices[0], "delta", None)
+        if delta is None:
+            return [chunk]
+        tool_calls = getattr(delta, "tool_calls", None)
+        if not tool_calls or len(tool_calls) <= 1:
+            return [chunk]
+
+        pieces: List[Any] = []
+        for i in range(len(tool_calls)):
+            piece = copy.deepcopy(chunk)
+            piece_delta = piece.choices[0].delta
+            piece_delta.tool_calls = [piece.choices[0].delta.tool_calls[i]]
+            # Any co-resident text/reasoning belongs with the FIRST tool call
+            # only; clearing it on the rest avoids duplicating that payload
+            # across every split chunk.
+            if i > 0:
+                piece_delta.content = None
+                if hasattr(piece_delta, "reasoning_content"):
+                    piece_delta.reasoning_content = None
+                if hasattr(piece_delta, "thinking_blocks"):
+                    piece_delta.thinking_blocks = None
+            pieces.append(piece)
+        return pieces
 
     def __iter__(self) -> "Iterator[Any]":
         return self
