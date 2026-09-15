@@ -371,6 +371,16 @@ MAX_PARALLEL_REQUESTS_KEY_TTL_BUFFER_SECONDS = int(
 MAX_PARALLEL_REQUESTS_LEASE_KEY_SUFFIX = "max_parallel_requests_leases"
 MAX_PARALLEL_REQUESTS_LEASE_ID_FIELD = "_litellm_max_parallel_requests_lease_id"
 
+# Hard bound (seconds) on the inline MPR release in the response path. If the
+# Redis release cannot complete within this window (congested pool, slow
+# connect), the response returns anyway and the deferred
+# async_log_success_event path re-attempts the release — the
+# is_centralized_redis_cache_incremented flag stays set on failure, so the
+# release is never lost, only deferred.
+MPR_INLINE_RELEASE_TIMEOUT_SECONDS = float(
+    os.getenv("LITELLM_MPR_INLINE_RELEASE_TIMEOUT_SECONDS", "1.0")
+)
+
 # Global env to enable/disable max_parallel_requests rate limiter
 _ENABLE_MAX_PARALLEL_REQUESTS_RATE_LIMITER_RAW = os.getenv(
     "LITELLM_ENABLE_MAX_PARALLEL_REQUESTS_RATE_LIMITER", "true"
@@ -3768,17 +3778,64 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             if isinstance(request_data, dict)
             else {"is_centralized_redis_cache_incremented": True}
         )
-        await self._release_max_parallel_requests_after_increment(
-            request_data=release_data,
-            user_api_key_dict=user_api_key_dict,
-            parent_otel_span=user_api_key_dict.parent_otel_span,
-        )
+        # Bounded: this runs as a fire-and-forget task from the streaming
+        # generators' finally blocks; a hard cap prevents task pileup when
+        # Redis is slow. On timeout the deferred async_log_success_event
+        # release path re-attempts (the increment flag stays set).
+        try:
+            await asyncio.wait_for(
+                self._release_max_parallel_requests_after_increment(
+                    request_data=release_data,
+                    user_api_key_dict=user_api_key_dict,
+                    parent_otel_span=user_api_key_dict.parent_otel_span,
+                ),
+                timeout=MPR_INLINE_RELEASE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            print(
+                f"[MPR-TIMEOUT] on-disconnect release timed out after "
+                f"{MPR_INLINE_RELEASE_TIMEOUT_SECONDS}s; deferring to "
+                f"async_log_success_event release path"
+            )
 
     async def async_post_call_success_hook(self, data: dict, user_api_key_dict: UserAPIKeyAuth, response):
         """
         Post-call hook to update rate limit headers in the response.
+
+        Also releases the max_parallel_requests slot **inline** (on the proxy
+        hook loop, not deferred through the logging worker) for successful
+        non-streaming requests. Without this, the only release path for
+        non-streaming success is ``async_log_success_event``, which is enqueued
+        to ``GLOBAL_LOGGING_WORKER`` and therefore deferred — causing the Redis
+        ZSET lease count (``ZCARD``) to overcount active requests by the depth
+        of the logging-worker backlog until it drains.
+
+        The release is bounded by ``MPR_INLINE_RELEASE_TIMEOUT_SECONDS`` via
+        ``asyncio.wait_for`` so a slow/congested Redis path can never stall the
+        response beyond that cap. On timeout, the release is NOT lost: the
+        ``is_centralized_redis_cache_incremented`` flag is only cleared on
+        successful release, so the deferred ``async_log_success_event`` path
+        will re-attempt it. First release wins; the second is a no-op.
         """
         try:
+            # Inline release — runs before the deferred logging worker would.
+            # Idempotent: the guard bails if already released. Bounded so the
+            # response path can never stall on a slow Redis release.
+            try:
+                await asyncio.wait_for(
+                    self._release_max_parallel_requests_after_increment(
+                        request_data=data,
+                        user_api_key_dict=user_api_key_dict,
+                    ),
+                    timeout=MPR_INLINE_RELEASE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                print(
+                    f"[MPR-TIMEOUT] inline release timed out after "
+                    f"{MPR_INLINE_RELEASE_TIMEOUT_SECONDS}s; deferring to "
+                    f"async_log_success_event release path"
+                )
+
             from pydantic import BaseModel
 
             litellm_proxy_rate_limit_response = cast(
