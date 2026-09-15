@@ -371,6 +371,16 @@ MAX_PARALLEL_REQUESTS_KEY_TTL_BUFFER_SECONDS = int(
 MAX_PARALLEL_REQUESTS_LEASE_KEY_SUFFIX = "max_parallel_requests_leases"
 MAX_PARALLEL_REQUESTS_LEASE_ID_FIELD = "_litellm_max_parallel_requests_lease_id"
 
+# Hard bound (seconds) on the inline MPR release in the response path. If the
+# Redis release cannot complete within this window (congested pool, slow
+# connect), the response returns anyway and the deferred
+# async_log_success_event path re-attempts the release — the
+# is_centralized_redis_cache_incremented flag stays set on failure, so the
+# release is never lost, only deferred.
+MPR_INLINE_RELEASE_TIMEOUT_SECONDS = float(
+    os.getenv("LITELLM_MPR_INLINE_RELEASE_TIMEOUT_SECONDS", "1.0")
+)
+
 # Global env to enable/disable max_parallel_requests rate limiter
 _ENABLE_MAX_PARALLEL_REQUESTS_RATE_LIMITER_RAW = os.getenv(
     "LITELLM_ENABLE_MAX_PARALLEL_REQUESTS_RATE_LIMITER", "true"
@@ -2837,46 +2847,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 args=args,
             )
 
-    def _observe_max_parallel_requests_redis_script_latency(
-        self,
-        operation: Literal["increment", "decrement"],
-        outcome: str,
-        latency_microseconds: float,
-        token: Optional[str],
-        key_alias: Optional[str],
-    ) -> None:
-        """
-        Observe Redis Lua script latency for max_parallel_requests acquire/release.
-
-        Prometheus computes p50/p95/p99 from the histogram buckets. This helper is
-        intentionally best-effort so metrics failures never affect rate limiting.
-        """
-        try:
-            from litellm.integrations.prometheus import PrometheusLogger
-
-            prometheus_logger = PrometheusLogger.get_instance()
-            if prometheus_logger is None:
-                return
-
-            latency_histogram = getattr(
-                prometheus_logger,
-                "litellm_parallel_requests_redis_script_latency_microseconds",
-                None,
-            )
-            if latency_histogram is None:
-                return
-
-            latency_histogram.labels(
-                operation=operation,
-                outcome=outcome,
-                token=str(token) if token is not None else "None",
-                key_alias=str(key_alias) if key_alias is not None else "None",
-            ).observe(latency_microseconds)
-        except Exception as e:
-            verbose_proxy_logger.debug(
-                f"Failed to observe max_parallel_requests Redis script latency metric: {str(e)}"
-            )
-
     async def _execute_max_parallel_requests_increment(
         self,
         descriptor_key: str,
@@ -2912,10 +2882,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         request_id = self._create_max_parallel_requests_lease_id(request_data)
         metric_token = user_api_key_dict.token if user_api_key_dict else None
         metric_key_alias = user_api_key_dict.key_alias if user_api_key_dict else None
-        script_start_time: Optional[float] = None
 
         try:
-            script_start_time = time.perf_counter()
             result = await self.max_parallel_requests_script(
                 keys=[lease_key],
                 args=[
@@ -2925,7 +2893,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     self._get_max_parallel_requests_key_ttl_ms(),
                 ],
             )
-            script_latency_seconds = time.perf_counter() - script_start_time
             allowed = int(result[0]) == 1
             previous_count = int(result[1])
             active_count = int(result[2])
@@ -2940,22 +2907,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     lease_id=request_id,
                 )
 
-            # Emit metric for every max_parallel_requests acquire decision.
+            # Emit metric log for every max_parallel_requests acquire decision.
             current_ts = datetime.now().isoformat()
-            acquire_outcome = (
-                "already_present"
-                if already_present
-                else "allowed"
-                if allowed
-                else "rejected"
-            )
-            self._observe_max_parallel_requests_redis_script_latency(
-                operation="increment",
-                outcome=acquire_outcome,
-                latency_microseconds=script_latency_seconds * 1_000_000,
-                token=metric_token,
-                key_alias=metric_key_alias,
-            )
             print(
                 build_parallel_requests_metric_log_line(
                     token=metric_token,
@@ -2979,17 +2932,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 active_count,
             ]
         except Exception as e:
-            if script_start_time is not None:
-                self._observe_max_parallel_requests_redis_script_latency(
-                    operation="increment",
-                    outcome="error",
-                    latency_microseconds=(
-                        time.perf_counter() - script_start_time
-                    )
-                    * 1_000_000,
-                    token=metric_token,
-                    key_alias=metric_key_alias,
-                )
             print(
                 f"[EXCEPTION] _execute_max_parallel_requests_increment failed: "
                 f"key={descriptor_key}:{descriptor_value}, "
@@ -3052,15 +2994,12 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         metric_key_alias = key_alias or (
             user_api_key_dict.key_alias if user_api_key_dict else None
         )
-        script_start_time: Optional[float] = None
 
         try:
-            script_start_time = time.perf_counter()
             result = await self.max_parallel_requests_decrement_script(
                 keys=[lease_key],
                 args=[request_id, self._get_max_parallel_requests_key_ttl_ms()],
             )
-            script_latency_seconds = time.perf_counter() - script_start_time
             removed = int(result[0])
             previous_count = int(result[1])
             new_count = int(result[2])
@@ -3075,15 +3014,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     f"current_count={new_count}"
                 )
 
-            # Emit metric for every max_parallel_requests release result.
+            # Emit metric log for every max_parallel_requests release result.
             current_ts = datetime.now().isoformat()
-            self._observe_max_parallel_requests_redis_script_latency(
-                operation="decrement",
-                outcome="removed" if removed > 0 else "missing",
-                latency_microseconds=script_latency_seconds * 1_000_000,
-                token=metric_token,
-                key_alias=metric_key_alias,
-            )
             print(
                 build_parallel_requests_metric_log_line(
                     token=metric_token,
@@ -3101,17 +3033,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             )
             return result
         except Exception as e:
-            if script_start_time is not None:
-                self._observe_max_parallel_requests_redis_script_latency(
-                    operation="decrement",
-                    outcome="error",
-                    latency_microseconds=(
-                        time.perf_counter() - script_start_time
-                    )
-                    * 1_000_000,
-                    token=metric_token,
-                    key_alias=metric_key_alias,
-                )
             print(
                 f"[EXCEPTION] _execute_max_parallel_requests_decrement failed: "
                 f"key={descriptor_key}:{descriptor_value}, "
@@ -3768,17 +3689,64 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             if isinstance(request_data, dict)
             else {"is_centralized_redis_cache_incremented": True}
         )
-        await self._release_max_parallel_requests_after_increment(
-            request_data=release_data,
-            user_api_key_dict=user_api_key_dict,
-            parent_otel_span=user_api_key_dict.parent_otel_span,
-        )
+        # Bounded: this runs as a fire-and-forget task from the streaming
+        # generators' finally blocks; a hard cap prevents task pileup when
+        # Redis is slow. On timeout the deferred async_log_success_event
+        # release path re-attempts (the increment flag stays set).
+        try:
+            await asyncio.wait_for(
+                self._release_max_parallel_requests_after_increment(
+                    request_data=release_data,
+                    user_api_key_dict=user_api_key_dict,
+                    parent_otel_span=user_api_key_dict.parent_otel_span,
+                ),
+                timeout=MPR_INLINE_RELEASE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            print(
+                f"[MPR-TIMEOUT] on-disconnect release timed out after "
+                f"{MPR_INLINE_RELEASE_TIMEOUT_SECONDS}s; deferring to "
+                f"async_log_success_event release path"
+            )
 
     async def async_post_call_success_hook(self, data: dict, user_api_key_dict: UserAPIKeyAuth, response):
         """
         Post-call hook to update rate limit headers in the response.
+
+        Also releases the max_parallel_requests slot **inline** (on the proxy
+        hook loop, not deferred through the logging worker) for successful
+        non-streaming requests. Without this, the only release path for
+        non-streaming success is ``async_log_success_event``, which is enqueued
+        to ``GLOBAL_LOGGING_WORKER`` and therefore deferred — causing the Redis
+        ZSET lease count (``ZCARD``) to overcount active requests by the depth
+        of the logging-worker backlog until it drains.
+
+        The release is bounded by ``MPR_INLINE_RELEASE_TIMEOUT_SECONDS`` via
+        ``asyncio.wait_for`` so a slow/congested Redis path can never stall the
+        response beyond that cap. On timeout, the release is NOT lost: the
+        ``is_centralized_redis_cache_incremented`` flag is only cleared on
+        successful release, so the deferred ``async_log_success_event`` path
+        will re-attempt it. First release wins; the second is a no-op.
         """
         try:
+            # Inline release — runs before the deferred logging worker would.
+            # Idempotent: the guard bails if already released. Bounded so the
+            # response path can never stall on a slow Redis release.
+            try:
+                await asyncio.wait_for(
+                    self._release_max_parallel_requests_after_increment(
+                        request_data=data,
+                        user_api_key_dict=user_api_key_dict,
+                    ),
+                    timeout=MPR_INLINE_RELEASE_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                print(
+                    f"[MPR-TIMEOUT] inline release timed out after "
+                    f"{MPR_INLINE_RELEASE_TIMEOUT_SECONDS}s; deferring to "
+                    f"async_log_success_event release path"
+                )
+
             from pydantic import BaseModel
 
             litellm_proxy_rate_limit_response = cast(
