@@ -2847,46 +2847,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 args=args,
             )
 
-    def _observe_max_parallel_requests_redis_script_latency(
-        self,
-        operation: Literal["increment", "decrement"],
-        outcome: str,
-        latency_microseconds: float,
-        token: Optional[str],
-        key_alias: Optional[str],
-    ) -> None:
-        """
-        Observe Redis Lua script latency for max_parallel_requests acquire/release.
-
-        Prometheus computes p50/p95/p99 from the histogram buckets. This helper is
-        intentionally best-effort so metrics failures never affect rate limiting.
-        """
-        try:
-            from litellm.integrations.prometheus import PrometheusLogger
-
-            prometheus_logger = PrometheusLogger.get_instance()
-            if prometheus_logger is None:
-                return
-
-            latency_histogram = getattr(
-                prometheus_logger,
-                "litellm_parallel_requests_redis_script_latency_microseconds",
-                None,
-            )
-            if latency_histogram is None:
-                return
-
-            latency_histogram.labels(
-                operation=operation,
-                outcome=outcome,
-                token=str(token) if token is not None else "None",
-                key_alias=str(key_alias) if key_alias is not None else "None",
-            ).observe(latency_microseconds)
-        except Exception as e:
-            verbose_proxy_logger.debug(
-                f"Failed to observe max_parallel_requests Redis script latency metric: {str(e)}"
-            )
-
     async def _execute_max_parallel_requests_increment(
         self,
         descriptor_key: str,
@@ -2922,10 +2882,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         request_id = self._create_max_parallel_requests_lease_id(request_data)
         metric_token = user_api_key_dict.token if user_api_key_dict else None
         metric_key_alias = user_api_key_dict.key_alias if user_api_key_dict else None
-        script_start_time: Optional[float] = None
 
         try:
-            script_start_time = time.perf_counter()
             result = await self.max_parallel_requests_script(
                 keys=[lease_key],
                 args=[
@@ -2935,7 +2893,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     self._get_max_parallel_requests_key_ttl_ms(),
                 ],
             )
-            script_latency_seconds = time.perf_counter() - script_start_time
             allowed = int(result[0]) == 1
             previous_count = int(result[1])
             active_count = int(result[2])
@@ -2950,22 +2907,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     lease_id=request_id,
                 )
 
-            # Emit metric for every max_parallel_requests acquire decision.
+            # Emit metric log for every max_parallel_requests acquire decision.
             current_ts = datetime.now().isoformat()
-            acquire_outcome = (
-                "already_present"
-                if already_present
-                else "allowed"
-                if allowed
-                else "rejected"
-            )
-            self._observe_max_parallel_requests_redis_script_latency(
-                operation="increment",
-                outcome=acquire_outcome,
-                latency_microseconds=script_latency_seconds * 1_000_000,
-                token=metric_token,
-                key_alias=metric_key_alias,
-            )
             print(
                 build_parallel_requests_metric_log_line(
                     token=metric_token,
@@ -2989,17 +2932,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 active_count,
             ]
         except Exception as e:
-            if script_start_time is not None:
-                self._observe_max_parallel_requests_redis_script_latency(
-                    operation="increment",
-                    outcome="error",
-                    latency_microseconds=(
-                        time.perf_counter() - script_start_time
-                    )
-                    * 1_000_000,
-                    token=metric_token,
-                    key_alias=metric_key_alias,
-                )
             print(
                 f"[EXCEPTION] _execute_max_parallel_requests_increment failed: "
                 f"key={descriptor_key}:{descriptor_value}, "
@@ -3062,15 +2994,12 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         metric_key_alias = key_alias or (
             user_api_key_dict.key_alias if user_api_key_dict else None
         )
-        script_start_time: Optional[float] = None
 
         try:
-            script_start_time = time.perf_counter()
             result = await self.max_parallel_requests_decrement_script(
                 keys=[lease_key],
                 args=[request_id, self._get_max_parallel_requests_key_ttl_ms()],
             )
-            script_latency_seconds = time.perf_counter() - script_start_time
             removed = int(result[0])
             previous_count = int(result[1])
             new_count = int(result[2])
@@ -3085,15 +3014,8 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     f"current_count={new_count}"
                 )
 
-            # Emit metric for every max_parallel_requests release result.
+            # Emit metric log for every max_parallel_requests release result.
             current_ts = datetime.now().isoformat()
-            self._observe_max_parallel_requests_redis_script_latency(
-                operation="decrement",
-                outcome="removed" if removed > 0 else "missing",
-                latency_microseconds=script_latency_seconds * 1_000_000,
-                token=metric_token,
-                key_alias=metric_key_alias,
-            )
             print(
                 build_parallel_requests_metric_log_line(
                     token=metric_token,
@@ -3111,17 +3033,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             )
             return result
         except Exception as e:
-            if script_start_time is not None:
-                self._observe_max_parallel_requests_redis_script_latency(
-                    operation="decrement",
-                    outcome="error",
-                    latency_microseconds=(
-                        time.perf_counter() - script_start_time
-                    )
-                    * 1_000_000,
-                    token=metric_token,
-                    key_alias=metric_key_alias,
-                )
             print(
                 f"[EXCEPTION] _execute_max_parallel_requests_decrement failed: "
                 f"key={descriptor_key}:{descriptor_value}, "
