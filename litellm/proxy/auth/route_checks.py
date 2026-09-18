@@ -728,7 +728,6 @@ class RouteChecks:
     _ADMIN_VIEWER_BLOCKED_WRITE_ROUTES = frozenset(
         [
             "/user/new",
-            "/user/delete",
             "/user/bulk_update",
             "/team/new",
             "/team/update",
@@ -747,6 +746,12 @@ class RouteChecks:
         ]
     )
 
+    # Write routes the Admin Viewer may reach because the endpoint itself
+    # performs the authorization (see `self_managed_routes`). `/user/delete`
+    # gates on PROXY_ADMIN, USER_DELETE_ALLOWED_USER_IDS, or a scoped
+    # ORG_ADMIN membership, so a plain Admin Viewer still gets a 403 there.
+    _ADMIN_VIEWER_ENDPOINT_AUTHORIZED_ROUTES = frozenset(["/user/delete"])
+
     @staticmethod
     def _check_proxy_admin_viewer_access(
         route: str,
@@ -760,7 +765,9 @@ class RouteChecks:
         Admin Viewer follows a read-parity-with-Proxy-Admin rule: anything Proxy
         Admin can read/list/get, Admin Viewer can read/list/get. The only
         exclusions are cost-incurring inference routes (Playground, /chat/
-        completions, etc.) and any state-mutating request.
+        completions, etc.) and any state-mutating request, except the routes
+        in `_ADMIN_VIEWER_ENDPOINT_AUTHORIZED_ROUTES` whose endpoints run
+        their own authorization.
 
         Implementation:
           1. LLM/inference routes → 403 (cost-incurring).
@@ -772,7 +779,8 @@ class RouteChecks:
              - Allow `/user/update` only when restricted to user_email/password.
              - Block all explicit writes in `_ADMIN_VIEWER_BLOCKED_WRITE_ROUTES`.
              - Otherwise allow only if the route is in admin_viewer_routes /
-               global_spend_tracking_routes (legacy explicit-allow set).
+               global_spend_tracking_routes (legacy explicit-allow set) or
+               `_ADMIN_VIEWER_ENDPOINT_AUTHORIZED_ROUTES`.
              - Else 403.
         """
         if RouteChecks.is_llm_api_route(route=route):
@@ -843,6 +851,8 @@ class RouteChecks:
         if RouteChecks.check_route_access(route=route, allowed_routes=LiteLLMRoutes.admin_viewer_routes.value):
             return
         if RouteChecks.check_route_access(route=route, allowed_routes=LiteLLMRoutes.global_spend_tracking_routes.value):
+            return
+        if route in RouteChecks._ADMIN_VIEWER_ENDPOINT_AUTHORIZED_ROUTES:
             return
 
         # NOTE: We intentionally do NOT fall back to allowing all

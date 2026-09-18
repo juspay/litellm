@@ -4333,3 +4333,164 @@ async def test_batch_update_user_budgets_db_not_connected(mocker):
 
     assert exc_info.value.status_code == 500
     assert "Database not connected" in str(exc_info.value.detail)
+
+
+def _mock_delete_user_prisma(mocker, target_user_id, target_org_ids, caller_admin_org_ids):
+    """Wire a prisma mock for delete_user: one existing target user with the
+    given org memberships, and a caller administering `caller_admin_org_ids`."""
+    mock_prisma_client = mocker.MagicMock()
+
+    mock_user_row = mocker.MagicMock()
+    mock_user_row.user_id = target_user_id
+    mock_user_row.user_email = f"{target_user_id}@example.com"
+    mock_user_row.teams = []
+    mock_user_row.json.return_value = "{}"
+    mock_user_row.model_dump.return_value = {"user_id": target_user_id, "teams": []}
+
+    mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(return_value=mock_user_row)
+    mock_prisma_client.db.litellm_usertable.find_many = mocker.AsyncMock(return_value=[])
+    mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(return_value=[])
+    mock_prisma_client.db.litellm_serviceaccounttable.find_many = mocker.AsyncMock(return_value=[])
+    mock_prisma_client.db.litellm_serviceaccounttable.delete_many = mocker.AsyncMock(return_value=0)
+
+    def _membership(org_id, user_id):
+        membership = mocker.MagicMock()
+        membership.organization_id = org_id
+        membership.user_id = user_id
+        return membership
+
+    async def mock_find_memberships(*args, **kwargs):
+        where = kwargs.get("where") or (args[0] if args else {})
+        user_id_filter = where.get("user_id")
+        if isinstance(user_id_filter, dict) and "in" in user_id_filter:
+            return [_membership(org_id, target_user_id) for org_id in target_org_ids]
+        return [_membership(org_id, user_id_filter) for org_id in caller_admin_org_ids]
+
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        side_effect=mock_find_memberships
+    )
+
+    for table in (
+        "litellm_verificationtoken",
+        "litellm_invitationlink",
+        "litellm_organizationmembership",
+        "litellm_teammembership",
+        "litellm_usertable",
+    ):
+        getattr(mock_prisma_client.db, table).delete_many = mocker.AsyncMock(return_value=1)
+
+    return mock_prisma_client
+
+
+def test_user_delete_allowlist_reads_and_parses_env_var(monkeypatch):
+    """USER_DELETE_ALLOWED_USER_IDS is a comma-separated list; blank and
+    whitespace-only entries are dropped so a trailing comma or an empty env
+    var never grants access to a user whose id is the empty string."""
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        user_delete_allowlist,
+    )
+
+    monkeypatch.delenv("USER_DELETE_ALLOWED_USER_IDS", raising=False)
+    assert user_delete_allowlist() == frozenset()
+
+    monkeypatch.setenv("USER_DELETE_ALLOWED_USER_IDS", "   ")
+    assert user_delete_allowlist() == frozenset()
+
+    monkeypatch.setenv("USER_DELETE_ALLOWED_USER_IDS", " alice , ,bob,")
+    assert user_delete_allowlist() == frozenset({"alice", "bob"})
+
+
+@pytest.mark.asyncio
+async def test_delete_user_allows_allowlisted_non_admin(mocker, monkeypatch):
+    """A non-admin listed in USER_DELETE_ALLOWED_USER_IDS may delete a user
+    that no org admin could reach: the target has no org memberships, so the
+    org-scope subset check would reject it. Only the allowlist bypass lets
+    this through."""
+    from litellm.proxy._types import DeleteUserRequest, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.internal_user_endpoints import delete_user
+
+    monkeypatch.setenv("USER_DELETE_ALLOWED_USER_IDS", "helpdesk-bot,other-user")
+    mock_prisma_client = _mock_delete_user_prisma(
+        mocker, target_user_id="victim", target_org_ids=[], caller_admin_org_ids=[]
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    await delete_user(
+        data=DeleteUserRequest(user_ids=["victim"]),
+        user_api_key_dict=UserAPIKeyAuth(user_id="helpdesk-bot", user_role=LitellmUserRoles.INTERNAL_USER),
+    )
+
+    mock_prisma_client.db.litellm_usertable.delete_many.assert_called_once()
+    assert mock_prisma_client.db.litellm_usertable.delete_many.call_args.kwargs["where"] == {
+        "user_id": {"in": ["victim"]}
+    }
+
+
+@pytest.mark.asyncio
+async def test_delete_user_rejects_non_allowlisted_non_admin(mocker, monkeypatch):
+    """Regression: the allowlist is the only thing that widens access. A
+    non-admin with no org-admin membership whose id is absent from
+    USER_DELETE_ALLOWED_USER_IDS must still be refused, and nothing may be
+    deleted."""
+    from litellm.proxy._types import DeleteUserRequest, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.internal_user_endpoints import delete_user
+
+    monkeypatch.setenv("USER_DELETE_ALLOWED_USER_IDS", "helpdesk-bot")
+    mock_prisma_client = _mock_delete_user_prisma(
+        mocker, target_user_id="victim", target_org_ids=[], caller_admin_org_ids=[]
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_user(
+            data=DeleteUserRequest(user_ids=["victim"]),
+            user_api_key_dict=UserAPIKeyAuth(user_id="random-user", user_role=LitellmUserRoles.INTERNAL_USER),
+        )
+
+    assert exc.value.status_code == 403
+    mock_prisma_client.db.litellm_usertable.delete_many.assert_not_called()
+    mock_prisma_client.db.litellm_verificationtoken.delete_many.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_keeps_org_admin_scope_check_for_allowlisted_absent_caller(mocker, monkeypatch):
+    """Reapplying the allowlist must not loosen the org-admin path: an org
+    admin of org-A still cannot delete a user who belongs to org-B."""
+    from litellm.proxy._types import DeleteUserRequest, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.internal_user_endpoints import delete_user
+
+    monkeypatch.setenv("USER_DELETE_ALLOWED_USER_IDS", "helpdesk-bot")
+    mock_prisma_client = _mock_delete_user_prisma(
+        mocker, target_user_id="victim", target_org_ids=["org-B"], caller_admin_org_ids=["org-A"]
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_user(
+            data=DeleteUserRequest(user_ids=["victim"]),
+            user_api_key_dict=UserAPIKeyAuth(user_id="org-a-admin", user_role=LitellmUserRoles.ORG_ADMIN),
+        )
+
+    assert exc.value.status_code == 403
+    mock_prisma_client.db.litellm_usertable.delete_many.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_user_still_allows_org_admin_within_scope(mocker, monkeypatch):
+    """The org-admin path kept working after the allowlist was added: an org
+    admin of org-A may delete a user whose memberships are entirely org-A."""
+    from litellm.proxy._types import DeleteUserRequest, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.internal_user_endpoints import delete_user
+
+    monkeypatch.delenv("USER_DELETE_ALLOWED_USER_IDS", raising=False)
+    mock_prisma_client = _mock_delete_user_prisma(
+        mocker, target_user_id="member", target_org_ids=["org-A"], caller_admin_org_ids=["org-A"]
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    await delete_user(
+        data=DeleteUserRequest(user_ids=["member"]),
+        user_api_key_dict=UserAPIKeyAuth(user_id="org-a-admin", user_role=LitellmUserRoles.ORG_ADMIN),
+    )
+
+    mock_prisma_client.db.litellm_usertable.delete_many.assert_called_once()
