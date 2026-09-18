@@ -60,6 +60,7 @@ from litellm.repositories.user_repository import UserRepository
 from litellm.repositories.verification_token_repository import (
     VerificationTokenRepository,
 )
+from litellm.secret_managers.main import get_secret_str
 from litellm.types.proxy.management_endpoints.common_daily_activity import (
     SpendAnalyticsPaginatedResponse,
 )
@@ -2556,6 +2557,11 @@ def _build_service_account_key_rotation_email(
     return html
 
 
+def user_delete_allowlist() -> frozenset[str]:
+    raw_allowlist = get_secret_str("USER_DELETE_ALLOWED_USER_IDS") or ""
+    return frozenset(user_id.strip() for user_id in raw_allowlist.split(",") if user_id.strip())
+
+
 @router.post(
     "/user/delete",
     tags=["Internal User management"],
@@ -2613,9 +2619,11 @@ async def delete_user(
     # cross-check data.user_ids against the caller's scope, so without this
     # loop an org-admin of org-A could delete users in org-B by supplying
     # {"user_ids": [victim_in_org_B], "organization_id": "org-A"}.
-    caller_is_proxy_admin = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+    caller_bypasses_org_scope = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value or (
+        user_api_key_dict.user_id is not None and user_api_key_dict.user_id in user_delete_allowlist()
+    )
     caller_admin_org_ids: set = set()
-    if not caller_is_proxy_admin:
+    if not caller_bypasses_org_scope:
         caller_memberships = (
             await OrganizationMembershipRepository(prisma_client).table.find_many(
                 where={
@@ -2630,13 +2638,15 @@ async def delete_user(
         if not caller_admin_org_ids:
             raise HTTPException(
                 status_code=403,
-                detail={"error": "Only PROXY_ADMIN or ORG_ADMIN users may delete users."},
+                detail={
+                    "error": "Only PROXY_ADMIN, ORG_ADMIN, or users listed in USER_DELETE_ALLOWED_USER_IDS may delete users."
+                },
             )
 
     # Batch-fetch target memberships once before the per-user loop. Avoids
     # an N+1 DB call when delete_user is called with a large user_ids list.
     target_org_ids_by_user: Dict[str, set] = {}
-    if not caller_is_proxy_admin:
+    if not caller_bypasses_org_scope:
         all_target_memberships = await OrganizationMembershipRepository(prisma_client).table.find_many(
             where={"user_id": {"in": data.user_ids}}
         )
@@ -2655,7 +2665,7 @@ async def delete_user(
                 detail={"error": f"User not found, passed user_id={user_id}"},
             )
 
-        if not caller_is_proxy_admin:
+        if not caller_bypasses_org_scope:
             target_org_ids = target_org_ids_by_user.get(user_id, set())
             # Org-admin may only delete users whose entire org membership is
             # within their admin scope. A target with ANY org outside the

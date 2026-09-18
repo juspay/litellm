@@ -2797,3 +2797,71 @@ def test_internal_user_blocked_from_search_tool_writes(route):
     assert "Only proxy admin" in str(exc_info.value)
     assert f"Route={route}" in str(exc_info.value)
     assert "Your role=internal_user" in str(exc_info.value)
+
+
+def test_proxy_admin_viewer_reaches_user_delete_handler():
+    """`/user/delete` must clear the Admin Viewer route gate so the endpoint's
+    own USER_DELETE_ALLOWED_USER_IDS / org-admin checks decide the outcome.
+    It used to 403 here before ever reaching the handler, which made the
+    allowlist unreachable for this role."""
+    request = MagicMock()
+    request.method = "POST"
+
+    RouteChecks._check_proxy_admin_viewer_access(
+        route="/user/delete",
+        _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        request_data={"user_ids": ["victim"]},
+        request=request,
+    )
+
+
+@pytest.mark.parametrize(
+    "still_blocked_route",
+    ["/user/new", "/user/bulk_update", "/team/delete", "/key/delete"],
+)
+def test_proxy_admin_viewer_user_delete_unblock_is_narrow(still_blocked_route):
+    """Unblocking `/user/delete` must not have widened the Admin Viewer write
+    denylist to its neighbours in the same frozenset."""
+    request = MagicMock()
+    request.method = "POST"
+
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks._check_proxy_admin_viewer_access(
+            route=still_blocked_route,
+            _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            request_data={},
+            request=request,
+        )
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        LitellmUserRoles.INTERNAL_USER.value,
+        LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value,
+    ],
+)
+def test_user_delete_route_gate_defers_to_endpoint_for_non_admin_roles(role):
+    """`/user/delete` is a self-managed route: the gate lets non-admin roles
+    through so the endpoint can apply the allowlist / org-scope rules. If it
+    is dropped from self_managed_routes these callers 403 at the gate and the
+    allowlist silently stops working for them."""
+    user_obj = LiteLLM_UserTable(
+        user_id="test_user",
+        user_email="test@example.com",
+        user_role=role,
+    )
+    valid_token = UserAPIKeyAuth(user_id="test_user", user_role=role)
+    request = MagicMock()
+    request.method = "POST"
+    request.query_params = {}
+
+    RouteChecks.non_proxy_admin_allowed_routes_check(
+        user_obj=user_obj,
+        _user_role=role,
+        route="/user/delete",
+        request=request,
+        valid_token=valid_token,
+        request_data={"user_ids": ["victim"]},
+    )
