@@ -1,18 +1,19 @@
 import moment from "moment";
 import { useEffect, useMemo, useState } from "react";
-import { uiSpendLogsCall } from "../networking";
 import { Team } from "../key_team_helpers/key_list";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { fetchAllTeams } from "../../components/key_team_helpers/filter_helpers";
 import { defaultPageSize } from "../constants";
 import type { LogEntry, LogsSortField } from "./columns";
+import { fetchUiSpendLogs } from "./logs_networking";
 
 export interface PaginatedResponse {
   data: LogEntry[];
-  total: number;
+  total: number | null;
   page: number;
   page_size: number;
-  total_pages: number;
+  total_pages: number | null;
+  has_more?: boolean;
 }
 
 function useDebouncedValue<T>(value: T, delayMs: number): [T, React.Dispatch<React.SetStateAction<T>>] {
@@ -133,7 +134,7 @@ export function useLogFilterLogic({
       sortBy,
       sortOrder,
     ],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!accessToken || !token || !userRole || !userID) {
         return {
           data: [],
@@ -144,17 +145,23 @@ export function useLogFilterLogic({
         };
       }
 
-      const formattedStartTime = moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss");
       const formattedEndTime = isCustomDate
         ? moment(endTime).utc().format("YYYY-MM-DD HH:mm:ss")
         : moment().utc().format("YYYY-MM-DD HH:mm:ss");
+      const formattedStartTime = isCustomDate
+        ? moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss")
+        : moment()
+            .subtract(moment(endTime).diff(moment(startTime)), "milliseconds")
+            .utc()
+            .format("YYYY-MM-DD HH:mm:ss");
 
-      const response = await uiSpendLogsCall({
+      const response = await fetchUiSpendLogs({
         accessToken,
         start_date: formattedStartTime,
         end_date: formattedEndTime,
         page: currentPage,
         page_size: pageSize,
+        signal,
         params: {
           api_key: effectiveFilters[FILTER_KEYS.KEY_HASH] || undefined,
           team_id: effectiveFilters[FILTER_KEYS.TEAM_ID] || undefined,

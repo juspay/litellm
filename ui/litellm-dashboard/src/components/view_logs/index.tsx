@@ -95,18 +95,6 @@ export default function SpendLogsTable({ accessToken, token, userRole, userID, p
     sessionStorage.setItem("isLiveTail", JSON.stringify(isLiveTail));
   }, [isLiveTail]);
 
-  // Timestamp for forcing FilterComponent remount during live tail
-  const [liveTailTimestamp, setLiveTailTimestamp] = useState<number>(() => Date.now());
-
-  useEffect(() => {
-    if (isLiveTail && !isCustomDate) {
-      const interval = setInterval(() => {
-        setLiveTailTimestamp(Date.now());
-      }, 15000);
-      return () => clearInterval(interval);
-    }
-  }, [isLiveTail, isCustomDate]);
-
   useEffect(() => {
     const fetchKeyInfo = async () => {
       if (selectedKeyIdInfoView && accessToken) {
@@ -247,6 +235,7 @@ export default function SpendLogsTable({ accessToken, token, userRole, userID, p
     setSelectedErrorCategories([]);
     setFailureLogsAnalyticsCurrentPage(1);
     setCurrentPage(1);
+    setSearchTerm("");
   }, [handleFilterResetFromHook]);
 
   const handleSortChange = useCallback((newSortBy: LogsSortField, newSortOrder: "asc" | "desc") => {
@@ -259,37 +248,27 @@ export default function SpendLogsTable({ accessToken, token, userRole, userID, p
     () => createColumns({ sortBy, sortOrder, onSortChange: handleSortChange }),
     [sortBy, sortOrder, handleSortChange],
   );
+  const filterOptions = useMemo(() => getLogFilterOptions(accessToken ?? ""), [accessToken]);
 
   const filteredData = useMemo(() => {
-    const searchedLogs = filteredLogs.data.filter((log) => {
-      const matchesSearch =
-        !searchTerm ||
-        log.request_id.includes(searchTerm) ||
-        log.model.includes(searchTerm) ||
-        (log.user && log.user.includes(searchTerm));
+    const sessionCompositionById = filteredLogs.data.reduce<
+      Record<string, { llm: number; agent: number; mcp: number }>
+    >((acc, log) => {
+      if (!log.session_id) return acc;
+      if (!acc[log.session_id]) {
+        acc[log.session_id] = { llm: 0, agent: 0, mcp: 0 };
+      }
+      if (MCP_CALL_TYPES.includes(log.call_type)) {
+        acc[log.session_id].mcp += 1;
+      } else if (AGENT_CALL_TYPES.includes(log.call_type)) {
+        acc[log.session_id].agent += 1;
+      } else {
+        acc[log.session_id].llm += 1;
+      }
+      return acc;
+    }, {});
 
-      return matchesSearch;
-    });
-
-    const sessionCompositionById = searchedLogs.reduce<Record<string, { llm: number; agent: number; mcp: number }>>(
-      (acc, log) => {
-        if (!log.session_id) return acc;
-        if (!acc[log.session_id]) {
-          acc[log.session_id] = { llm: 0, agent: 0, mcp: 0 };
-        }
-        if (MCP_CALL_TYPES.includes(log.call_type)) {
-          acc[log.session_id].mcp += 1;
-        } else if (AGENT_CALL_TYPES.includes(log.call_type)) {
-          acc[log.session_id].agent += 1;
-        } else {
-          acc[log.session_id].llm += 1;
-        }
-        return acc;
-      },
-      {},
-    );
-
-    return searchedLogs.map((log) => {
+    return filteredLogs.data.map((log) => {
       const sessionComposition = log.session_id ? sessionCompositionById[log.session_id] : undefined;
       return {
         ...log,
@@ -307,7 +286,7 @@ export default function SpendLogsTable({ accessToken, token, userRole, userID, p
         },
       };
     });
-  }, [filteredLogs.data, searchTerm]);
+  }, [filteredLogs.data]);
 
   const deferredData = useDeferredValue(filteredData);
   const isStale = deferredData !== filteredData;
@@ -371,8 +350,7 @@ export default function SpendLogsTable({ accessToken, token, userRole, userID, p
             ) : (
               <>
                 <FilterComponent
-                  key={`${startTime}-${endTime}-${isLiveTail && !isCustomDate ? liveTailTimestamp : "static"}`}
-                  options={getLogFilterOptions(accessToken)}
+                  options={filterOptions}
                   onApplyFilters={handleFilterChange}
                   onResetFilters={handleFilterReset}
                   initialValues={filters}
@@ -382,7 +360,10 @@ export default function SpendLogsTable({ accessToken, token, userRole, userID, p
                 <div className="bg-white rounded-lg shadow-sm w-full max-w-full box-border">
                   <LogsTableToolbar
                     searchTerm={searchTerm}
-                    onSearchChange={setSearchTerm}
+                    onSearchChange={(value) => {
+                      setSearchTerm(value);
+                      handleFilterChange({ [FILTER_KEYS.REQUEST_ID]: value });
+                    }}
                     startTime={startTime}
                     onStartTimeChange={setStartTime}
                     endTime={endTime}

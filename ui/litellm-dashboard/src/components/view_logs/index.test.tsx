@@ -4,11 +4,14 @@ import moment from "moment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SpendLogsTable from "./index";
 import { renderWithProviders } from "../../../tests/test-utils";
-import { uiSpendLogsCall } from "../networking";
 import type { LogEntry } from "./columns";
 import { useLogFilterLogic } from "./log_filter_logic";
+import { fetchUiSpendLogs } from "./logs_networking";
+
+const uiSpendLogsCall = fetchUiSpendLogs;
 
 const mockHandleFilterResetFromHook = vi.fn();
+const mockHandleFilterChange = vi.fn();
 vi.mock("./log_filter_logic", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./log_filter_logic")>();
   return {
@@ -17,7 +20,7 @@ vi.mock("./log_filter_logic", async (importOriginal) => {
       logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
       filteredLogs: { data: [], total: 0, page: 1, page_size: 50, total_pages: 1 },
       allTeams: [],
-      handleFilterChange: vi.fn(),
+      handleFilterChange: mockHandleFilterChange,
       handleFilterReset: mockHandleFilterResetFromHook,
     })),
   };
@@ -27,30 +30,34 @@ vi.mock("../networking", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../networking")>();
   return {
     ...actual,
-    uiSpendLogsCall: vi.fn().mockResolvedValue({
-      data: [],
-      total: 0,
-      page: 1,
-      page_size: 50,
-      total_pages: 0,
-    }),
     keyListCall: vi.fn().mockResolvedValue({ keys: [] }),
     keyInfoV1Call: vi.fn().mockResolvedValue({ info: {} }),
     allEndUsersCall: vi.fn().mockResolvedValue([]),
   };
 });
 
+vi.mock("./logs_networking", () => ({
+  fetchUiSpendLogs: vi.fn().mockResolvedValue({
+    data: [],
+    total: 0,
+    page: 1,
+    page_size: 50,
+    total_pages: 0,
+  }),
+}));
+
 vi.mock("../key_team_helpers/filter_helpers", () => ({
   fetchAllTeams: vi.fn().mockResolvedValue([]),
 }));
 
-const mockUseLogFilterLogicReturn = (data: LogEntry[] = []) => ({
-  logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
-  filteredLogs: { data, total: data.length, page: 1, page_size: 50, total_pages: 1 },
-  allTeams: [],
-  handleFilterChange: vi.fn(),
-  handleFilterReset: mockHandleFilterResetFromHook,
-});
+const mockUseLogFilterLogicReturn = (data: LogEntry[] = []) =>
+  ({
+    logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
+    filteredLogs: { data, total: data.length, page: 1, page_size: 50, total_pages: 1 },
+    allTeams: [],
+    handleFilterChange: mockHandleFilterChange,
+    handleFilterReset: mockHandleFilterResetFromHook,
+  }) as unknown as ReturnType<typeof useLogFilterLogic>;
 
 const createLog = (overrides: Partial<LogEntry>): LogEntry => ({
   request_id: "req-default",
@@ -181,6 +188,42 @@ describe("SpendLogsTable", () => {
     expect(screen.getByText("req-session-1")).toBeInTheDocument();
     expect(screen.getByText("req-session-2")).toBeInTheDocument();
     expect(screen.getByText("req-session-3")).toBeInTheDocument();
+  });
+
+  it("searches request IDs through the backend filter", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<SpendLogsTable {...defaultProps} />);
+
+    await user.type(screen.getByPlaceholderText("Search by Request ID"), "req-global");
+
+    expect(mockHandleFilterChange).toHaveBeenLastCalledWith({ "Request ID": "req-global" });
+  });
+
+  it("keeps next-page navigation available when exact totals are omitted", () => {
+    vi.mocked(useLogFilterLogic).mockImplementation(() => ({
+      ...mockUseLogFilterLogicReturn([createLog({ request_id: "req-1" })]),
+      filteredLogs: {
+        data: [createLog({ request_id: "req-1" })],
+        total: null,
+        page: 1,
+        page_size: 50,
+        total_pages: null,
+        has_more: true,
+      },
+    }));
+
+    renderWithProviders(<SpendLogsTable {...defaultProps} />);
+
+    expect(screen.getByText("Showing 1 - 1 results")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Next" }).some((button) => !button.hasAttribute("disabled"))).toBe(
+      true,
+    );
+  });
+
+  it("renders an empty result range as zero to zero", () => {
+    renderWithProviders(<SpendLogsTable {...defaultProps} />);
+
+    expect(screen.getByText("Showing 0 - 0 of 0 results")).toBeInTheDocument();
   });
 
   describe("auth-not-ready guard", () => {
