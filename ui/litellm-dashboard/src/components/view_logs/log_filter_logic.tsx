@@ -145,15 +145,10 @@ export function useLogFilterLogic({
         };
       }
 
+      const formattedStartTime = moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss");
       const formattedEndTime = isCustomDate
         ? moment(endTime).utc().format("YYYY-MM-DD HH:mm:ss")
         : moment().utc().format("YYYY-MM-DD HH:mm:ss");
-      const formattedStartTime = isCustomDate
-        ? moment(startTime).utc().format("YYYY-MM-DD HH:mm:ss")
-        : moment()
-            .subtract(moment(endTime).diff(moment(startTime)), "milliseconds")
-            .utc()
-            .format("YYYY-MM-DD HH:mm:ss");
 
       const response = await fetchUiSpendLogs({
         accessToken,

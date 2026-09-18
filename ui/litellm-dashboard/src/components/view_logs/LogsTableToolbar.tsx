@@ -73,7 +73,7 @@ export function LogsTableToolbar({
   );
   const displayLabel = isCustomDate ? getTimeRangeDisplay(isCustomDate, startTime, endTime) : selectedOption?.label;
   const resultStart = filteredLogs.data.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
-  const resultEnd = (currentPage - 1) * pageSize + filteredLogs.data.length;
+  const resultEnd = filteredLogs.data.length === 0 ? 0 : (currentPage - 1) * pageSize + filteredLogs.data.length;
   const hasMore = filteredLogs.has_more ?? currentPage < (filteredLogs.total_pages ?? 0);
 
   return (

@@ -295,7 +295,7 @@ describe("useLogFilterLogic", () => {
       );
     });
 
-    it("keeps a live-tail time window rolling when it refetches", async () => {
+    it("preserves the selected start time when live tail refetches", async () => {
       const originalNow = moment.now;
       moment.now = () => Date.parse("2026-09-18T12:00:00Z");
 
@@ -318,7 +318,7 @@ describe("useLogFilterLogic", () => {
 
         expect(firstCall?.start_date).toBe("2026-09-17 12:00:00");
         expect(firstCall?.end_date).toBe("2026-09-18 12:00:00");
-        expect(secondCall?.start_date).toBe("2026-09-17 12:00:15");
+        expect(secondCall?.start_date).toBe("2026-09-17 12:00:00");
         expect(secondCall?.end_date).toBe("2026-09-18 12:00:15");
       } finally {
         moment.now = originalNow;

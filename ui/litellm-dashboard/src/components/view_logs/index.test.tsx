@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import moment from "moment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -190,13 +190,36 @@ describe("SpendLogsTable", () => {
     expect(screen.getByText("req-session-3")).toBeInTheDocument();
   });
 
-  it("searches request IDs through the backend filter", async () => {
-    const user = userEvent.setup();
+  it("preserves the current-page search behavior", () => {
+    vi.mocked(useLogFilterLogic).mockImplementation(() =>
+      mockUseLogFilterLogicReturn([
+        createLog({ request_id: "request-match", model: "other-model", user: "other-user" }),
+        createLog({ request_id: "other-request", model: "model-match", user: "other-user" }),
+        createLog({ request_id: "another-request", model: "other-model", user: "user-match" }),
+      ]),
+    );
+
     renderWithProviders(<SpendLogsTable {...defaultProps} />);
+    fireEvent.change(screen.getByPlaceholderText("Search by Request ID"), { target: { value: "match" } });
 
-    await user.type(screen.getByPlaceholderText("Search by Request ID"), "req-global");
+    expect(screen.getByText("request-match")).toBeInTheDocument();
+    expect(screen.getByText("other-request")).toBeInTheDocument();
+    expect(screen.getByText("another-request")).toBeInTheDocument();
+    expect(mockHandleFilterChange).not.toHaveBeenCalled();
+  });
 
-    expect(mockHandleFilterChange).toHaveBeenLastCalledWith({ "Request ID": "req-global" });
+  it("does not remount the filter panel during a live-tail interval", () => {
+    vi.useFakeTimers();
+    try {
+      renderWithProviders(<SpendLogsTable {...defaultProps} />);
+      const filtersButton = screen.getByRole("button", { name: "Filters" });
+
+      act(() => vi.advanceTimersByTime(15000));
+
+      expect(screen.getByRole("button", { name: "Filters" })).toBe(filtersButton);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps next-page navigation available when exact totals are omitted", () => {
