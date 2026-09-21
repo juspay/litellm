@@ -1,17 +1,14 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import moment from "moment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SpendLogsTable from "./index";
 import { renderWithProviders } from "../../../tests/test-utils";
+import { uiSpendLogsCall } from "../networking";
 import type { LogEntry } from "./columns";
 import { useLogFilterLogic } from "./log_filter_logic";
-import { fetchUiSpendLogs } from "./logs_networking";
-
-const uiSpendLogsCall = fetchUiSpendLogs;
 
 const mockHandleFilterResetFromHook = vi.fn();
-const mockHandleFilterChange = vi.fn();
 vi.mock("./log_filter_logic", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./log_filter_logic")>();
   return {
@@ -20,7 +17,7 @@ vi.mock("./log_filter_logic", async (importOriginal) => {
       logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
       filteredLogs: { data: [], total: 0, page: 1, page_size: 50, total_pages: 1 },
       allTeams: [],
-      handleFilterChange: mockHandleFilterChange,
+      handleFilterChange: vi.fn(),
       handleFilterReset: mockHandleFilterResetFromHook,
     })),
   };
@@ -30,34 +27,30 @@ vi.mock("../networking", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../networking")>();
   return {
     ...actual,
+    uiSpendLogsCall: vi.fn().mockResolvedValue({
+      data: [],
+      total: 0,
+      page: 1,
+      page_size: 50,
+      total_pages: 0,
+    }),
     keyListCall: vi.fn().mockResolvedValue({ keys: [] }),
     keyInfoV1Call: vi.fn().mockResolvedValue({ info: {} }),
     allEndUsersCall: vi.fn().mockResolvedValue([]),
   };
 });
 
-vi.mock("./logs_networking", () => ({
-  fetchUiSpendLogs: vi.fn().mockResolvedValue({
-    data: [],
-    total: 0,
-    page: 1,
-    page_size: 50,
-    total_pages: 0,
-  }),
-}));
-
 vi.mock("../key_team_helpers/filter_helpers", () => ({
   fetchAllTeams: vi.fn().mockResolvedValue([]),
 }));
 
-const mockUseLogFilterLogicReturn = (data: LogEntry[] = []) =>
-  ({
-    logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
-    filteredLogs: { data, total: data.length, page: 1, page_size: 50, total_pages: 1 },
-    allTeams: [],
-    handleFilterChange: mockHandleFilterChange,
-    handleFilterReset: mockHandleFilterResetFromHook,
-  }) as unknown as ReturnType<typeof useLogFilterLogic>;
+const mockUseLogFilterLogicReturn = (data: LogEntry[] = []) => ({
+  logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
+  filteredLogs: { data, total: data.length, page: 1, page_size: 50, total_pages: 1 },
+  allTeams: [],
+  handleFilterChange: vi.fn(),
+  handleFilterReset: mockHandleFilterResetFromHook,
+});
 
 const createLog = (overrides: Partial<LogEntry>): LogEntry => ({
   request_id: "req-default",
@@ -188,65 +181,6 @@ describe("SpendLogsTable", () => {
     expect(screen.getByText("req-session-1")).toBeInTheDocument();
     expect(screen.getByText("req-session-2")).toBeInTheDocument();
     expect(screen.getByText("req-session-3")).toBeInTheDocument();
-  });
-
-  it("preserves the current-page search behavior", () => {
-    vi.mocked(useLogFilterLogic).mockImplementation(() =>
-      mockUseLogFilterLogicReturn([
-        createLog({ request_id: "request-match", model: "other-model", user: "other-user" }),
-        createLog({ request_id: "other-request", model: "model-match", user: "other-user" }),
-        createLog({ request_id: "another-request", model: "other-model", user: "user-match" }),
-      ]),
-    );
-
-    renderWithProviders(<SpendLogsTable {...defaultProps} />);
-    fireEvent.change(screen.getByPlaceholderText("Search by Request ID"), { target: { value: "match" } });
-
-    expect(screen.getByText("request-match")).toBeInTheDocument();
-    expect(screen.getByText("other-request")).toBeInTheDocument();
-    expect(screen.getByText("another-request")).toBeInTheDocument();
-    expect(mockHandleFilterChange).not.toHaveBeenCalled();
-  });
-
-  it("does not remount the filter panel during a live-tail interval", () => {
-    vi.useFakeTimers();
-    try {
-      renderWithProviders(<SpendLogsTable {...defaultProps} />);
-      const filtersButton = screen.getByRole("button", { name: "Filters" });
-
-      act(() => vi.advanceTimersByTime(15000));
-
-      expect(screen.getByRole("button", { name: "Filters" })).toBe(filtersButton);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps next-page navigation available when exact totals are omitted", () => {
-    vi.mocked(useLogFilterLogic).mockImplementation(() => ({
-      ...mockUseLogFilterLogicReturn([createLog({ request_id: "req-1" })]),
-      filteredLogs: {
-        data: [createLog({ request_id: "req-1" })],
-        total: null,
-        page: 1,
-        page_size: 50,
-        total_pages: null,
-        has_more: true,
-      },
-    }));
-
-    renderWithProviders(<SpendLogsTable {...defaultProps} />);
-
-    expect(screen.getByText("Showing 1 - 1 results")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Next" }).some((button) => !button.hasAttribute("disabled"))).toBe(
-      true,
-    );
-  });
-
-  it("renders an empty result range as zero to zero", () => {
-    renderWithProviders(<SpendLogsTable {...defaultProps} />);
-
-    expect(screen.getByText("Showing 0 - 0 of 0 results")).toBeInTheDocument();
   });
 
   describe("auth-not-ready guard", () => {

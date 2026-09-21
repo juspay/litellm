@@ -72,9 +72,6 @@ export function LogsTableToolbar({
     (option) => option.value === selectedTimeInterval.value && option.unit === selectedTimeInterval.unit,
   );
   const displayLabel = isCustomDate ? getTimeRangeDisplay(isCustomDate, startTime, endTime) : selectedOption?.label;
-  const resultStart = filteredLogs.data.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
-  const resultEnd = filteredLogs.data.length === 0 ? 0 : (currentPage - 1) * pageSize + filteredLogs.data.length;
-  const hasMore = filteredLogs.has_more ?? currentPage < (filteredLogs.total_pages ?? 0);
 
   return (
     <>
@@ -209,13 +206,14 @@ export function LogsTableToolbar({
           {showPagination && (
             <div className="flex items-center space-x-4">
               <span className="text-sm text-gray-700 whitespace-nowrap">
-                Showing {isLoading ? "..." : resultStart} - {isLoading ? "..." : resultEnd}
-                {!isLoading && filteredLogs.total !== null ? ` of ${filteredLogs.total}` : ""} results
+                Showing {isLoading ? "..." : filteredLogs ? (currentPage - 1) * pageSize + 1 : 0} -{" "}
+                {isLoading ? "..." : filteredLogs ? Math.min(currentPage * pageSize, filteredLogs.total) : 0} of{" "}
+                {isLoading ? "..." : filteredLogs ? filteredLogs.total : 0} results
               </span>
               <div className="flex items-center space-x-2">
                 <span className="text-sm text-gray-700 min-w-[90px]">
-                  Page {isLoading ? "..." : currentPage}
-                  {!isLoading && filteredLogs.total_pages !== null ? ` of ${filteredLogs.total_pages}` : ""}
+                  Page {isLoading ? "..." : currentPage} of{" "}
+                  {isLoading ? "..." : filteredLogs ? filteredLogs.total_pages : 1}
                 </span>
                 <button
                   onClick={() => onCurrentPageChange((p: number) => Math.max(1, p - 1))}
@@ -225,8 +223,8 @@ export function LogsTableToolbar({
                   Previous
                 </button>
                 <button
-                  onClick={() => onCurrentPageChange((p: number) => p + 1)}
-                  disabled={isLoading || !hasMore}
+                  onClick={() => onCurrentPageChange((p: number) => Math.min(filteredLogs.total_pages || 1, p + 1))}
+                  disabled={isLoading || currentPage === (filteredLogs.total_pages || 1)}
                   className="px-3 py-1 text-sm border rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Next
