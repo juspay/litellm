@@ -1734,11 +1734,6 @@ async def ui_view_spend_logs(
     ),
     page: int = fastapi.Query(default=1, description="Page number for pagination", ge=1),
     page_size: int = fastapi.Query(default=50, description="Number of items per page", ge=1, le=100),
-    include_total: bool = fastapi.Query(
-        default=True,
-        description="Include an exact total count. Disable for lower-latency pagination on large log tables",
-        include_in_schema=False,
-    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     status_filter: str | None = fastapi.Query(
         default=None, description="Filter logs by status (e.g., success, failure)"
@@ -2047,8 +2042,6 @@ async def ui_view_spend_logs(
         else:
             _order_expr = order_column
 
-        total_count_selection = ", COUNT(*) OVER () AS total_count" if include_total else ""
-        query_page_size = page_size if include_total else page_size + 1
         sql_query = f"""
             SELECT
                 request_id, call_type, api_key, spend, total_tokens,
@@ -2058,14 +2051,14 @@ async def ui_view_spend_logs(
                 cache_hit, cache_key, request_tags, team_id,
                 organization_id, end_user, requester_ip_address,
                 session_id, status, mcp_namespaced_tool_name, agent_id,
-                COALESCE(request_duration_ms, (EXTRACT(EPOCH FROM ("endTime" - "startTime")) * 1000)::INTEGER) AS request_duration_ms
-                {total_count_selection}
+                COALESCE(request_duration_ms, (EXTRACT(EPOCH FROM ("endTime" - "startTime")) * 1000)::INTEGER) AS request_duration_ms,
+                COUNT(*) OVER () AS total_count
             FROM "LiteLLM_SpendLogs"
             WHERE {" AND ".join(sql_conditions)}
             ORDER BY {_order_expr} {_sql_dir}{_nulls_clause}
             LIMIT ${p} OFFSET ${p + 1}
         """
-        sql_params.extend([query_page_size, skip])
+        sql_params.extend([page_size, skip])
 
         data = await prisma_client.db.query_raw(sql_query, *sql_params)
 
@@ -2077,25 +2070,16 @@ async def ui_view_spend_logs(
         # gone there. Only an out-of-range page overshoots the last row and comes
         # back empty; fall back to a direct count there so total/total_pages stay
         # accurate rather than collapsing to zero.
-        if include_total:
-            page_data = data
-            has_more = None
-            if data:
-                total_records: int | None = int(data[0]["total_count"])
-            elif page > 1:
-                total_records = int(
-                    await SpendLogsRepository(prisma_client).table.count(
-                        where=where_conditions,
-                    )
+        if data:
+            total_records = int(data[0]["total_count"])
+        elif page > 1:
+            total_records = int(
+                await SpendLogsRepository(prisma_client).table.count(
+                    where=where_conditions,
                 )
-            else:
-                total_records = 0
-            total_pages: int | None = (total_records + page_size - 1) // page_size
+            )
         else:
-            has_more = len(data) > page_size
-            page_data = data[:page_size]
-            total_records = None if has_more or (page > 1 and not page_data) else skip + len(page_data)
-            total_pages = None if total_records is None else (total_records + page_size - 1) // page_size
+            total_records = 0
 
         # query_raw returns the JSONB `metadata` column as a string (the Prisma
         # serialiser bypasses the model-layer JSON hydration we get on the ORM
@@ -2103,7 +2087,7 @@ async def ui_view_spend_logs(
         # as object fields, so failure rows looked like successes (#29674).
         # Re-hydrate to dict here. Also drop the window-function `total_count`
         # helper column so it does not leak into the serialised rows.
-        for row in page_data:
+        for row in data:
             if isinstance(row, dict):
                 row.pop("total_count", None)
                 md = row.get("metadata")
@@ -2113,17 +2097,19 @@ async def ui_view_spend_logs(
                     except (ValueError, TypeError):
                         row["metadata"] = {}
 
-        verbose_proxy_logger.debug("data= %s", json.dumps(page_data, indent=4, default=str))
+        # Calculate total pages
+        total_pages = (total_records + page_size - 1) // page_size
+
+        verbose_proxy_logger.debug("data= %s", json.dumps(data, indent=4, default=str))
 
         return await _build_ui_spend_logs_response(
             prisma_client,
-            page_data,
+            data,
             total_records,
             page,
             page_size,
             total_pages,
             enrich_session_counts=not is_v2,
-            has_more=has_more,
         )
     except Exception as e:
         verbose_proxy_logger.exception(f"Error in ui_view_spend_logs: {e}")
@@ -4058,12 +4044,11 @@ async def ui_view_session_spend_logs(
 async def _build_ui_spend_logs_response(
     prisma_client: "PrismaClient",
     data: list,
-    total_records: int | None,
+    total_records: int,
     page: int,
     page_size: int,
-    total_pages: int | None,
+    total_pages: int,
     enrich_session_counts: bool = True,
-    has_more: bool | None = None,
 ) -> dict:
     """
     Build the paginated response for the UI spend-logs endpoint.
@@ -4175,14 +4160,13 @@ async def _build_ui_spend_logs_response(
         # serializers, etc.).
         response_data = data  # type: ignore[assignment]
 
-    response = {
+    return {
         "data": response_data,
         "total": total_records,
         "page": page,
         "page_size": page_size,
         "total_pages": total_pages,
     }
-    return response if has_more is None else {**response, "has_more": has_more}
 
 
 def _build_status_filter_condition(status_filter: str | None) -> Dict[str, Any]:

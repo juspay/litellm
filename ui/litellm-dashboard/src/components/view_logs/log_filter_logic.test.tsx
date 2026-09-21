@@ -1,6 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import moment from "moment";
 import React, { ReactNode, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LogsSortField } from "./columns";
@@ -13,17 +12,15 @@ import {
   type PaginatedResponse,
 } from "./log_filter_logic";
 
-vi.mock("./logs_networking", () => ({
-  fetchUiSpendLogs: vi.fn(),
+vi.mock("../networking", () => ({
+  uiSpendLogsCall: vi.fn(),
 }));
 
 vi.mock("@/components/key_team_helpers/filter_helpers", () => ({
   fetchAllTeams: vi.fn().mockResolvedValue([]),
 }));
 
-import { fetchUiSpendLogs } from "./logs_networking";
-
-const uiSpendLogsCall = fetchUiSpendLogs;
+import { uiSpendLogsCall } from "../networking";
 
 const emptyResponse: PaginatedResponse = {
   data: [],
@@ -254,17 +251,6 @@ describe("useLogFilterLogic", () => {
   });
 
   describe("query params — date & sort", () => {
-    it("forwards cancellation to the logs request", async () => {
-      renderFilterHook();
-
-      await waitFor(() => expect(uiSpendLogsCall).toHaveBeenCalled(), { timeout: 500 });
-      expect(uiSpendLogsCall).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          signal: expect.any(AbortSignal),
-        }),
-      );
-    });
-
     it("passes start_date, end_date, sort_by, and sort_order to uiSpendLogsCall", async () => {
       const { result } = renderFilterHook({
         startTime: "2025-01-15T00:00:00Z",
@@ -293,36 +279,6 @@ describe("useLogFilterLogic", () => {
         },
         { timeout: 500 },
       );
-    });
-
-    it("preserves the selected start time when live tail refetches", async () => {
-      const originalNow = moment.now;
-      moment.now = () => Date.parse("2026-09-18T12:00:00Z");
-
-      try {
-        const { result } = renderFilterHook({
-          startTime: "2026-09-17T12:00:00Z",
-          endTime: "2026-09-18T12:00:00Z",
-          isCustomDate: false,
-          isLiveTail: true,
-        });
-
-        await waitFor(() => expect(uiSpendLogsCall).toHaveBeenCalled(), { timeout: 500 });
-        const firstCall = vi.mocked(uiSpendLogsCall).mock.calls.at(-1)?.[0];
-
-        moment.now = () => Date.parse("2026-09-18T12:00:15Z");
-        await act(async () => {
-          await result.current.logsQuery.refetch();
-        });
-        const secondCall = vi.mocked(uiSpendLogsCall).mock.calls.at(-1)?.[0];
-
-        expect(firstCall?.start_date).toBe("2026-09-17 12:00:00");
-        expect(firstCall?.end_date).toBe("2026-09-18 12:00:00");
-        expect(secondCall?.start_date).toBe("2026-09-17 12:00:00");
-        expect(secondCall?.end_date).toBe("2026-09-18 12:00:15");
-      } finally {
-        moment.now = originalNow;
-      }
     });
   });
 
