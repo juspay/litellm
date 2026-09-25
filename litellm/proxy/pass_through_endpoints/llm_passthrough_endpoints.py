@@ -57,9 +57,11 @@ from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
 
 from .passthrough_endpoint_router import PassthroughEndpointRouter
+from .systemone_endpoints import router as systemone_router
 
 vertex_llm_base = VertexBase()
 router = APIRouter()
+router.include_router(systemone_router)
 default_vertex_config = None
 
 passthrough_endpoint_router = PassthroughEndpointRouter()
