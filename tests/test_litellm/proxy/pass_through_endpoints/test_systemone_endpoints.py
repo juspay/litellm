@@ -1,5 +1,6 @@
 import json
 
+import litellm
 import pytest
 from fastapi import HTTPException, Response
 from starlette.requests import Request
@@ -21,6 +22,15 @@ class StubDeploymentRouter:
     def get_available_deployment_for_pass_through(self, model: str) -> object:
         self.selected_models.append(model)
         return self.deployment
+
+
+class MissingDeploymentRouter:
+    def get_available_deployment_for_pass_through(self, model: str) -> object:
+        raise litellm.BadRequestError(
+            message=f"There are no healthy deployments for {model}",
+            model=model,
+            llm_provider="",
+        )
 
 
 def make_request(body: object) -> Request:
@@ -119,6 +129,45 @@ async def test_uses_deployment_path_headers_and_api_key() -> None:
         "Authorization": "Bearer upstream-key",
         "X-Deployment": "primary",
     }
+
+
+@pytest.mark.asyncio
+async def test_uses_registered_passthrough_when_model_is_not_configured() -> None:
+    request_body: dict[str, object] = {
+        "model": "jev-latest",
+        "state": "The customer was charged twice.",
+        "questions": {},
+    }
+    fallback_calls: list[dict[str, object]] = []
+
+    async def legacy_forwarder(**kwargs: object) -> Response | None:
+        fallback_calls.append(kwargs)
+        return Response(content=b'{"model":"jev-latest"}', media_type="application/json")
+
+    response = await forward_systemone_request(
+        request=make_request(request_body),
+        user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
+        deployment_router=MissingDeploymentRouter(),
+        legacy_forwarder=legacy_forwarder,
+    )
+
+    assert response.status_code == 200
+    assert len(fallback_calls) == 1
+    assert fallback_calls[0]["request_body"] == request_body
+
+
+@pytest.mark.asyncio
+async def test_preserves_model_error_without_registered_passthrough() -> None:
+    async def no_legacy_endpoint(**kwargs: object) -> Response | None:
+        return None
+
+    with pytest.raises(litellm.BadRequestError):
+        await forward_systemone_request(
+            request=make_request({"model": "jev-latest", "state": "hello", "questions": {}}),
+            user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
+            deployment_router=MissingDeploymentRouter(),
+            legacy_forwarder=no_legacy_endpoint,
+        )
 
 
 @pytest.mark.asyncio
