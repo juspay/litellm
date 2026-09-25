@@ -755,19 +755,19 @@ from litellm.passthrough.timeout_utils import (
 async def pass_through_request(
     request: Request,
     target: str,
-    custom_headers: dict,
+    custom_headers: dict[str, str],
     user_api_key_dict: UserAPIKeyAuth,
-    custom_body: Optional[dict] = None,
-    forward_headers: Optional[bool] = False,
-    merge_query_params: Optional[bool] = False,
-    query_params: Optional[dict] = None,
-    default_query_params: Optional[dict] = None,
-    stream: Optional[bool] = None,
-    cost_per_request: Optional[float] = None,
-    custom_llm_provider: Optional[str] = None,
-    guardrails_config: Optional[dict] = None,
-    timeout: Optional[float] = None,
-):
+    custom_body: dict[str, object] | None = None,
+    forward_headers: bool | None = False,
+    merge_query_params: bool | None = False,
+    query_params: dict[str, object] | None = None,
+    default_query_params: dict[str, object] | None = None,
+    stream: bool | None = None,
+    cost_per_request: float | None = None,
+    custom_llm_provider: str | None = None,
+    guardrails_config: dict[str, object] | None = None,
+    timeout: float | None = None,
+) -> Response | StreamingResponse:
     """
     Pass through endpoint handler, makes the httpx request for pass-through endpoints and ensures logging hooks are called
 
