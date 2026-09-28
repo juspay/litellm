@@ -2157,7 +2157,10 @@ async def websocket_passthrough_request(
         verbose_proxy_logger.exception(f"WebSocket passthrough ({endpoint}): upstream rejected WebSocket connection")
 
         # Prepare request payload for logging
-        request_payload = {}
+        # ``websocket_data`` is the dict pre_call_hook stashed the MPR lease
+        # id / increment flag into; without merging it, the failure hooks
+        # release nothing and the Redis ZSET lease leaks.
+        request_payload = dict(websocket_data or {})
         if kwargs:
             for key, value in kwargs.items():
                 request_payload[key] = value
@@ -2183,7 +2186,10 @@ async def websocket_passthrough_request(
         verbose_proxy_logger.exception(f"WebSocket passthrough ({endpoint}): unexpected error while proxying WebSocket")
 
         # Prepare request payload for logging
-        request_payload = {}
+        # ``websocket_data`` is the dict pre_call_hook stashed the MPR lease
+        # id / increment flag into; without merging it, the failure hooks
+        # release nothing and the Redis ZSET lease leaks.
+        request_payload = dict(websocket_data or {})
         if kwargs:
             for key, value in kwargs.items():
                 request_payload[key] = value
