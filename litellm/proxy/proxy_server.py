@@ -8602,11 +8602,16 @@ async def chat_completion(
     except asyncio.CancelledError as _ce:
         # post_call_failure_hook is internally shielded — DECR completes even
         # though this task is being torn down.
+        # Pass the processor's data, not the outer `data` read from the
+        # request body: base_process_llm_request reassigns it via
+        # function_setup(**self.data) BEFORE pre_call_hook stashes the MPR
+        # lease id / increment flag, so the outer dict has neither and the
+        # release would be silently skipped.
         try:
             await proxy_logging_obj.post_call_failure_hook(
                 user_api_key_dict=user_api_key_dict,
                 original_exception=_ce,
-                request_data=data,
+                request_data=base_llm_response_processor.data,
             )
         except asyncio.CancelledError:
             pass
@@ -8859,8 +8864,15 @@ async def completion(
             _response.choices[0].text = e.message
             return _response
     except Exception as e:
+        # Pass the processor's data, not the outer `data` read from the
+        # request body: base_process_llm_request reassigns it via
+        # function_setup(**self.data) BEFORE pre_call_hook stashes the MPR
+        # lease id / increment flag, so the outer dict has neither and the
+        # release would be silently skipped.
         await proxy_logging_obj.post_call_failure_hook(
-            user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
+            user_api_key_dict=user_api_key_dict,
+            original_exception=e,
+            request_data=base_llm_response_processor.data,
         )
         verbose_proxy_logger.exception("litellm.proxy.proxy_server.completion(): Exception occured - {}".format(str(e)))
         error_msg = f"{str(e)}"
