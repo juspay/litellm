@@ -18,6 +18,53 @@ else:
     Span = Any
 
 
+# Maximum length of an exception string included in verbose_router_logger lines.
+# Backends can echo the full request payload inside validation-error strings
+# (observed: a single 82MB str(e) from pydantic validation errors echoing an
+# oversized image request). Logging that string unbounded blocks the event loop
+# for the duration of the synchronous redaction regex scan and the stdout write.
+MAX_ERROR_STR_LOG_LENGTH = 2_000
+
+
+def truncate_error_str(error: BaseException, max_length: int = MAX_ERROR_STR_LOG_LENGTH) -> str:
+    """
+    Truncate an exception's string form for logging.
+
+    Preserves the start of the message (error type, status code, first
+    validation error) and appends the original length so operators can tell
+    a truncated giant error from a short one.
+    """
+    try:
+        s = str(error)
+    except Exception:
+        return "<unprintable exception>"
+    return _truncate_str(s, max_length)
+
+
+def _truncate_str(s: str, max_length: int = MAX_ERROR_STR_LOG_LENGTH) -> str:
+    """
+    Truncate an arbitrary string for logging.
+
+    Keeps the head (error type, status code, first validation error) and
+    the tail (pydantic's "For further information visit ..." summary,
+    provider-appended context), since either end can carry the useful
+    part. Tracebacks embed the exception string on their last line, so
+    a giant provider error makes an equally giant traceback; cap it the
+    same way before any synchronous redaction scan or stdout write.
+    """
+    if len(s) <= max_length:
+        return s
+    tail_length = min(max_length // 2, 500)
+    # never reach back into the head - otherwise strings just over
+    # max_length would log the overlapping middle twice
+    tail_start = max(len(s) - tail_length, max_length)
+    return (
+        f"{s[:max_length]}"
+        f"... [truncated, {len(s)} chars total] ..."
+        f"{s[tail_start:]}"
+    )
+
+
 def safe_divide_seconds(seconds: float, denominator: float, default: Optional[float] = None) -> Optional[float]:
     """
     Safely divide seconds by denominator, handling zero division.

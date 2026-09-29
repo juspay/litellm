@@ -42,6 +42,7 @@ from litellm.proxy.middleware.in_flight_requests_middleware import (
     get_in_flight_requests,
 )
 from litellm.proxy.shutdown.graceful_shutdown_manager import GracefulShutdownManager
+from litellm.litellm_core_utils.core_helpers import _truncate_str
 
 #### Health ENDPOINTS ####
 
@@ -429,7 +430,7 @@ async def health_services_endpoint(
         verbose_proxy_logger.error(
             "litellm.proxy.proxy_server.health_services_endpoint(): Exception occured - {}".format(str(e))
         )
-        verbose_proxy_logger.debug(traceback.format_exc())
+        verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1075,7 +1076,7 @@ async def health_endpoint(
         verbose_proxy_logger.error(
             "litellm.proxy.proxy_server.py::health_endpoint(): Exception occured - {}".format(str(e))
         )
-        verbose_proxy_logger.debug(traceback.format_exc())
+        verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         raise e
 
 

@@ -34,6 +34,7 @@ from litellm.types.management_endpoints.router_settings_endpoints import (
     FallbackGetResponse,
     FallbackResponse,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -182,7 +183,7 @@ async def create_fallback(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"Error creating fallback: {str(e)}", exc_info=True)
+        verbose_proxy_logger.error(f"Error creating fallback: {truncate_error_str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to create fallback: {str(e)}"},
@@ -239,7 +240,7 @@ async def get_fallback(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"Error getting fallback: {str(e)}", exc_info=True)
+        verbose_proxy_logger.error(f"Error getting fallback: {truncate_error_str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to get fallback: {str(e)}"},
@@ -350,7 +351,7 @@ async def delete_fallback(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"Error deleting fallback: {str(e)}", exc_info=True)
+        verbose_proxy_logger.error(f"Error deleting fallback: {truncate_error_str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to delete fallback: {str(e)}"},

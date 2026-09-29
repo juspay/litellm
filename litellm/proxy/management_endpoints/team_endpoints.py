@@ -135,6 +135,7 @@ from litellm.types.proxy.management_endpoints.team_endpoints import (
     TeamMemberInfoResponse,
     UpdateTeamMemberPermissionsRequest,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -4489,7 +4490,7 @@ async def get_paginated_teams(
         )
         return teams, total_count
     except Exception as e:
-        verbose_proxy_logger.exception(f"[Non-Blocking] Error getting paginated teams: {e}")
+        verbose_proxy_logger.exception(f"[Non-Blocking] Error getting paginated teams: {truncate_error_str(e)}")
         return [], 0
 
 

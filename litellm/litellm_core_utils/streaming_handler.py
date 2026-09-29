@@ -1549,7 +1549,7 @@ class CustomStreamWrapper:
         except Exception as e:
             from litellm._logging import verbose_logger
 
-            verbose_logger.exception(f"Error in post-call streaming deployment hook: {str(e)}")
+            verbose_logger.exception(f"Error in post-call streaming deployment hook: {truncate_error_str(e)}")
             return chunk
 
     def _add_mcp_list_tools_to_first_chunk(self, chunk: ModelResponseStream) -> ModelResponseStream:
@@ -1589,7 +1589,7 @@ class CustomStreamWrapper:
         except Exception as e:
             from litellm._logging import verbose_logger
 
-            verbose_logger.exception(f"Error adding MCP list tools to first chunk: {str(e)}")
+            verbose_logger.exception(f"Error adding MCP list tools to first chunk: {truncate_error_str(e)}")
 
         return chunk
 
@@ -1626,7 +1626,7 @@ class CustomStreamWrapper:
         except Exception as e:
             from litellm._logging import verbose_logger
 
-            verbose_logger.exception(f"Error adding MCP metadata to final chunk: {str(e)}")
+            verbose_logger.exception(f"Error adding MCP metadata to final chunk: {truncate_error_str(e)}")
 
         return chunk
 

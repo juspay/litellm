@@ -119,6 +119,7 @@ from litellm.types.proxy.management_endpoints.key_management_endpoints import (
     FailedKeyUpdate,
     SuccessfulKeyUpdate,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.types.router import Deployment
 from litellm.types.utils import (
     BudgetConfig,
@@ -1646,7 +1647,7 @@ async def generate_key_fn(
                     check_db_only=True,
                 )
             except Exception as e:
-                verbose_proxy_logger.debug(f"Error getting team object in `/key/generate`: {e}")
+                verbose_proxy_logger.debug(f"Error getting team object in `/key/generate`: {truncate_error_str(e)}")
                 # For non-admin callers, team must exist (LIT-1884)
                 if not _is_proxy_admin:
                     raise HTTPException(
@@ -1832,7 +1833,7 @@ async def generate_service_account_key_fn(
                 check_db_only=True,
             )
         except Exception as e:
-            verbose_proxy_logger.debug(f"Error getting team object in `/key/generate`: {e}")
+            verbose_proxy_logger.debug(f"Error getting team object in `/key/generate`: {truncate_error_str(e)}")
             team_table = None
 
     if team_table is not None:
@@ -2846,7 +2847,7 @@ async def bulk_update_keys(
             )
 
         except Exception as e:
-            verbose_proxy_logger.exception(f"Failed to update key {key_update_item.key}: {e}")
+            verbose_proxy_logger.exception(f"Failed to update key {key_update_item.key}: {truncate_error_str(e)}")
 
             if isinstance(e, HTTPException):
                 error_detail = e.detail
@@ -3084,7 +3085,7 @@ async def bulk_update_team_keys(
 
         except Exception as e:
             # Log the hashed prefix — `token` may be a raw sk-... and ERROR logs persist.
-            verbose_proxy_logger.exception(f"Failed to update key {db_token[:12]}... in team {data.team_id}: {e}")
+            verbose_proxy_logger.exception(f"Failed to update key {db_token[:12]}... in team {data.team_id}: {truncate_error_str(e)}")
             failed_updates.append(
                 _build_failed_team_key_update(
                     token=token,
@@ -4285,7 +4286,7 @@ async def _rotate_master_key(
                     },
                 )
             except Exception as e:
-                verbose_proxy_logger.error(f"Failed to re-encrypt credential {cred.credential_name}: {str(e)}")
+                verbose_proxy_logger.error(f"Failed to re-encrypt credential {cred.credential_name}: {truncate_error_str(e)}")
                 # Continue with next credential instead of failing entire rotation
                 continue
         verbose_proxy_logger.debug(f"Successfully re-encrypted {len(credentials)} credentials with new master key")
@@ -5329,7 +5330,7 @@ async def list_keys(
         return response
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error in list_keys: {e}")
+        verbose_proxy_logger.exception(f"Error in list_keys: {truncate_error_str(e)}")
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"error({str(e)})"),
@@ -5479,7 +5480,7 @@ async def key_aliases(
         }
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error in key_aliases: {e}")
+        verbose_proxy_logger.exception(f"Error in key_aliases: {truncate_error_str(e)}")
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"error({str(e)})"),

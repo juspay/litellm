@@ -75,6 +75,7 @@ from litellm.types.proxy.management_endpoints.internal_user_endpoints import (
     UserListResponse,
     UserUpdateResult,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 if TYPE_CHECKING:
     from litellm.proxy.proxy_server import PrismaClient
@@ -622,7 +623,7 @@ async def new_user(
 
         return new_user_response
     except Exception as e:
-        verbose_proxy_logger.exception("/user/new: Exception occured - {}".format(str(e)))
+        verbose_proxy_logger.exception("/user/new: Exception occured - {}".format(truncate_error_str(e)))
         raise handle_exception_on_proxy(e)
 
 
@@ -911,7 +912,7 @@ async def user_info(
 
         return response_data
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.user_info(): Exception occured - {}".format(str(e)))
+        verbose_proxy_logger.exception("litellm.proxy.proxy_server.user_info(): Exception occured - {}".format(truncate_error_str(e)))
         raise handle_exception_on_proxy(e)
 
 
@@ -1583,7 +1584,7 @@ async def bulk_update_processed_users(
             failed_updates=failed_updates,
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Failed to update users: {e}")
+        verbose_proxy_logger.exception(f"Failed to update users: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail={"error": str(e)})
 
 
@@ -1749,7 +1750,7 @@ async def bulk_user_update(
                 verbose_proxy_logger.warning(f"Failed to create bulk audit log: {audit_error}")
 
         except Exception as e:
-            verbose_proxy_logger.exception(f"Failed to perform bulk update: {e}")
+            verbose_proxy_logger.exception(f"Failed to perform bulk update: {truncate_error_str(e)}")
             # Fall back to individual updates if bulk update fails
             for user in all_users_in_db:
                 user_update_request = data.user_updates.model_copy()
@@ -1998,7 +1999,7 @@ async def batch_update_user_budgets(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(f"Batch user update failed: {str(e)}")
+        verbose_proxy_logger.exception(f"Batch user update failed: {truncate_error_str(e)}")
         raise HTTPException(
             status_code=500,
             detail={"error": f"Failed to update users: {str(e)}"},
@@ -3005,7 +3006,7 @@ async def ui_view_users(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error searching users: {str(e)}")
+        verbose_proxy_logger.exception(f"Error searching users: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=f"Error searching users: {str(e)}")
 
 
@@ -3124,7 +3125,7 @@ async def get_user_daily_activity(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("/spend/daily/analytics: Exception occured - {}".format(str(e)))
+        verbose_proxy_logger.exception("/spend/daily/analytics: Exception occured - {}".format(truncate_error_str(e)))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},
@@ -3216,7 +3217,7 @@ async def get_user_daily_activity_aggregated(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("/user/daily/activity/aggregated: Exception occured - {}".format(str(e)))
+        verbose_proxy_logger.exception("/user/daily/activity/aggregated: Exception occured - {}".format(truncate_error_str(e)))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},

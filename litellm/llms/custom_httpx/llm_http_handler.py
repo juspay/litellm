@@ -2975,7 +2975,7 @@ class BaseLLMHTTPHandler:
             response = await async_httpx_client.get(url=url, headers=headers, params=data)
 
         except Exception as e:
-            verbose_logger.exception(f"Error retrieving response: {e}")
+            verbose_logger.exception(f"Error retrieving response: {truncate_error_str(e)}")
             raise self._handle_error(
                 e=e,
                 provider_config=responses_api_provider_config,
@@ -3312,7 +3312,7 @@ class BaseLLMHTTPHandler:
                     timeout=timeout,
                 )
             except Exception as e:
-                verbose_logger.exception(f"Error creating file: {e}")
+                verbose_logger.exception(f"Error creating file: {truncate_error_str(e)}")
                 raise self._handle_error(e=e, provider_config=provider_config)
         elif isinstance(transformed_request, str) or isinstance(transformed_request, bytes):
             # Handle traditional file uploads
@@ -3443,7 +3443,7 @@ class BaseLLMHTTPHandler:
                 if initial_response_data:
                     litellm_params["initial_file_response"] = initial_response_data
             except Exception as e:
-                verbose_logger.exception(f"Error creating file: {e}")
+                verbose_logger.exception(f"Error creating file: {truncate_error_str(e)}")
                 raise self._handle_error(
                     e=e,
                     provider_config=provider_config,
@@ -3474,7 +3474,7 @@ class BaseLLMHTTPHandler:
                     timeout=timeout,
                 )
             except Exception as e:
-                verbose_logger.exception(f"Error creating file: {e}")
+                verbose_logger.exception(f"Error creating file: {truncate_error_str(e)}")
                 raise self._handle_error(e=e, provider_config=provider_config)
         elif isinstance(transformed_request, str) or isinstance(transformed_request, bytes):
             # Handle traditional file uploads
@@ -3685,7 +3685,7 @@ class BaseLLMHTTPHandler:
                     timeout=timeout,
                 )
         except Exception as e:
-            verbose_logger.exception(f"Error creating batch: {e}")
+            verbose_logger.exception(f"Error creating batch: {truncate_error_str(e)}")
             raise self._handle_error(
                 e=e,
                 provider_config=provider_config,
@@ -3777,7 +3777,7 @@ class BaseLLMHTTPHandler:
                     headers=headers,
                 )
         except Exception as e:
-            verbose_logger.exception(f"Error retrieving batch: {e}")
+            verbose_logger.exception(f"Error retrieving batch: {truncate_error_str(e)}")
             raise self._handle_error(
                 e=e,
                 provider_config=provider_config,
@@ -3850,7 +3850,7 @@ class BaseLLMHTTPHandler:
                     timeout=timeout,
                 )
         except Exception as e:
-            verbose_logger.exception(f"Error creating batch: {e}")
+            verbose_logger.exception(f"Error creating batch: {truncate_error_str(e)}")
             raise self._handle_error(
                 e=e,
                 provider_config=provider_config,
@@ -3934,7 +3934,7 @@ class BaseLLMHTTPHandler:
                     headers=headers,
                 )
         except Exception as e:
-            verbose_logger.exception(f"Error retrieving batch: {e}")
+            verbose_logger.exception(f"Error retrieving batch: {truncate_error_str(e)}")
             raise self._handle_error(
                 e=e,
                 provider_config=provider_config,
@@ -5704,10 +5704,10 @@ class BaseLLMHTTPHandler:
                 await realtime_streaming.bidirectional_forward()
 
         except websockets.exceptions.InvalidStatusCode as e:  # type: ignore
-            verbose_logger.exception(f"Error connecting to backend: {e}")
+            verbose_logger.exception(f"Error connecting to backend: {truncate_error_str(e)}")
             await websocket.close(code=e.status_code, reason=_redact_string(str(e)))
         except Exception as e:
-            verbose_logger.exception(f"Error connecting to backend: {e}")
+            verbose_logger.exception(f"Error connecting to backend: {truncate_error_str(e)}")
             try:
                 await websocket.close(code=1011, reason=_redact_string(f"Internal server error: {str(e)}"))
             except RuntimeError as close_error:
@@ -6082,10 +6082,10 @@ class BaseLLMHTTPHandler:
                 await streaming.bidirectional_forward()
 
         except websockets.exceptions.InvalidStatusCode as e:  # type: ignore
-            verbose_logger.exception(f"Error connecting to responses WS backend: {e}")
+            verbose_logger.exception(f"Error connecting to responses WS backend: {truncate_error_str(e)}")
             await websocket.close(code=e.status_code, reason=_redact_string(str(e)))
         except Exception as e:
-            verbose_logger.exception(f"Error in responses WS: {e}")
+            verbose_logger.exception(f"Error in responses WS: {truncate_error_str(e)}")
             try:
                 await websocket.close(code=1011, reason=_redact_string(f"Internal server error: {str(e)}"))
             except RuntimeError as close_error:

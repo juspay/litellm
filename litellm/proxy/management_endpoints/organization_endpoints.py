@@ -53,6 +53,7 @@ from litellm.types.proxy.management_endpoints.common_daily_activity import (
     SpendAnalyticsPaginatedResponse,
 )
 from litellm.utils import _update_dictionary
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -916,7 +917,7 @@ async def organization_member_add(
             updated_organization_memberships=updated_organization_memberships,
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error adding member to organization: {e}")
+        verbose_proxy_logger.exception(f"Error adding member to organization: {truncate_error_str(e)}")
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1102,7 +1103,7 @@ async def organization_member_update(
         )
         return final_organization_membership_pydantic
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating member in organization: {e}")
+        verbose_proxy_logger.exception(f"Error updating member in organization: {truncate_error_str(e)}")
         raise e
 
 
@@ -1151,7 +1152,7 @@ async def organization_member_delete(
         return member_to_delete
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error deleting member from organization: {e}")
+        verbose_proxy_logger.exception(f"Error deleting member from organization: {truncate_error_str(e)}")
         raise e
 
 
