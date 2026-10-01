@@ -40,6 +40,7 @@ from litellm.types.tag_management import (
     TagNewRequest,
     TagUpdateRequest,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 if TYPE_CHECKING:
     from litellm import Router
@@ -112,7 +113,7 @@ async def _get_model_names(prisma_client, model_ids: list) -> Dict[str, str]:
         models = await ModelRepository(prisma_client).table.find_many(where={"model_id": {"in": model_ids}})
         return {model.model_id: model.model_name for model in models}
     except Exception as e:
-        verbose_proxy_logger.error(f"Error getting model names: {str(e)}")
+        verbose_proxy_logger.error(f"Error getting model names: {truncate_error_str(e)}")
         return {}
 
 
@@ -242,7 +243,7 @@ async def new_tag(
             "tag": tag_config,
         }
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error creating tag: {str(e)}")
+        verbose_proxy_logger.exception(f"Error creating tag: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -283,7 +284,7 @@ async def _add_tag_to_deployment(deployment: "Deployment", tag: str):
             data={"litellm_params": json.dumps(existing_params)},
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error adding tag to deployment: {str(e)}")
+        verbose_proxy_logger.exception(f"Error adding tag to deployment: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -372,7 +373,7 @@ async def update_tag(
             "tag": tag_config,
         }
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating tag: {str(e)}")
+        verbose_proxy_logger.exception(f"Error updating tag: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

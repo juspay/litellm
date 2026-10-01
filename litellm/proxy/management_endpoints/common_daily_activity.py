@@ -22,6 +22,7 @@ from litellm.types.proxy.management_endpoints.common_daily_activity import (
     SpendAnalyticsPaginatedResponse,
     SpendMetrics,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 # Mapping from Prisma accessor names to actual PostgreSQL table names.
 _PRISMA_TO_PG_TABLE: Dict[str, str] = {
@@ -869,7 +870,7 @@ async def get_daily_activity(
         )
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error fetching daily activity: {str(e)}")
+        verbose_proxy_logger.exception(f"Error fetching daily activity: {truncate_error_str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},
@@ -955,7 +956,7 @@ async def get_daily_activity_aggregated(
         )
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error fetching aggregated daily activity: {str(e)}")
+        verbose_proxy_logger.exception(f"Error fetching aggregated daily activity: {truncate_error_str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},

@@ -34,6 +34,7 @@ from litellm.types.management_endpoints import (
     REDIS_TYPE_DESCRIPTIONS,
     CacheSettingsField,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -288,7 +289,7 @@ async def get_cache_settings(
             redis_type_descriptions=REDIS_TYPE_DESCRIPTIONS,
         )
     except Exception as e:
-        verbose_proxy_logger.error(f"Error fetching cache settings: {str(e)}")
+        verbose_proxy_logger.error(f"Error fetching cache settings: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching cache settings: {str(e)}")
 
 
@@ -330,7 +331,7 @@ async def test_cache_connection(
         return CacheTestResponse(**result)
 
     except Exception as e:
-        verbose_proxy_logger.error(f"Error testing cache connection: {str(e)}")
+        verbose_proxy_logger.error(f"Error testing cache connection: {truncate_error_str(e)}")
         return CacheTestResponse(
             status="failed",
             message=f"Cache connection test failed: {str(e)}",
@@ -442,5 +443,5 @@ async def update_cache_settings(
             "settings": cache_settings,
         }
     except Exception as e:
-        verbose_proxy_logger.error(f"Error updating cache settings: {str(e)}")
+        verbose_proxy_logger.error(f"Error updating cache settings: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=f"Error updating cache settings: {str(e)}")

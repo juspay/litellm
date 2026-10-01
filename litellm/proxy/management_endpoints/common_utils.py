@@ -43,6 +43,7 @@ from litellm.proxy._types import (  # noqa: F401  re-exported
 from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time
 from litellm.proxy.utils import _premium_user_check
 from litellm.repositories.team_repository import TeamRepository
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 if TYPE_CHECKING:
     from litellm.proxy._types import NewProjectRequest, UpdateProjectRequest
@@ -222,7 +223,7 @@ async def _user_has_admin_privileges(
 
     except Exception as e:
         # If there's an error checking, default to False for security
-        verbose_proxy_logger.debug(f"Error checking admin privileges for user {user_api_key_dict.user_id}: {e}")
+        verbose_proxy_logger.debug(f"Error checking admin privileges for user {user_api_key_dict.user_id}: {truncate_error_str(e)}")
         return False
 
     return False
@@ -366,7 +367,7 @@ async def admin_can_invite_user(
 
         return False
     except Exception as e:
-        verbose_proxy_logger.debug(f"Error checking invite permission for user {user_api_key_dict.user_id}: {e}")
+        verbose_proxy_logger.debug(f"Error checking invite permission for user {user_api_key_dict.user_id}: {truncate_error_str(e)}")
         return False
 
 

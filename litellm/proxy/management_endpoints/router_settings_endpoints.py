@@ -22,6 +22,7 @@ from litellm.types.management_endpoints import (
     ROUTING_STRATEGY_DESCRIPTIONS,
     RouterSettingsField,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -120,7 +121,7 @@ async def get_router_settings(
             routing_strategy_descriptions=ROUTING_STRATEGY_DESCRIPTIONS,
         )
     except Exception as e:
-        verbose_proxy_logger.error(f"Error fetching router settings: {str(e)}")
+        verbose_proxy_logger.error(f"Error fetching router settings: {truncate_error_str(e)}")
         raise
 
 
@@ -168,5 +169,5 @@ async def get_router_fields(
             routing_strategy_descriptions=ROUTING_STRATEGY_DESCRIPTIONS,
         )
     except Exception as e:
-        verbose_proxy_logger.error(f"Error fetching router fields: {str(e)}")
+        verbose_proxy_logger.error(f"Error fetching router fields: {truncate_error_str(e)}")
         raise

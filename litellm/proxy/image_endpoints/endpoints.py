@@ -16,6 +16,7 @@ from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth, user_api_key_au
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.proxy.route_llm_request import route_request
 from litellm.types.llms.openai import ChatCompletionUserMessage
+from litellm.litellm_core_utils.core_helpers import _truncate_str
 
 router = APIRouter()
 
@@ -189,7 +190,7 @@ async def image_generation(
         verbose_proxy_logger.error(
             "litellm.proxy.proxy_server.image_generation(): Exception occured - {}".format(str(e))
         )
-        verbose_proxy_logger.debug(traceback.format_exc())
+        verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e)),

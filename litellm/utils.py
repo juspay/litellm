@@ -957,7 +957,7 @@ def function_setup(
 
                 except Exception as e:
                     # Log the error but don't fail the request
-                    verbose_logger.warning(f"Error removing thought signatures from tool call IDs: {str(e)}")
+                    verbose_logger.warning(f"Error removing thought signatures from tool call IDs: {truncate_error_str(e)}")
         elif call_type == CallTypes.embedding.value or call_type == CallTypes.aembedding.value:
             messages = args[1] if len(args) > 1 else kwargs.get("input", None)
         elif call_type == CallTypes.image_generation.value or call_type == CallTypes.aimage_generation.value:
@@ -1014,7 +1014,7 @@ def function_setup(
                 else:
                     messages = "default-message-value"
             except Exception as e:
-                verbose_logger.debug(f"Error extracting messages from Google contents: {str(e)}")
+                verbose_logger.debug(f"Error extracting messages from Google contents: {truncate_error_str(e)}")
                 messages = "default-message-value"
         else:
             messages = "default-message-value"
@@ -1957,7 +1957,7 @@ def _select_tokenizer_helper(model: str) -> SelectTokenizerResponse:
         if result is not None:
             return result
     except Exception as e:
-        verbose_logger.debug(f"Error selecting tokenizer: {e}")
+        verbose_logger.debug(f"Error selecting tokenizer: {truncate_error_str(e)}")
 
     # default - tiktoken
     return _return_openai_tokenizer(model)
@@ -2070,7 +2070,7 @@ def create_pretrained_tokenizer(identifier: str, revision="main", auth_token: Op
             auth_token=auth_token,  # type: ignore
         )
     except Exception as e:
-        verbose_logger.error(f"Error creating pretrained tokenizer: {e}. Defaulting to version without 'auth_token'.")
+        verbose_logger.error(f"Error creating pretrained tokenizer: {truncate_error_str(e)}. Defaulting to version without 'auth_token'.")
         tokenizer = Tokenizer.from_pretrained(identifier, revision=revision)
     return {"type": "huggingface_tokenizer", "tokenizer": tokenizer}
 
@@ -5527,7 +5527,7 @@ def _get_model_info_helper(
                     returned_model_info[cost_key] = cost_value  # type: ignore[literal-required]
             return returned_model_info
     except Exception as e:
-        verbose_logger.debug(f"Error getting model info: {e}")
+        verbose_logger.debug(f"Error getting model info: {truncate_error_str(e)}")
         raise Exception(
             "This model isn't mapped yet. model={}, custom_llm_provider={}. Add it here - https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json.".format(
                 model, custom_llm_provider
@@ -6963,7 +6963,7 @@ def _get_valid_models_from_provider_api(
         _model_cache.set_cached_model_info(custom_llm_provider, litellm_params, models)
         return models
     except Exception as e:
-        verbose_logger.warning(f"Error getting valid models: {e}")
+        verbose_logger.warning(f"Error getting valid models: {truncate_error_str(e)}")
         return []
 
 
@@ -7037,7 +7037,7 @@ def get_valid_models(
 
         return valid_models
     except Exception as e:
-        verbose_logger.warning(f"Error getting valid models: {e}")
+        verbose_logger.warning(f"Error getting valid models: {truncate_error_str(e)}")
         return []  # NON-Blocking
 
 
@@ -9055,7 +9055,7 @@ def is_prompt_caching_valid_prompt(
         )
         return token_count >= MINIMUM_PROMPT_CACHE_TOKEN_COUNT
     except Exception as e:
-        verbose_logger.error(f"Error in is_prompt_caching_valid_prompt: {e}")
+        verbose_logger.error(f"Error in is_prompt_caching_valid_prompt: {truncate_error_str(e)}")
         return False
 
 

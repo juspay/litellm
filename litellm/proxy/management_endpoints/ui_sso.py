@@ -124,6 +124,7 @@ from litellm.types.proxy.management_endpoints.ui_sso import (
     TeamMappings,
 )
 from litellm.types.proxy.ui_sso import ParsedOpenIDResult
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 if TYPE_CHECKING:
     from fastapi_sso.sso.base import OpenID
@@ -474,7 +475,7 @@ async def _persist_cli_sso_user_metadata(
             f"{list(_flatten_cli_sso_metadata_for_poll(attribution_metadata).keys())}"
         )
     except Exception as e:
-        verbose_proxy_logger.error(f"Failed to persist CLI SSO attribution metadata for user {user_id}: {e}")
+        verbose_proxy_logger.error(f"Failed to persist CLI SSO attribution metadata for user {user_id}: {truncate_error_str(e)}")
 
 
 def _cli_poll_attribution_metadata_from_session(
@@ -1475,7 +1476,7 @@ async def create_team_member_add_task(team_id, user_info):
             user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
         )
     except Exception as e:
-        verbose_proxy_logger.debug(f"[Non-Blocking] Error trying to add sso user to db: {e}")
+        verbose_proxy_logger.debug(f"[Non-Blocking] Error trying to add sso user to db: {truncate_error_str(e)}")
 
 
 async def add_missing_team_member(user_info: Union[NewUserResponse, LiteLLM_UserTable], sso_teams: List[str]):
@@ -1493,7 +1494,7 @@ async def add_missing_team_member(user_info: Union[NewUserResponse, LiteLLM_User
     try:
         await asyncio.gather(*tasks)
     except Exception as e:
-        verbose_proxy_logger.debug(f"[Non-Blocking] Error trying to add sso user to db: {e}")
+        verbose_proxy_logger.debug(f"[Non-Blocking] Error trying to add sso user to db: {truncate_error_str(e)}")
 
 
 def get_disabled_non_admin_personal_key_creation():
@@ -1524,7 +1525,7 @@ async def get_existing_user_info_from_db(
             sso_user_id=user_id,
         )
     except Exception as e:
-        verbose_proxy_logger.debug(f"Error getting user object: {e}")
+        verbose_proxy_logger.debug(f"Error getting user object: {truncate_error_str(e)}")
         user_info = None
 
     return user_info
@@ -1589,7 +1590,7 @@ async def get_user_info_from_db(
 
         return user_info
     except Exception as e:
-        verbose_proxy_logger.exception(f"[Non-Blocking] Error trying to add sso user to db: {e}")
+        verbose_proxy_logger.exception(f"[Non-Blocking] Error trying to add sso user to db: {truncate_error_str(e)}")
 
     return None
 
@@ -1894,7 +1895,7 @@ async def _fetch_cli_sso_team_details(
                     }
                 )
     except Exception as e:
-        verbose_proxy_logger.error(f"Error fetching team details for CLI SSO session: {e}")
+        verbose_proxy_logger.error(f"Error fetching team details for CLI SSO session: {truncate_error_str(e)}")
     return team_details
 
 
@@ -2038,7 +2039,7 @@ async def cli_sso_callback(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"Error with CLI SSO callback: {e}")
+        verbose_proxy_logger.error(f"Error with CLI SSO callback: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to process CLI SSO: {str(e)}")
 
 
@@ -2193,7 +2194,7 @@ async def cli_poll_key(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"Error polling for CLI JWT: {e}")
+        verbose_proxy_logger.error(f"Error polling for CLI JWT: {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail=f"Error checking session status: {str(e)}")
 
 
@@ -2780,7 +2781,7 @@ class SSOAuthenticationHandler:
                 )
             return user_info
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error upserting SSO user into LiteLLM DB: {e}")
+            verbose_proxy_logger.exception(f"Error upserting SSO user into LiteLLM DB: {truncate_error_str(e)}")
             return user_info
 
     @staticmethod
@@ -2892,7 +2893,7 @@ class SSOAuthenticationHandler:
                 ),
             )
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error creating Litellm Team: {e}")
+            verbose_proxy_logger.exception(f"Error creating Litellm Team: {truncate_error_str(e)}")
 
     @staticmethod
     def _cast_and_deepcopy_litellm_default_team_params(
@@ -3880,7 +3881,7 @@ class MicrosoftSSOHandler:
                 return []
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error extracting app roles from id_token: {e}")
+            verbose_proxy_logger.error(f"Error extracting app roles from id_token: {truncate_error_str(e)}")
             return []
 
     @staticmethod
@@ -3943,7 +3944,7 @@ class MicrosoftSSOHandler:
             return all_group_ids
 
         except Exception as e:
-            verbose_proxy_logger.error(f"Error getting user groups from Microsoft Graph API: {e}")
+            verbose_proxy_logger.error(f"Error getting user groups from Microsoft Graph API: {truncate_error_str(e)}")
             return []
 
     @staticmethod

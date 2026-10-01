@@ -60,6 +60,7 @@ from litellm.types.llms.openai import (
     OpenAIFileObject,
     OpenAIFilesPurpose,
 )
+from litellm.litellm_core_utils.core_helpers import _truncate_str
 
 router = APIRouter()
 
@@ -836,7 +837,7 @@ async def get_file_content(
         verbose_proxy_logger.exception(
             "litellm.proxy.proxy_server.retrieve_file_content(): Exception occured - {}".format(str(e))
         )
-        verbose_proxy_logger.debug(traceback.format_exc())
+        verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e.detail)),
@@ -1017,7 +1018,7 @@ async def get_file(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
         verbose_proxy_logger.error("litellm.proxy.proxy_server.retrieve_file(): Exception occured - {}".format(str(e)))
-        verbose_proxy_logger.debug(traceback.format_exc())
+        verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e.detail)),
@@ -1410,7 +1411,7 @@ async def list_files(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
         verbose_proxy_logger.error("litellm.proxy.proxy_server.list_files(): Exception occured - {}".format(str(e)))
-        verbose_proxy_logger.debug(traceback.format_exc())
+        verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "message", str(e.detail)),
