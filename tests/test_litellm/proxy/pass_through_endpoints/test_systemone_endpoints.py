@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import litellm
 import pytest
 from fastapi import HTTPException, Response
@@ -8,29 +9,11 @@ from starlette.requests import Request
 from litellm.proxy._types import LiteLLMRoutes, UserAPIKeyAuth
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.pass_through_endpoints.systemone_endpoints import (
-    SystemOneDeploymentParams,
+    SystemOnePassthroughConfig,
     build_systemone_target_url,
     forward_systemone_request,
 )
-
-
-class StubDeploymentRouter:
-    def __init__(self, deployment: object) -> None:
-        self.deployment = deployment
-        self.selected_models: list[str] = []
-
-    def get_available_deployment_for_pass_through(self, model: str) -> object:
-        self.selected_models.append(model)
-        return self.deployment
-
-
-class MissingDeploymentRouter:
-    def get_available_deployment_for_pass_through(self, model: str) -> object:
-        raise litellm.BadRequestError(
-            message=f"There are no healthy deployments for {model}",
-            model=model,
-            llm_provider="",
-        )
+from litellm.router import Router
 
 
 def make_request(body: object) -> Request:
@@ -56,116 +39,69 @@ def make_request(body: object) -> Request:
 
 
 @pytest.mark.asyncio
-async def test_forwards_body_unchanged_to_selected_model_deployment() -> None:
+async def test_forwards_body_unchanged_to_model_pipeline() -> None:
     request_body = {
         "model": "decision-model",
         "state": "The customer was charged twice.",
         "images": ["data:image/png;base64,AAAA"],
-        "questions": {
-            "billing": {
-                "type": "noul",
-                "instructions": "Is this a billing issue?",
-            }
-        },
+        "questions": {"billing": {"type": "noul", "instructions": "Is this a billing issue?"}},
     }
-    deployment_router = StubDeploymentRouter(
-        {
-            "litellm_params": {
-                "api_base": "http://inference.internal:8080",
-                "use_in_pass_through": True,
-            }
-        }
-    )
     forwarded_calls: list[dict[str, object]] = []
 
-    async def forwarder(**kwargs: object) -> Response:
+    async def model_forwarder(**kwargs: object) -> Response:
         forwarded_calls.append(kwargs)
         return Response(content=b'{"model":"decision-model"}', media_type="application/json")
 
     response = await forward_systemone_request(
         request=make_request(request_body),
+        fastapi_response=Response(),
         user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
-        deployment_router=deployment_router,
-        forwarder=forwarder,
+        model_forwarder=model_forwarder,
     )
 
     assert response.status_code == 200
-    assert deployment_router.selected_models == ["decision-model"]
-    assert len(forwarded_calls) == 1
-    assert forwarded_calls[0]["target"] == "http://inference.internal:8080/v1/systemone"
-    assert forwarded_calls[0]["custom_body"] == request_body
-    assert forwarded_calls[0]["custom_headers"] == {"Content-Type": "application/json"}
-
-
-@pytest.mark.asyncio
-async def test_uses_deployment_path_headers_and_api_key() -> None:
-    deployment_router = StubDeploymentRouter(
-        {
-            "litellm_params": {
-                "api_base": "https://inference.example/base",
-                "api_key": "upstream-key",
-                "extra_headers": {"X-Deployment": "primary"},
-                "systemone_path": "/decision/systemone",
-                "use_in_pass_through": True,
-            }
-        }
-    )
-    forwarded_calls: list[dict[str, object]] = []
-
-    async def forwarder(**kwargs: object) -> Response:
-        forwarded_calls.append(kwargs)
-        return Response()
-
-    await forward_systemone_request(
-        request=make_request({"model": "decision-model", "state": "hello", "questions": {}}),
-        user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
-        deployment_router=deployment_router,
-        forwarder=forwarder,
-    )
-
-    assert forwarded_calls[0]["target"] == "https://inference.example/base/decision/systemone"
-    assert forwarded_calls[0]["custom_headers"] == {
-        "Content-Type": "application/json",
-        "Authorization": "Bearer upstream-key",
-        "X-Deployment": "primary",
-    }
+    assert forwarded_calls[0]["model"] == "decision-model"
+    assert forwarded_calls[0]["request_body"] == request_body
 
 
 @pytest.mark.asyncio
 async def test_uses_registered_passthrough_when_model_is_not_configured() -> None:
-    request_body: dict[str, object] = {
-        "model": "jev-latest",
-        "state": "The customer was charged twice.",
-        "questions": {},
-    }
+    request_body: dict[str, object] = {"model": "legacy-model", "state": "hello", "questions": {}}
     fallback_calls: list[dict[str, object]] = []
+
+    async def missing_model(**kwargs: object) -> Response:
+        raise litellm.BadRequestError(message="No pass-through deployment", model="legacy-model", llm_provider="")
 
     async def legacy_forwarder(**kwargs: object) -> Response | None:
         fallback_calls.append(kwargs)
-        return Response(content=b'{"model":"jev-latest"}', media_type="application/json")
+        return Response(content=b'{"model":"legacy-model"}', media_type="application/json")
 
     response = await forward_systemone_request(
         request=make_request(request_body),
+        fastapi_response=Response(),
         user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
-        deployment_router=MissingDeploymentRouter(),
+        model_forwarder=missing_model,
         legacy_forwarder=legacy_forwarder,
     )
 
     assert response.status_code == 200
-    assert len(fallback_calls) == 1
     assert fallback_calls[0]["request_body"] == request_body
 
 
 @pytest.mark.asyncio
 async def test_preserves_model_error_without_registered_passthrough() -> None:
+    async def missing_model(**kwargs: object) -> Response:
+        raise litellm.BadRequestError(message="No pass-through deployment", model="missing", llm_provider="")
+
     async def no_legacy_endpoint(**kwargs: object) -> Response | None:
         return None
 
     with pytest.raises(litellm.BadRequestError):
         await forward_systemone_request(
-            request=make_request({"model": "jev-latest", "state": "hello", "questions": {}}),
+            request=make_request({"model": "missing", "state": "hello", "questions": {}}),
+            fastapi_response=Response(),
             user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
-            deployment_router=MissingDeploymentRouter(),
+            model_forwarder=missing_model,
             legacy_forwarder=no_legacy_endpoint,
         )
 
@@ -173,27 +109,121 @@ async def test_preserves_model_error_without_registered_passthrough() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("body", [{}, {"model": ""}, [], "invalid"])
 async def test_rejects_request_without_model(body: object) -> None:
-    deployment_router = StubDeploymentRouter({"litellm_params": {"api_base": "http://inference.internal"}})
+    forwarded = False
 
-    async def forwarder(**kwargs: object) -> Response:
+    async def model_forwarder(**kwargs: object) -> Response:
+        nonlocal forwarded
+        forwarded = True
         return Response()
 
     with pytest.raises(HTTPException) as exc_info:
         await forward_systemone_request(
             request=make_request(body),
+            fastapi_response=Response(),
             user_api_key_dict=UserAPIKeyAuth(api_key="test-key"),
-            deployment_router=deployment_router,
-            forwarder=forwarder,
+            model_forwarder=model_forwarder,
         )
 
     assert exc_info.value.status_code == 400
-    assert deployment_router.selected_models == []
+    assert forwarded is False
 
 
-def test_target_url_does_not_duplicate_systemone_path() -> None:
-    params = SystemOneDeploymentParams(api_base="http://inference.internal/v1/systemone")
+@pytest.mark.parametrize(
+    ("api_base", "systemone_path", "expected"),
+    [
+        ("http://inference.internal:8080", "/v1/systemone", "http://inference.internal:8080/v1/systemone"),
+        ("http://inference.internal:8080/v1", "/v1/systemone", "http://inference.internal:8080/v1/systemone"),
+        (
+            "http://inference.internal:8080/v1/systemone",
+            "/v1/systemone",
+            "http://inference.internal:8080/v1/systemone",
+        ),
+        ("https://inference.example/base", "/decision/systemone", "https://inference.example/base/decision/systemone"),
+    ],
+)
+def test_builds_systemone_target_url(api_base: str, systemone_path: str, expected: str) -> None:
+    assert build_systemone_target_url(api_base, systemone_path) == expected
 
-    assert build_systemone_target_url(params) == "http://inference.internal/v1/systemone"
+
+def test_systemone_config_sets_headers_and_normalizes_usage() -> None:
+    config = SystemOnePassthroughConfig()
+    headers = config.validate_environment(
+        headers={},
+        model="jev-trained",
+        messages=[],
+        optional_params={},
+        litellm_params={"extra_headers": {"X-Deployment": "primary"}},
+        api_key="upstream-key",
+    )
+    request = httpx.Request("POST", "http://inference.internal/v1/systemone")
+    response = httpx.Response(
+        200,
+        request=request,
+        json={"model": "jev-trained", "answers": {}, "usage": {"input_tokens": 54, "output_tokens": 1}},
+    )
+
+    normalized = config.logging_non_streaming_response(
+        model="jev-trained",
+        custom_llm_provider="openai",
+        httpx_response=response,
+        request_data={},
+        logging_obj=object(),
+        endpoint="/v1/systemone",
+    )
+
+    assert headers == {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer upstream-key",
+        "X-Deployment": "primary",
+    }
+    assert isinstance(normalized, litellm.ModelResponse)
+    normalized_payload = normalized.model_dump(exclude_none=True)
+    assert normalized_payload["usage"] == {
+        "prompt_tokens": 54,
+        "completion_tokens": 1,
+        "total_tokens": 55,
+    }
+
+
+@pytest.mark.asyncio
+async def test_router_execution_uses_only_opted_in_passthrough_deployments() -> None:
+    deployment_calls: list[str] = []
+    deployment_router = Router(
+        model_list=[
+            {
+                "model_name": "decision-model",
+                "litellm_params": {
+                    "model": "openai/not-opted-in",
+                    "api_base": "http://not-opted-in.internal",
+                    "api_key": "test-key",
+                    "use_in_pass_through": False,
+                },
+            },
+            {
+                "model_name": "decision-model",
+                "litellm_params": {
+                    "model": "openai/opted-in",
+                    "api_base": "http://opted-in.internal",
+                    "api_key": "test-key",
+                    "use_in_pass_through": True,
+                },
+            },
+        ]
+    )
+
+    async def generic_call(**kwargs: object) -> str:
+        deployment_calls.append(str(kwargs["api_base"]))
+        return "ok"
+
+    result = await deployment_router._ageneric_api_call_with_fallbacks_helper(
+        model="decision-model",
+        original_generic_function=generic_call,
+        use_pass_through_deployments=True,
+        litellm_metadata={},
+    )
+
+    assert result == "ok"
+    assert deployment_calls == ["http://opted-in.internal"]
 
 
 def test_systemone_is_an_llm_api_route() -> None:

@@ -37,6 +37,8 @@ OPTIONAL_KWARGS_KEYS = frozenset(
         "tpm",
         "rpm",
         "use_xai_oauth",
+        "extra_headers",
+        "systemone_path",
     }
 )
 

@@ -1002,10 +1002,7 @@ class Router:
             litellm.input_callback = [c for c in litellm.input_callback if id(c) not in selector_ids]
 
     def shutdown_routing_strategy(self) -> None:
-        selectors = [
-            getattr(self, attr, None)
-            for attr in self._DEFAULT_SELECTOR_ATTR_BY_STRATEGY.values()
-        ]
+        selectors = [getattr(self, attr, None) for attr in self._DEFAULT_SELECTOR_ATTR_BY_STRATEGY.values()]
         selectors.extend(
             selector
             for group_selectors in getattr(self, "_group_selectors", {}).values()
@@ -1181,8 +1178,7 @@ class Router:
                     )
                 except Exception as e:
                     verbose_router_logger.error(
-                        f"StickyLeastBusy async_get_available_deployments failed: {e}, "
-                        f"falling back to simple_shuffle"
+                        f"StickyLeastBusy async_get_available_deployments failed: {e}, falling back to simple_shuffle"
                     )
                     return simple_shuffle(
                         llm_router_instance=self,
@@ -1291,8 +1287,7 @@ class Router:
                     )
                 except Exception as e:
                     verbose_router_logger.error(
-                        f"StickyLeastBusy get_available_deployments failed: {e}, "
-                        f"falling back to simple_shuffle"
+                        f"StickyLeastBusy get_available_deployments failed: {e}, falling back to simple_shuffle"
                     )
                     return simple_shuffle(
                         llm_router_instance=self,
@@ -1309,8 +1304,7 @@ class Router:
                     )
                 except Exception as e:
                     verbose_router_logger.error(
-                        f"StickyLeastBusyRedis get_available_deployments failed: {e}, "
-                        f"falling back to simple_shuffle"
+                        f"StickyLeastBusyRedis get_available_deployments failed: {e}, falling back to simple_shuffle"
                     )
                     return simple_shuffle(
                         llm_router_instance=self,
@@ -1327,8 +1321,7 @@ class Router:
                     )
                 except Exception as e:
                     verbose_router_logger.error(
-                        f"StickyLeastBusyWeighted get_available_deployments failed: {e}, "
-                        f"falling back to simple_shuffle"
+                        f"StickyLeastBusyWeighted get_available_deployments failed: {e}, falling back to simple_shuffle"
                     )
                     return simple_shuffle(
                         llm_router_instance=self,
@@ -4594,11 +4587,17 @@ class Router:
         """
 
         passthrough_on_no_deployment = kwargs.pop("passthrough_on_no_deployment", False)
+        use_pass_through_deployments = kwargs.pop("use_pass_through_deployments", False)
         function_name = "_ageneric_api_call_with_fallbacks"
         try:
             parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
             try:
-                deployment = await self.async_get_available_deployment(
+                deployment_selector = (
+                    self.async_get_available_deployment_for_pass_through
+                    if use_pass_through_deployments
+                    else self.async_get_available_deployment
+                )
+                deployment = await deployment_selector(
                     model=model,
                     request_kwargs=kwargs,
                     messages=kwargs.get("messages", None),
@@ -5929,9 +5928,9 @@ class Router:
                     **kwargs,
                 )
             elif call_type == "allm_passthrough_route":
+                kwargs.setdefault("passthrough_on_no_deployment", True)
                 return await self._ageneric_api_call_with_fallbacks(
                     original_function=original_function,
-                    passthrough_on_no_deployment=True,
                     **kwargs,
                 )
             elif call_type in (

@@ -13,6 +13,9 @@ if TYPE_CHECKING:
 
 
 class BasePassthroughConfig(BaseLLMModelInfo):
+    def should_replace_model_in_request(self) -> bool:
+        return True
+
     @abstractmethod
     def is_streaming_request(self, endpoint: str, request_data: dict) -> bool:
         """

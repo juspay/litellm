@@ -1680,9 +1680,10 @@ class Logging(LiteLLMLoggingBaseClass):
         ) and isinstance(result, Response):
             from litellm.utils import ProviderConfigManager
 
-            provider_config = ProviderConfigManager.get_provider_passthrough_config(
-                provider=self.model_call_details.get("custom_llm_provider", ""),
-                model=self.model,
+            provider_config = self.model_call_details.get(
+                "provider_config"
+            ) or ProviderConfigManager.get_provider_passthrough_config(
+                provider=self.model_call_details.get("custom_llm_provider", ""), model=self.model
             )
             if provider_config is not None:
                 logging_result = provider_config.logging_non_streaming_response(
@@ -2362,9 +2363,7 @@ class Logging(LiteLLMLoggingBaseClass):
                 "LiteLLM.LoggingError: [Non-Blocking] Exception occurred while success logging {}".format(str(e)),
             )
 
-    async def async_success_handler(
-        self, result=None, start_time=None, end_time=None, cache_hit=None, **kwargs
-    ):
+    async def async_success_handler(self, result=None, start_time=None, end_time=None, cache_hit=None, **kwargs):
         """
         Public entry point for the async success-callback dispatch.
 
