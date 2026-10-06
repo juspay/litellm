@@ -29,8 +29,8 @@ from litellm.litellm_core_utils.llm_cost_calc.utils import (
     _parse_prompt_tokens_details,
     calculate_cost_component,
     generic_cost_per_token,
-    get_token_type_cost_breakdown,
     get_billable_input_tokens,
+    get_token_type_cost_breakdown,
     select_cost_metric_for_model,
 )
 from litellm.llms.anthropic.cost_calculation import (
@@ -52,9 +52,6 @@ from litellm.llms.databricks.cost_calculator import (
 from litellm.llms.deepseek.cost_calculator import (
     cost_per_token as deepseek_cost_per_token,
 )
-from litellm.llms.tencent.cost_calculator import (
-    cost_per_token as tencent_cost_per_token,
-)
 from litellm.llms.fireworks_ai.cost_calculator import (
     cost_per_token as fireworks_ai_cost_per_token,
 )
@@ -64,11 +61,18 @@ from litellm.llms.lemonade.cost_calculator import (
 )
 from litellm.llms.openai.cost_calculation import (
     _video_output_cost_per_second,
+)
+from litellm.llms.openai.cost_calculation import (
     cost_per_second as openai_cost_per_second,
+)
+from litellm.llms.openai.cost_calculation import (
     cost_per_token as openai_cost_per_token,
 )
 from litellm.llms.perplexity.cost_calculator import (
     cost_per_token as perplexity_cost_per_token,
+)
+from litellm.llms.tencent.cost_calculator import (
+    cost_per_token as tencent_cost_per_token,
 )
 from litellm.llms.together_ai.cost_calculator import get_model_params_and_category
 from litellm.llms.vertex_ai.cost_calculator import (
@@ -81,7 +85,7 @@ from litellm.llms.vertex_ai.cost_calculator import cost_router as google_cost_ro
 from litellm.llms.xai.cost_calculator import cost_per_token as xai_cost_per_token
 from litellm.responses.utils import ResponseAPILoggingUtils
 from litellm.types.agents import LiteLLMSendMessageResponse
-from litellm.types.decisions import DecisionsResponse, DecisionsUsage
+from litellm.types.decisions import DecisionsResponse, DecisionsUsage, ExtractionResponse, ExtractionUsage
 from litellm.types.llms.openai import (
     HttpxBinaryResponseContent,
     ImageGenerationRequestQuality,
@@ -812,9 +816,9 @@ def _get_response_model(completion_response: Any) -> Optional[str]:
     if completion_response is None:
         return None
 
-    if isinstance(completion_response, DecisionsResponse):
+    if isinstance(completion_response, (DecisionsResponse, ExtractionResponse)):
         decision_model = completion_response._hidden_params.get("model")
-        return decision_model if isinstance(decision_model, str) else completion_response.model
+        return decision_model if isinstance(decision_model, str) else getattr(completion_response, "model", None)
 
     if isinstance(completion_response, BaseModel):
         return getattr(completion_response, "model", None)
@@ -876,7 +880,7 @@ def _get_usage_object(
         (
             completion_response.get("usage")
             if isinstance(completion_response, dict)
-            else getattr(completion_response, "get", lambda x: None)("usage")
+            else getattr(completion_response, "get", lambda key: getattr(completion_response, key, None))("usage")
         ),
     )
 
@@ -886,10 +890,14 @@ def _get_usage_object(
         return usage_obj
     elif (
         usage_obj is not None
-        and (isinstance(usage_obj, dict) or isinstance(usage_obj, ResponseAPIUsage))
-        and ResponseAPILoggingUtils._is_response_api_usage(usage_obj)
+        and (isinstance(usage_obj, dict) or isinstance(usage_obj, (ResponseAPIUsage, DecisionsUsage, ExtractionUsage)))
+        and ResponseAPILoggingUtils._is_response_api_usage(
+            usage_obj.model_dump() if isinstance(usage_obj, (DecisionsUsage, ExtractionUsage)) else usage_obj
+        )
     ):
-        return ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(usage_obj)
+        return ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+            usage_obj.model_dump() if isinstance(usage_obj, (DecisionsUsage, ExtractionUsage)) else usage_obj
+        )
     elif TranscriptionUsageObjectTransformation.is_transcription_usage_object(usage_obj):
         return TranscriptionUsageObjectTransformation.transform_transcription_usage_object(
             cast(
@@ -911,7 +919,7 @@ def _is_known_usage_objects(usage_obj):
     return (
         isinstance(usage_obj, litellm.Usage)
         or isinstance(usage_obj, ResponseAPIUsage)
-        or isinstance(usage_obj, DecisionsUsage)
+        or isinstance(usage_obj, (DecisionsUsage, ExtractionUsage))
         or TranscriptionUsageObjectTransformation.is_transcription_usage_object(usage_obj)
     )
 
@@ -1719,6 +1727,7 @@ def response_cost_calculator(
         Response,
         SearchResponse,
         DecisionsResponse,
+        ExtractionResponse,
     ],
     model: str,
     custom_llm_provider: Optional[str],

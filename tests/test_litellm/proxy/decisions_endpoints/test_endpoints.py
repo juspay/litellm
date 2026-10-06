@@ -88,6 +88,29 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
 
 
 @pytest.mark.parametrize("endpoint", ("/v1/decisions", "/decisions"))
+def test_proxy_audio_extraction_preserves_result(
+    client: TestClient, respx_mock: respx.MockRouter, endpoint: str
+) -> None:
+    wire = {
+        "result": {"author": "Example Author"},
+        "usage": {"input_tokens": 18, "thinking_tokens": 0, "completion_tokens": 7, "requests": 1, "wall_s": 0.09},
+        "thinking": {},
+        "confidence": {"author": {"mean_p": 1.0, "min_p": 0.9999}},
+    }
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json=wire)
+    payload = {
+        "model": "xor",
+        "context": "This paper was written by Example Author.",
+        "audio": {"data": "UklGRg==", "format": "wav"},
+        "questions": {"author": {"type": "string", "instructions": "Who is the author?"}},
+    }
+    response = client.post(endpoint, json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json() == wire
+    assert json.loads(upstream.calls[0].request.content) == {**payload, "model": "jev-trained"}
+
+
+@pytest.mark.parametrize("endpoint", ("/v1/decisions", "/decisions"))
 def test_proxy_decisions_forwards_images(client: TestClient, respx_mock: respx.MockRouter, endpoint: str) -> None:
     upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json=_RESPONSE)
     payload = {**_REQUEST, "model": "xor", "images": ["data:image/png;base64,aGVsbG8="]}

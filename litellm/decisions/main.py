@@ -18,9 +18,10 @@ from litellm.llms.typesafe.decisions.transformation import TYPESAFE_DECISIONS_EN
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.decisions import (
     DecisionQuestion,
+    DecisionsAudio,
     DecisionsJSON,
     DecisionsRequest,
-    DecisionsResponse,
+    DecisionsResult,
 )
 from litellm.types.utils import LlmProviders
 from litellm.utils import client
@@ -37,7 +38,7 @@ DECISIONS_ENDPOINTS: Final[Mapping[str, DecisionsProviderConfig]] = MappingProxy
 
 _DECISIONS_REQUEST_ADAPTER: Final[TypeAdapter[DecisionsRequest]] = TypeAdapter(DecisionsRequest)
 _DECISIONS_PAYLOAD_ADAPTER: Final[TypeAdapter[object]] = TypeAdapter(object)
-_DECISIONS_RESPONSE_ADAPTER: Final[TypeAdapter[DecisionsResponse]] = TypeAdapter(DecisionsResponse)
+_DECISIONS_RESPONSE_ADAPTER: Final[TypeAdapter[DecisionsResult]] = TypeAdapter(DecisionsResult)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -99,18 +100,27 @@ def _resolve_api_key(
 def _prepare_request(
     *,
     model: str,
-    state: DecisionsJSON,
-    questions: Mapping[str, DecisionQuestion | Mapping[str, object]],
+    state: DecisionsJSON | None,
+    questions: Mapping[str, DecisionQuestion | Mapping[str, object]] | None,
     api_key: str | None,
     api_base: str | None,
     custom_llm_provider: str | None,
     extra_headers: Mapping[str, str] | None,
     images: Sequence[str] | None = None,
+    audio: DecisionsAudio | Mapping[str, str] | None = None,
+    context: DecisionsJSON | None = None,
 ) -> _PreparedDecisionsRequest:
     provider, upstream_model = _resolve_provider_model(model, custom_llm_provider)
     try:
         validated_request: Final = _DECISIONS_REQUEST_ADAPTER.validate_python(
-            {"model": model, "state": state, "questions": questions, "images": images}
+            {
+                "model": model,
+                "state": state,
+                "context": context,
+                "questions": questions,
+                "images": images,
+                "audio": audio,
+            }
         )
     except ValidationError as error:
         raise litellm.BadRequestError(
@@ -152,7 +162,9 @@ def _prepare_request(
     body: Final = MappingProxyType(
         {
             "model": endpoint.request_model(canonical_model),
-            "state": validated_request.state,
+            **({"state": validated_request.state} if validated_request.state is not None else {}),
+            **({"context": validated_request.context} if validated_request.context is not None else {}),
+            **({"audio": validated_request.audio.model_dump()} if validated_request.audio is not None else {}),
             "questions": {
                 name: question.model_dump(mode="json", exclude_none=True)
                 for name, question in validated_request.questions.items()
@@ -182,6 +194,7 @@ def _log_request(
         kwargs=dict(kwargs),
         model=prepared.upstream_model,
         litellm_params={
+            **logging_obj.litellm_params,
             "litellm_call_id": kwargs.get("litellm_call_id"),
             "api_base": prepared.url,
         },
@@ -205,7 +218,7 @@ def _log_request(
 def _parse_response(
     response: httpx.Response,
     prepared: _PreparedDecisionsRequest,
-) -> DecisionsResponse:
+) -> DecisionsResult:
     response.raise_for_status()
     payload: Final[object] = _DECISIONS_PAYLOAD_ADAPTER.validate_json(response.content)
     result: Final = _DECISIONS_RESPONSE_ADAPTER.validate_python(prepared.config.unwrap_response(payload))
@@ -230,16 +243,18 @@ def _map_upstream_exception(error: Exception, prepared: _PreparedDecisionsReques
 @client
 async def adecisions(
     model: str,
-    state: DecisionsJSON,
-    questions: Mapping[str, DecisionQuestion | Mapping[str, object]],
+    state: DecisionsJSON | None = None,
+    questions: Mapping[str, DecisionQuestion | Mapping[str, object]] | None = None,
     api_key: str | None = None,
     api_base: str | None = None,
     timeout: float | httpx.Timeout | None = None,
     custom_llm_provider: str | None = None,
     extra_headers: Mapping[str, str] | None = None,
     images: Sequence[str] | None = None,
+    audio: DecisionsAudio | Mapping[str, str] | None = None,
+    context: DecisionsJSON | None = None,
     **kwargs: object,
-) -> DecisionsResponse:
+) -> DecisionsResult:
     prepared: Final = _prepare_request(
         model=model,
         state=state,
@@ -249,6 +264,8 @@ async def adecisions(
         custom_llm_provider=custom_llm_provider,
         extra_headers=extra_headers,
         images=images,
+        audio=audio,
+        context=context,
     )
     logging_obj: Final = _log_request(prepared, kwargs)
     try:
@@ -275,16 +292,18 @@ async def adecisions(
 @client
 def decisions(
     model: str,
-    state: DecisionsJSON,
-    questions: Mapping[str, DecisionQuestion | Mapping[str, object]],
+    state: DecisionsJSON | None = None,
+    questions: Mapping[str, DecisionQuestion | Mapping[str, object]] | None = None,
     api_key: str | None = None,
     api_base: str | None = None,
     timeout: float | httpx.Timeout | None = None,
     custom_llm_provider: str | None = None,
     extra_headers: Mapping[str, str] | None = None,
     images: Sequence[str] | None = None,
+    audio: DecisionsAudio | Mapping[str, str] | None = None,
+    context: DecisionsJSON | None = None,
     **kwargs: object,
-) -> DecisionsResponse:
+) -> DecisionsResult:
     prepared: Final = _prepare_request(
         model=model,
         state=state,
@@ -294,6 +313,8 @@ def decisions(
         custom_llm_provider=custom_llm_provider,
         extra_headers=extra_headers,
         images=images,
+        audio=audio,
+        context=context,
     )
     logging_obj: Final = _log_request(prepared, kwargs)
     try:

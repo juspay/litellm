@@ -1,7 +1,7 @@
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Literal, TypeAlias
 
-from pydantic import ConfigDict, Field, PrivateAttr, model_validator, with_config
+from pydantic import ConfigDict, Discriminator, Field, JsonValue, PrivateAttr, Tag, model_validator, with_config
 from typing_extensions import ReadOnly, Required, TypedDict
 
 from litellm.types.llms.base import LiteLLMPydanticObjectBase
@@ -40,8 +40,23 @@ class ScoreQuestion(LiteLLMPydanticObjectBase):
     model_config = ConfigDict(extra="allow", frozen=True)
 
 
+class ExtractionQuestion(LiteLLMPydanticObjectBase):
+    type: Literal["string", "value"]
+    instructions: DecisionsJSON
+    pattern: str | None = None
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class DecisionsAudio(LiteLLMPydanticObjectBase):
+    data: Annotated[str, Field(min_length=1)]
+    format: Annotated[str, Field(min_length=1)]
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
 DecisionQuestion: TypeAlias = Annotated[
-    NoulQuestion | ChoiceQuestion | ScoreQuestion,
+    NoulQuestion | ChoiceQuestion | ScoreQuestion | ExtractionQuestion,
     Field(discriminator="type"),
 ]
 
@@ -52,11 +67,19 @@ DecisionQuestionMap: TypeAlias = Annotated[
 
 
 class DecisionsRequestBody(LiteLLMPydanticObjectBase):
-    state: DecisionsJSON
+    state: DecisionsJSON | None = None
+    context: DecisionsJSON | None = None
     questions: DecisionQuestionMap
     images: Sequence[str] | None = None
+    audio: DecisionsAudio | None = None
 
     model_config = ConfigDict(extra="allow", frozen=True)
+
+    @model_validator(mode="after")
+    def require_grounding(self) -> "DecisionsRequestBody":
+        if self.state is None and self.context is None and self.audio is None:
+            raise ValueError("A Decisions request requires state, context or audio")
+        return self
 
 
 class DecisionsRequest(DecisionsRequestBody):
@@ -66,7 +89,9 @@ class DecisionsRequest(DecisionsRequestBody):
 @with_config(ConfigDict(extra="allow"))
 class DecisionsCallParams(TypedDict, total=False):
     model: Required[ReadOnly[str]]
-    state: Required[ReadOnly[DecisionsJSON]]
+    state: ReadOnly[DecisionsJSON | None]
+    context: ReadOnly[DecisionsJSON | None]
+    audio: ReadOnly[DecisionsAudio | Mapping[str, str] | None]
     questions: Required[ReadOnly[DecisionQuestionMap]]
     images: ReadOnly[Sequence[str] | None]
     api_key: ReadOnly[str | None]
@@ -102,8 +127,16 @@ class ScoreAnswer(LiteLLMPydanticObjectBase):
     model_config = ConfigDict(extra="allow", frozen=True)
 
 
+class ValueAnswer(LiteLLMPydanticObjectBase):
+    type: Literal["value"]
+    value: JsonValue
+    confidence: float | None = None
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
 DecisionAnswer: TypeAlias = Annotated[
-    NoulAnswer | ChoiceAnswer | ScoreAnswer,
+    NoulAnswer | ChoiceAnswer | ScoreAnswer | ValueAnswer,
     Field(discriminator="type"),
 ]
 
@@ -123,3 +156,47 @@ class DecisionsResponse(LiteLLMPydanticObjectBase):
     model_config = ConfigDict(extra="allow", frozen=True)
 
     _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)
+
+
+class ExtractionUsage(LiteLLMPydanticObjectBase):
+    input_tokens: Annotated[int, Field(ge=0)]
+    completion_tokens: Annotated[int, Field(ge=0)]
+    thinking_tokens: Annotated[int, Field(ge=0)] = 0
+    requests: Annotated[int, Field(ge=0)] = 1
+    wall_s: Annotated[float, Field(ge=0)] = 0
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    @property
+    def output_tokens(self) -> int:
+        return self.completion_tokens
+
+
+class ExtractionConfidence(LiteLLMPydanticObjectBase):
+    mean_p: Annotated[float, Field(ge=0, le=1)]
+    min_p: Annotated[float, Field(ge=0, le=1)]
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class ExtractionResponse(LiteLLMPydanticObjectBase):
+    result: Mapping[str, JsonValue]
+    usage: ExtractionUsage
+    thinking: Mapping[str, JsonValue]
+    confidence: Mapping[str, ExtractionConfidence]
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    _hidden_params: dict[str, object] = PrivateAttr(default_factory=dict)
+
+
+def _response_kind(value: object) -> str:
+    if isinstance(value, Mapping):
+        return "extraction" if "result" in value else "classification"
+    return "extraction" if isinstance(value, ExtractionResponse) else "classification"
+
+
+DecisionsResult: TypeAlias = Annotated[
+    Annotated[DecisionsResponse, Tag("classification")] | Annotated[ExtractionResponse, Tag("extraction")],
+    Discriminator(_response_kind),
+]

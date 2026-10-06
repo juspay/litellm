@@ -46,7 +46,7 @@ from litellm.proxy.common_utils.proxy_rate_limit_error import (
 )
 from litellm.proxy.hooks.rate_limiter_utils import resolve_llm_provider_for_rate_limit
 from litellm.types.caching import RedisPipelineIncrementOperation
-from litellm.types.decisions import DecisionsResponse, DecisionsUsage
+from litellm.types.decisions import DecisionsResponse, DecisionsUsage, ExtractionResponse, ExtractionUsage
 from litellm.types.llms.openai import BaseLiteLLMOpenAIResponseObject
 from litellm.types.utils import (
     CallTypes,
@@ -2302,6 +2302,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         """Emit Prometheus gauge metrics for current parallel requests with timestamp."""
         try:
             import time
+
             from litellm.integrations.prometheus import PrometheusLogger
 
             # Find the Prometheus logger from callbacks
@@ -2739,7 +2740,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
     @staticmethod
     def _normalize_decisions_usage(usage: object) -> object:
-        if isinstance(usage, DecisionsUsage):
+        if isinstance(usage, (DecisionsUsage, ExtractionUsage)):
             return Usage(
                 prompt_tokens=usage.input_tokens,
                 completion_tokens=usage.output_tokens,
@@ -3446,6 +3447,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 TextCompletionResponse,
                 BaseLiteLLMOpenAIResponseObject,
                 DecisionsResponse,
+                ExtractionResponse,
             ),
         ):
             _usage = getattr(response_obj, "usage", None)

@@ -16,6 +16,7 @@ from litellm.types.decisions import (
     ChoiceAnswer,
     DecisionsResponse,
     DecisionsUsage,
+    ExtractionResponse,
     NoulAnswer,
     ScoreAnswer,
 )
@@ -27,6 +28,115 @@ _QUESTIONS: Final[Mapping[str, object]] = MappingProxyType(
         "severity": {"type": "score", "criteria": ["none", "low", "high"]},
     }
 )
+_EXTRACTION_RESPONSE: Final[Mapping[str, object]] = {
+    "result": {"author": "Example Author"},
+    "usage": {"input_tokens": 18, "thinking_tokens": 0, "completion_tokens": 7, "requests": 1, "wall_s": 0.09},
+    "thinking": {},
+    "confidence": {"author": {"mean_p": 1.0, "min_p": 0.9999}},
+}
+
+
+@pytest.mark.parametrize("audio", (None, {"data": "UklGRg==", "format": "wav"}))
+def test_extraction_preserves_wire_contract_and_cost(
+    audio: Mapping[str, str] | None, respx_mock: respx.MockRouter
+) -> None:
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json=_EXTRACTION_RESPONSE)
+    response = litellm.decisions(
+        model="strands_decider/jev-trained",
+        api_base="https://xor.example",
+        context="This paper was written by Example Author.",
+        questions={"author": {"type": "string", "instructions": "Who is the author?"}},
+        audio=audio,
+        input_cost_per_token=0.000001,
+        output_cost_per_token=0.000002,
+    )
+    assert isinstance(response, ExtractionResponse)
+    assert response.model_dump() == _EXTRACTION_RESPONSE
+    payload = json.loads(upstream.calls[0].request.content)
+    assert payload["context"] == "This paper was written by Example Author."
+    assert "state" not in payload
+    assert ("audio" in payload) == (audio is not None)
+    if audio is not None:
+        assert payload["audio"] == audio
+    assert litellm.completion_cost(
+        completion_response=response,
+        custom_cost_per_token={"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
+    ) == pytest.approx(0.000032)
+    from litellm.cost_calculator import _get_usage_object
+
+    usage = _get_usage_object(response)
+    assert usage.prompt_tokens == 18
+    assert usage.completion_tokens == 7
+    assert usage.total_tokens == 25
+
+
+@pytest.mark.asyncio
+async def test_audio_value_extraction_router(respx_mock: respx.MockRouter) -> None:
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "xor",
+                "litellm_params": {"model": "strands_decider/jev-trained", "api_base": "https://xor.example"},
+            }
+        ]
+    )
+    wire = {
+        "answers": {"pickup": {"type": "value", "value": "Airport", "confidence": 0.9}},
+        "usage": {"input_tokens": 18, "output_tokens": 7},
+    }
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json=wire)
+    audio = {"data": "UklGRg==", "format": "wav"}
+    questions = {"pickup": {"type": "value", "instructions": "Extract pickup", "pattern": '[^"]{1,100}'}}
+    response = await router.adecisions(model="xor", state={"current_draft": {}}, questions=questions, audio=audio)
+    assert response.answers["pickup"].value == "Airport"
+    assert json.loads(upstream.calls[0].request.content) == {
+        "model": "jev-trained",
+        "state": {"current_draft": {}},
+        "questions": questions,
+        "audio": audio,
+    }
+
+
+@pytest.mark.parametrize(
+    "audio", ({"format": "wav"}, {"data": "", "format": "wav"}, {"data": 3, "format": "wav"}, "bad")
+)
+def test_invalid_audio_rejected_before_http(audio: object, respx_mock: respx.MockRouter) -> None:
+    with pytest.raises(litellm.BadRequestError, match="Invalid Decisions request"):
+        litellm.decisions(
+            model="strands_decider/jev-trained",
+            api_base="https://xor.example",
+            state="hello",
+            questions={"q": {"type": "noul", "instructions": "Is it a greeting?"}},
+            audio=audio,
+        )
+    assert not respx_mock.calls
+
+
+def test_missing_grounding_rejected_before_http(respx_mock: respx.MockRouter) -> None:
+    with pytest.raises(litellm.BadRequestError, match="requires state, context or audio"):
+        litellm.decisions(
+            model="strands_decider/jev-trained",
+            api_base="https://xor.example",
+            questions={"q": {"type": "string", "instructions": "Who?"}},
+        )
+    assert not respx_mock.calls
+
+
+def test_malformed_extraction_does_not_fall_back_to_classification() -> None:
+    from pydantic import TypeAdapter, ValidationError
+
+    from litellm.types.decisions import DecisionsResult
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(DecisionsResult).validate_python(
+            {
+                "result": {"author": "Example Author"},
+                "answers": {},
+                "usage": {"input_tokens": 18, "completion_tokens": 7},
+            }
+        )
+
+
 _INPUT_TOKENS: Final[int] = 367
 _OUTPUT_TOKENS: Final[int] = 3
 _RESPONSE: Final[Mapping[str, object]] = {
@@ -323,6 +433,43 @@ def test_decisions_cost_uses_litellm_token_pricing() -> None:
 
     assert expected_cost > 0
     assert cost == pytest.approx(expected_cost)
+
+
+@pytest.mark.asyncio
+async def test_extraction_standard_logging_keeps_usage_and_original_response(respx_mock: respx.MockRouter) -> None:
+    respx_mock.post("https://xor.example/v1/systemone").respond(json=_EXTRACTION_RESPONSE)
+    logger = _RecordingLogger()
+    original_callbacks = litellm.callbacks
+    litellm.callbacks = [logger]
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "xor-extraction-priced",
+                "litellm_params": {
+                    "model": "strands_decider/jev-trained",
+                    "api_base": "https://xor.example",
+                    "input_cost_per_token": 0.000001,
+                    "output_cost_per_token": 0.000002,
+                },
+            }
+        ]
+    )
+    try:
+        response = await router.adecisions(
+            model="xor-extraction-priced",
+            context="A paper by Example Author",
+            questions={"author": {"type": "string", "instructions": "Who wrote it?"}},
+            input_cost_per_token=0.000001,
+            output_cost_per_token=0.000002,
+        )
+        await _drain_logging_worker()
+    finally:
+        litellm.callbacks = original_callbacks
+    assert response.model_dump() == _EXTRACTION_RESPONSE
+    assert logger.standard_logging_object is not None
+    assert logger.standard_logging_object["prompt_tokens"] == 18
+    assert logger.standard_logging_object["completion_tokens"] == 7
+    assert logger.standard_logging_object["response_cost"] == pytest.approx(0.000032)
 
 
 @pytest.mark.asyncio

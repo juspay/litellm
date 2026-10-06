@@ -38,10 +38,6 @@ from litellm import (
     turn_off_message_logging,
 )
 from litellm._logging import _is_debugging_on, _redact_string, verbose_logger
-from litellm.exceptions import (
-    validate_rate_limit_category,
-    validate_rate_limit_type,
-)
 from litellm._uuid import uuid
 from litellm.batches.batch_utils import _handle_completed_batch
 from litellm.caching.caching import DualCache, InMemoryCache
@@ -55,6 +51,10 @@ from litellm.constants import (
 from litellm.cost_calculator import (
     RealtimeAPITokenUsageProcessor,
     _select_model_name_for_cost_calc,
+)
+from litellm.exceptions import (
+    validate_rate_limit_category,
+    validate_rate_limit_type,
 )
 from litellm.integrations.agentops import AgentOps
 from litellm.integrations.anthropic_cache_control_hook import AnthropicCacheControlHook
@@ -80,7 +80,7 @@ from litellm.llms.base_llm.search.transformation import SearchResponse
 from litellm.responses.utils import ResponseAPILoggingUtils
 from litellm.types.agents import LiteLLMSendMessageResponse
 from litellm.types.containers.main import ContainerObject
-from litellm.types.decisions import DecisionsResponse
+from litellm.types.decisions import DecisionsResponse, ExtractionResponse
 from litellm.types.llms.openai import (
     AllMessageValues,
     Batch,
@@ -1371,6 +1371,7 @@ class Logging(LiteLLMLoggingBaseClass):
             OpenAIModerationResponse,
             "SearchResponse",
             DecisionsResponse,
+            ExtractionResponse,
             dict,
             list,
         ],
@@ -1774,6 +1775,14 @@ class Logging(LiteLLMLoggingBaseClass):
         return payload
 
     def _transform_usage_objects(self, result):
+        if isinstance(result, ExtractionResponse):
+            return result.model_copy(
+                update={
+                    "usage": ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+                        result.usage.model_dump()
+                    )
+                }
+            )
         if isinstance(result, ResponsesAPIResponse):
             result = result.model_copy()
             transformed_usage = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(result.usage)
@@ -1894,7 +1903,7 @@ class Logging(LiteLLMLoggingBaseClass):
             or isinstance(logging_result, OpenAIModerationResponse)
             or isinstance(logging_result, OCRResponse)  # OCR
             or isinstance(logging_result, SearchResponse)  # Search API
-            or isinstance(logging_result, DecisionsResponse)
+            or isinstance(logging_result, (DecisionsResponse, ExtractionResponse))
             or isinstance(logging_result, dict)
             and logging_result.get("object") == "vector_store.search_results.page"
             or isinstance(logging_result, dict)

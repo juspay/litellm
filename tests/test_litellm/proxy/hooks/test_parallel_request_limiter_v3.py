@@ -21,11 +21,13 @@ from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.hooks.parallel_request_limiter_v3 import (
     MAX_PARALLEL_REQUESTS_LEASE_ID_FIELD,
     MAX_PARALLEL_REQUESTS_LEASE_KEY_SUFFIX,
+)
+from litellm.proxy.hooks.parallel_request_limiter_v3 import (
     _PROXY_MaxParallelRequestsHandler_v3 as _PROXY_MaxParallelRequestsHandler,
 )
 from litellm.proxy.utils import InternalUsageCache, ProxyLogging, hash_token
 from litellm.types.caching import RedisPipelineIncrementOperation
-from litellm.types.decisions import DecisionsResponse, DecisionsUsage
+from litellm.types.decisions import DecisionsResponse, DecisionsUsage, ExtractionResponse, ExtractionUsage
 from litellm.types.utils import (
     EmbeddingResponse,
     ModelResponse,
@@ -34,10 +36,11 @@ from litellm.types.utils import (
 )
 
 
+@pytest.mark.parametrize("usage", [DecisionsUsage(input_tokens=20, output_tokens=30), ExtractionUsage(input_tokens=20, completion_tokens=30)])
 @pytest.mark.parametrize("rate_limit_type,expected", [("input", 20), ("output", 30), ("total", 50)])
-def test_decisions_token_usage(rate_limit_type, expected):
+def test_decisions_token_usage(rate_limit_type, expected, usage):
     handler = _PROXY_MaxParallelRequestsHandler(internal_usage_cache=InternalUsageCache(DualCache()))
-    assert handler._get_total_tokens_from_usage(DecisionsUsage(input_tokens=20, output_tokens=30), rate_limit_type) == expected
+    assert handler._get_total_tokens_from_usage(usage, rate_limit_type) == expected
 
 
 class TimeController:
@@ -576,6 +579,7 @@ async def test_token_rate_limit_type_respected_v3(monkeypatch, token_rate_limit_
             usage=Usage(prompt_tokens=20, completion_tokens=30, total_tokens=50),
         ),
         DecisionsResponse(model="xor", answers={}, usage=DecisionsUsage(input_tokens=20, output_tokens=30)),
+        ExtractionResponse(result={}, thinking={}, confidence={}, usage=ExtractionUsage(input_tokens=20, completion_tokens=30), model="xor"),
     ],
 )
 @pytest.mark.asyncio
@@ -3583,8 +3587,8 @@ async def test_async_data_generator_releases_counter_when_wrapped_v3():
     from the outer generator: the counter returns to 0 (not -1), proving the
     nested hook does not also refund and there is no double decrement.
     """
-    from litellm.integrations.custom_logger import CustomLogger
     import litellm.proxy.proxy_server as proxy_server
+    from litellm.integrations.custom_logger import CustomLogger
 
     class _PassthroughIteratorOverride(CustomLogger):
         async def async_post_call_streaming_iterator_hook(
