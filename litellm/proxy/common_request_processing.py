@@ -36,6 +36,7 @@ from litellm.constants import (
     STREAM_SSE_DATA_PREFIX,
 )
 from litellm.integrations.custom_guardrail import CustomGuardrail
+from litellm.litellm_core_utils.core_helpers import _truncate_str, truncate_error_str
 from litellm.litellm_core_utils.dd_tracing import NullTracer, tracer
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.litellm_core_utils.llm_response_utils.get_headers import (
@@ -169,7 +170,7 @@ async def _log_non_streaming_client_disconnect(
             if litellm_logging_obj is not None:
                 await litellm_logging_obj.async_failure_handler(
                     exception=cancelled_error,
-                    traceback_exception=traceback.format_exc(),
+                    traceback_exception=_truncate_str(traceback.format_exc()),
                 )
     except asyncio.CancelledError:
         # The shielding above should prevent this; if it still propagates,
@@ -526,7 +527,7 @@ async def create_response(
                         headers=headers,
                     )
             except Exception as e:
-                verbose_proxy_logger.debug(f"Error parsing first chunk value: {e}")
+                verbose_proxy_logger.debug(f"Error parsing first chunk value: {truncate_error_str(e)}")
 
     except _ClientDisconnectedBeforeFirstChunk:
         # Client vanished during the time-to-first-token wait; the upstream
@@ -564,7 +565,7 @@ async def create_response(
         )
     except Exception as e:
         # Unexpected error consuming first chunk.
-        verbose_proxy_logger.exception(f"Error consuming first chunk from generator: {e}")
+        verbose_proxy_logger.exception(f"Error consuming first chunk from generator: {truncate_error_str(e)}")
 
         # Close the original generator to ensure cleanup (e.g., rate limit decrement)
         try:
@@ -827,7 +828,7 @@ def _log_llm_api_exception(e: Exception) -> None:
         )
         return
     verbose_proxy_logger.exception(
-        f"litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - {str(e)}"
+        f"litellm.proxy.proxy_server._handle_llm_api_exception(): Exception occured - {truncate_error_str(e)}"
     )
 
 
@@ -965,7 +966,7 @@ class ProxyBaseLLMRequestProcessing:
         try:
             return {key: str(value) for key, value in headers.items() if value not in exclude_values}
         except Exception as e:
-            verbose_proxy_logger.error(f"Error setting custom headers: {e}")
+            verbose_proxy_logger.error(f"Error setting custom headers: {truncate_error_str(e)}")
             return {}
 
     @staticmethod
@@ -2681,7 +2682,7 @@ class ProxyBaseLLMRequestProcessing:
 
             if isinstance(e, HTTPException):
                 raise e
-            error_traceback = _redact_string(traceback.format_exc())
+            error_traceback = _redact_string(_truncate_str(traceback.format_exc()))
             error_msg = f"{str(e)}\n\n{error_traceback}"
             proxy_exception = ProxyException(
                 message=getattr(e, "message", error_msg),

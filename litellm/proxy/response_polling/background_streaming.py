@@ -19,6 +19,7 @@ from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.proxy.response_polling.polling_handler import ResponsePollingHandler
 from litellm.types.llms.openai import ResponsesAPIStatus
+from litellm.litellm_core_utils.core_helpers import _truncate_str
 
 
 async def background_streaming_task(
@@ -332,7 +333,7 @@ async def background_streaming_task(
         verbose_proxy_logger.error(f"Error in background streaming task for {polling_id}: {str(e)}")
         import traceback
 
-        verbose_proxy_logger.error(traceback.format_exc())
+        verbose_proxy_logger.error(_truncate_str(traceback.format_exc()))
 
         await polling_handler.update_state(
             polling_id=polling_id,

@@ -39,6 +39,7 @@ from litellm.types.proxy.management_endpoints.customer_endpoints import (
     DeleteCustomersResponse,
     UnblockUsersResponse,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -104,7 +105,7 @@ async def block_user(data: BlockUsers):
 
         return {"blocked_users": records}
     except Exception as e:
-        verbose_proxy_logger.error(f"An error occurred - {str(e)}")
+        verbose_proxy_logger.error(f"An error occurred - {truncate_error_str(e)}")
         raise HTTPException(status_code=500, detail={"error": str(e)})
 
 

@@ -171,6 +171,7 @@ from litellm.types.mcp import (
 )
 from litellm.types.proxy.policy_engine.pipeline_types import PipelineExecutionResult
 from litellm.types.utils import LLMResponseTypes, LoggedLiteLLMParams
+from litellm.litellm_core_utils.core_helpers import _truncate_str
 
 if TYPE_CHECKING:
     from opentelemetry.trace import Span as _Span
@@ -195,7 +196,7 @@ def print_verbose(print_statement):
     """
     import traceback
 
-    verbose_proxy_logger.debug("{}\n{}".format(print_statement, traceback.format_exc()))
+    verbose_proxy_logger.debug("{}\n{}".format(print_statement, _truncate_str(traceback.format_exc())))
     if litellm.set_verbose:
         print(f"LiteLLM Proxy: {_redact_string(str(print_statement))}")  # noqa: T201
 
@@ -2313,14 +2314,14 @@ class ProxyLogging:
             # log the custom exception
             await litellm_logging_obj.async_failure_handler(
                 exception=original_exception,
-                traceback_exception=traceback.format_exc(),
+                traceback_exception=_truncate_str(traceback.format_exc()),
             )
 
             threading.Thread(
                 target=litellm_logging_obj.failure_handler,
                 args=(
                     original_exception,
-                    traceback.format_exc(),
+                    _truncate_str(traceback.format_exc()),
                 ),
                 daemon=True,
             ).start()
@@ -3224,7 +3225,7 @@ class PrismaClient:
             error_msg = f"LiteLLM Prisma Client Exception get_generic_data: {str(e)}"
             verbose_proxy_logger.error(error_msg)
             error_msg = error_msg + "\nException Type: {}".format(type(e))
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             end_time = time.time()
             _duration = end_time - start_time
             asyncio.create_task(
@@ -3670,7 +3671,7 @@ class PrismaClient:
             )
             error_msg = prisma_query_info + str(e)
             print_verbose(error_msg)
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             verbose_proxy_logger.debug(error_traceback)
             end_time = time.time()
             _duration = end_time - start_time
@@ -3824,7 +3825,7 @@ class PrismaClient:
 
             error_msg = f"LiteLLM Prisma Client Exception in insert_data: {str(e)}"
             print_verbose(error_msg)
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             end_time = time.time()
             _duration = end_time - start_time
             asyncio.create_task(
@@ -4073,7 +4074,7 @@ class PrismaClient:
 
             error_msg = f"LiteLLM Prisma Client Exception - update_data: {str(e)}"
             print_verbose(error_msg)
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             end_time = time.time()
             _duration = end_time - start_time
             asyncio.create_task(
@@ -4139,7 +4140,7 @@ class PrismaClient:
 
             error_msg = f"LiteLLM Prisma Client Exception - delete_data: {str(e)}"
             print_verbose(error_msg)
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             end_time = time.time()
             _duration = end_time - start_time
             asyncio.create_task(
@@ -4172,7 +4173,7 @@ class PrismaClient:
 
             error_msg = f"LiteLLM Prisma Client Exception connect(): {str(e)}"
             print_verbose(error_msg)
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             end_time = time.time()
             _duration = end_time - start_time
             asyncio.create_task(
@@ -4202,7 +4203,7 @@ class PrismaClient:
 
             error_msg = f"LiteLLM Prisma Client Exception disconnect(): {str(e)}"
             print_verbose(error_msg)
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             end_time = time.time()
             _duration = end_time - start_time
             asyncio.create_task(
@@ -4887,7 +4888,7 @@ class PrismaClient:
 
             error_msg = f"LiteLLM Prisma Client Exception disconnect(): {str(e)}"
             print_verbose(error_msg)
-            error_traceback = error_msg + "\n" + traceback.format_exc()
+            error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
             end_time = time.time()
             _duration = end_time - start_time
             asyncio.create_task(
@@ -5671,7 +5672,7 @@ def _raise_failed_update_spend_exception(e: Exception, start_time: float, proxy_
     import traceback
 
     error_msg = f"[Non-Blocking]LiteLLM Prisma Client Exception - update spend logs: {str(e)}"
-    error_traceback = error_msg + "\n" + traceback.format_exc()
+    error_traceback = error_msg + "\n" + _truncate_str(traceback.format_exc())
     end_time = time.time()
     _duration = end_time - start_time
     asyncio.create_task(

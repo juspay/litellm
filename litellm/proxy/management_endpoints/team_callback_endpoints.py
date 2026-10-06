@@ -31,6 +31,7 @@ from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
 from litellm.proxy.management_endpoints.team_endpoints import _verify_team_access
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
 from litellm.repositories.team_repository import TeamRepository
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -375,7 +376,7 @@ async def disable_team_logging(
     except ProxyException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"litellm.proxy.proxy_server.disable_team_logging(): Exception occurred - {str(e)}")
+        verbose_proxy_logger.error(f"litellm.proxy.proxy_server.disable_team_logging(): Exception occurred - {truncate_error_str(e)}")
         verbose_proxy_logger.debug(traceback.format_exc())
         raise ProxyException(
             message="Internal Server Error, " + str(e),

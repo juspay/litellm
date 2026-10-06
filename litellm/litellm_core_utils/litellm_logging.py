@@ -64,7 +64,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.deepeval.deepeval import DeepEvalLogger
 from litellm.integrations.mlflow import MlflowLogger
 from litellm.integrations.sqs import SQSLogger
-from litellm.litellm_core_utils.core_helpers import reconstruct_model_name
+from litellm.litellm_core_utils.core_helpers import _truncate_str, reconstruct_model_name, truncate_error_str
 from litellm.litellm_core_utils.get_litellm_params import get_litellm_params
 from litellm.litellm_core_utils.llm_cost_calc.tool_call_cost_tracking import (
     StandardBuiltInToolCostTracking,
@@ -203,7 +203,9 @@ try:
         EnterpriseStandardLoggingPayloadSetup
     )
 except Exception as e:
-    verbose_logger.debug(f"[Non-Blocking] Unable to import GenericAPILogger - LiteLLM Enterprise Feature - {str(e)}")
+    verbose_logger.debug(
+        f"[Non-Blocking] Unable to import GenericAPILogger - LiteLLM Enterprise Feature - {truncate_error_str(e)}"
+    )
     GenericAPILogger = CustomLogger  # type: ignore
     ResendEmailLogger = CustomLogger  # type: ignore
     SendGridEmailLogger = CustomLogger  # type: ignore
@@ -1504,7 +1506,7 @@ class Logging(LiteLLMLoggingBaseClass):
                 raw_response=httpx.Response(status_code=200, headers={}),
             )
         except Exception as e:  # noqa: BLE001 - cost normalization must never break the response path
-            verbose_logger.debug(f"generate_content response cost normalization failed: {e}")
+            verbose_logger.debug(f"generate_content response cost normalization failed: {truncate_error_str(e)}")
             return None
 
     async def _response_cost_calculator_async(
@@ -2733,7 +2735,7 @@ class Logging(LiteLLMLoggingBaseClass):
                     break  # Only increment once
 
         except Exception as e:
-            verbose_logger.debug(f"Error in _handle_callback_failure: {str(e)}")
+            verbose_logger.debug(f"Error in _handle_callback_failure: {truncate_error_str(e)}")
 
     def _failure_handler_helper_fn(self, exception, traceback_exception, start_time=None, end_time=None):
         if start_time is None:
@@ -2748,7 +2750,9 @@ class Logging(LiteLLMLoggingBaseClass):
         self.model_call_details["log_event_type"] = "failed_api_call"
         self.model_call_details["exception"] = exception
         self.model_call_details["traceback_exception"] = (
-            _redact_string(traceback_exception) if isinstance(traceback_exception, str) else traceback_exception
+            _redact_string(_truncate_str(traceback_exception))
+            if isinstance(traceback_exception, str)
+            else traceback_exception
         )
         self.model_call_details["end_time"] = end_time
         self.model_call_details.setdefault("original_response", None)
@@ -2773,7 +2777,7 @@ class Logging(LiteLLMLoggingBaseClass):
             end_time=end_time,
             logging_obj=self,
             status="failure",
-            error_str=_redact_string(str(exception)),
+            error_str=_redact_string(truncate_error_str(exception, max_length=10_000)),
             original_exception=exception,
             standard_built_in_tools_params=self.standard_built_in_tools_params,
         )
@@ -4172,7 +4176,7 @@ def _init_custom_logger_compatible_class(
             return newrelic_logger  # type: ignore
         return None
     except Exception as e:
-        verbose_logger.exception(f"[Non-Blocking Error] Error initializing custom logger: {e}")
+        verbose_logger.exception(f"[Non-Blocking Error] Error initializing custom logger: {truncate_error_str(e)}")
         return None
     return None
 
@@ -4456,7 +4460,7 @@ def get_custom_logger_compatible_class(
         return None
 
     except Exception as e:
-        verbose_logger.exception(f"[Non-Blocking Error] Error getting custom logger: {e}")
+        verbose_logger.exception(f"[Non-Blocking Error] Error getting custom logger: {truncate_error_str(e)}")
         return None
 
 

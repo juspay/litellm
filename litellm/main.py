@@ -43,6 +43,7 @@ from typing import (
 )
 
 from litellm._logging import _redact_string
+from litellm.litellm_core_utils.core_helpers import _truncate_str, truncate_error_str
 from litellm._uuid import uuid
 
 if TYPE_CHECKING:
@@ -4950,7 +4951,7 @@ def completion(  # type: ignore
             proxy_headers = litellm.proxy_auth.get_auth_headers()
             headers.update(proxy_headers)
         except Exception as e:
-            verbose_logger.warning(f"Failed to get proxy auth headers: {e}")
+            verbose_logger.warning(f"Failed to get proxy auth headers: {truncate_error_str(e)}")
     num_retries = kwargs.get(
         "num_retries", None
     )  ## alt. param for 'max_retries'. Use this to pass retries w/ instructor.
@@ -5907,7 +5908,7 @@ def embedding(
             proxy_headers = litellm.proxy_auth.get_auth_headers()
             headers.update(proxy_headers)
         except Exception as e:
-            verbose_logger.warning(f"Failed to get proxy auth headers: {e}")
+            verbose_logger.warning(f"Failed to get proxy auth headers: {truncate_error_str(e)}")
     ### CUSTOM MODEL COST ###
     input_cost_per_token = kwargs.get("input_cost_per_token", None)
     output_cost_per_token = kwargs.get("output_cost_per_token", None)
@@ -8255,7 +8256,7 @@ async def ahealth_check(
         else:
             raise Exception(f"Mode {mode} not supported. See modes here: https://docs.litellm.ai/docs/proxy/health")
     except Exception as e:
-        stack_trace = _redact_string(traceback.format_exc())
+        stack_trace = _redact_string(_truncate_str(traceback.format_exc()))
         if isinstance(stack_trace, str):
             stack_trace = stack_trace[:1000]
 
@@ -8635,7 +8636,7 @@ def stream_chunk_builder(
         processor.apply_provider_assembled_streaming_metadata(response, chunks, logging_obj)
         return response
     except Exception as e:
-        verbose_logger.exception("litellm.main.py::stream_chunk_builder() - Exception occurred - {}".format(str(e)))
+        verbose_logger.exception("litellm.main.py::stream_chunk_builder() - Exception occurred - {}".format(truncate_error_str(e)))
         raise litellm.APIError(
             status_code=500,
             message="Error building chunks for logging/streaming usage calculation",
@@ -8725,7 +8726,7 @@ async def acount_tokens(
                 if result is not None and not result.error:
                     return result
     except Exception as e:
-        verbose_logger.debug(f"Provider token counting failed for model={model}, falling back to local: {e}")
+        verbose_logger.debug(f"Provider token counting failed for model={model}, falling back to local: {truncate_error_str(e)}")
 
     # Fallback to local tiktoken-based token counting
     fallback_messages = messages or []

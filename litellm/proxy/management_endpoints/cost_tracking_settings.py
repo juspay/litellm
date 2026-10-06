@@ -25,6 +25,7 @@ from litellm.proxy._types import (
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.types.utils import LlmProvidersSet
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -78,7 +79,7 @@ def _resolve_model_for_cost_lookup(model: str) -> Tuple[str, Optional[str]]:
                         (str(custom_llm_provider) if custom_llm_provider is not None else None),
                     )
         except Exception as e:
-            verbose_proxy_logger.debug(f"Could not resolve model '{model}' from router: {e}")
+            verbose_proxy_logger.debug(f"Could not resolve model '{model}' from router: {truncate_error_str(e)}")
 
     # Return original model if not resolved
     return model, custom_llm_provider
@@ -131,7 +132,7 @@ async def get_cost_discount_config(
 
         return {"values": cost_discount_config}
     except Exception as e:
-        verbose_proxy_logger.error(f"Error fetching cost discount config: {str(e)}")
+        verbose_proxy_logger.error(f"Error fetching cost discount config: {truncate_error_str(e)}")
         return {"values": {}}
 
 
@@ -226,7 +227,7 @@ async def update_cost_discount_config(
             "values": cost_discount_config,
         }
     except Exception as e:
-        verbose_proxy_logger.error(f"Error updating cost discount config: {str(e)}")
+        verbose_proxy_logger.error(f"Error updating cost discount config: {truncate_error_str(e)}")
         raise HTTPException(
             status_code=500,
             detail={"error": f"Failed to update cost discount config: {str(e)}"},
@@ -264,7 +265,7 @@ async def get_cost_margin_config(
 
         return {"values": cost_margin_config}
     except Exception as e:
-        verbose_proxy_logger.error(f"Error fetching cost margin config: {str(e)}")
+        verbose_proxy_logger.error(f"Error fetching cost margin config: {truncate_error_str(e)}")
         return {"values": {}}
 
 
@@ -400,7 +401,7 @@ async def update_cost_margin_config(
             "values": cost_margin_config,
         }
     except Exception as e:
-        verbose_proxy_logger.error(f"Error updating cost margin config: {str(e)}")
+        verbose_proxy_logger.error(f"Error updating cost margin config: {truncate_error_str(e)}")
         raise HTTPException(
             status_code=500,
             detail={"error": f"Failed to update cost margin config: {str(e)}"},

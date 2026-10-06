@@ -63,6 +63,7 @@ from litellm.types.router import (
     updateDeployment,
 )
 from litellm.utils import get_utc_datetime
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter()
 
@@ -291,7 +292,7 @@ async def patch_model(
         return updated_model
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error in patch_model: {str(e)}")
+        verbose_proxy_logger.exception(f"Error in patch_model: {truncate_error_str(e)}")
 
         if isinstance(e, (HTTPException, ProxyException)):
             raise e
@@ -390,7 +391,7 @@ async def _set_model_blocked_status(
         return updated_model
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error in model {action}: {str(e)}")
+        verbose_proxy_logger.exception(f"Error in model {action}: {truncate_error_str(e)}")
 
         if isinstance(e, (HTTPException, ProxyException)):
             raise e
@@ -1143,7 +1144,7 @@ async def delete_model(
             )
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Failed to delete model. Due to error - {str(e)}")
+        verbose_proxy_logger.exception(f"Failed to delete model. Due to error - {truncate_error_str(e)}")
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1300,7 +1301,7 @@ async def add_new_model(
                         passed_model_info=model_params.model_info,
                     )
             except Exception as e:
-                verbose_proxy_logger.exception(f"Exception in add_new_model: {e}")
+                verbose_proxy_logger.exception(f"Exception in add_new_model: {truncate_error_str(e)}")
 
         else:
             raise HTTPException(
@@ -1573,7 +1574,7 @@ async def update_public_model_groups(
         }
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating public model groups: {str(e)}")
+        verbose_proxy_logger.exception(f"Error updating public model groups: {truncate_error_str(e)}")
 
         if isinstance(e, HTTPException):
             raise e
@@ -1643,7 +1644,7 @@ async def update_useful_links(
         }
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating public model groups: {str(e)}")
+        verbose_proxy_logger.exception(f"Error updating public model groups: {truncate_error_str(e)}")
 
         if isinstance(e, HTTPException):
             raise e
@@ -1725,4 +1726,4 @@ async def clear_cache():
             f"Cleared {len(db_model_ids)} DB models, preserved {len(config_models)} config models"
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Failed to clear cache and reload models. Due to error - {str(e)}")
+        verbose_proxy_logger.exception(f"Failed to clear cache and reload models. Due to error - {truncate_error_str(e)}")

@@ -257,18 +257,31 @@ class _ProxyDBLogger(CustomLogger):
             metadata=_metadata,
         )
 
-        existing_metadata: dict = request_data.get("metadata", None) or {}
+        # Seed the rebuilt metadata from BOTH channels before merging the
+        # failure-context fields. On pass-through endpoints the pre-call
+        # hooks stash internal keys (e.g. the max_parallel_requests lease id)
+        # ONLY in ``litellm_params.metadata`` — the top-level ``metadata``
+        # was popped off the request body into ``litellm_params`` by
+        # ``_init_kwargs_for_pass_through_endpoint``. Replacing
+        # ``litellm_params.metadata`` with a dict seeded only from the
+        # (absent) top-level channel destroyed the lease id before the MPR
+        # limiter's failure hook could read it, leaking the Redis ZSET lease
+        # and wedging the key at its limit. Top-level metadata still wins on
+        # key conflicts.
+        existing_litellm_params = request_data.get("litellm_params", {})
+        existing_litellm_metadata = existing_litellm_params.get("metadata", {}) or {}
+        existing_metadata: dict = {
+            **existing_litellm_metadata,
+            **(request_data.get("metadata", None) or {}),
+        }
         existing_metadata.update(_metadata)
+
+        # Preserve tags from existing metadata
+        if "tags" not in existing_metadata and existing_litellm_metadata.get("tags"):
+            existing_metadata["tags"] = existing_litellm_metadata.get("tags")
 
         if "litellm_params" not in request_data:
             request_data["litellm_params"] = {}
-
-        existing_litellm_params = request_data.get("litellm_params", {})
-        existing_litellm_metadata = existing_litellm_params.get("metadata", {}) or {}
-
-        # Preserve tags from existing metadata
-        if existing_litellm_metadata.get("tags"):
-            existing_metadata["tags"] = existing_litellm_metadata.get("tags")
 
         request_data["litellm_params"]["proxy_server_request"] = (
             request_data.get("proxy_server_request") or existing_litellm_params.get("proxy_server_request") or {}
