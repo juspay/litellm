@@ -10977,38 +10977,6 @@
         "supports_tool_choice": true,
         "supports_vision": true
     },
-    "cloudflare/clef": {
-        "input_cost_per_token": 2.4e-07,
-        "litellm_provider": "cloudflare",
-        "max_input_tokens": 65536,
-        "mode": "evaluation",
-        "output_cost_per_token": 0.0,
-        "source": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
-    },
-    "cloudflare/clef-flash": {
-        "input_cost_per_token": 9e-08,
-        "litellm_provider": "cloudflare",
-        "max_input_tokens": 65536,
-        "mode": "evaluation",
-        "output_cost_per_token": 0.0,
-        "source": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
-    },
-    "cloudflare/@cf/cloudflare/clef": {
-        "input_cost_per_token": 2.4e-07,
-        "litellm_provider": "cloudflare",
-        "max_input_tokens": 65536,
-        "mode": "evaluation",
-        "output_cost_per_token": 0.0,
-        "source": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
-    },
-    "cloudflare/@cf/cloudflare/clef-flash": {
-        "input_cost_per_token": 9e-08,
-        "litellm_provider": "cloudflare",
-        "max_input_tokens": 65536,
-        "mode": "evaluation",
-        "output_cost_per_token": 0.0,
-        "source": "https://developers.cloudflare.com/workers-ai/platform/pricing/"
-    },
     "cloudflare/@cf/meta/llama-2-7b-chat-fp16": {
         "input_cost_per_token": 1.923e-06,
         "litellm_provider": "cloudflare",
@@ -30340,14 +30308,6 @@
         "max_tokens": 4096,
         "mode": "chat",
         "output_cost_per_token": 2.8e-07
-    },
-    "perplexity/pplx-decider-v1-27b": {
-        "input_cost_per_token": 4e-08,
-        "litellm_provider": "perplexity",
-        "max_input_tokens": 262144,
-        "mode": "evaluation",
-        "output_cost_per_token": 0.0,
-        "source": "https://docs.perplexity.ai/api-reference/decisions-post"
     },
     "perplexity/sonar": {
         "input_cost_per_token": 1e-06,

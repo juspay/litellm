@@ -169,7 +169,7 @@ class ExtractionUsage(LiteLLMPydanticObjectBase):
 
     @property
     def output_tokens(self) -> int:
-        return self.completion_tokens
+        return self.completion_tokens + self.thinking_tokens
 
 
 class ExtractionConfidence(LiteLLMPydanticObjectBase):

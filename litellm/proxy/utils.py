@@ -910,6 +910,11 @@ class ProxyLogging:
         if isinstance(response, Exception):
             raise response
         if isinstance(response, dict):
+            if call_type in ("decisions", "adecisions"):
+                from pydantic import TypeAdapter
+                from litellm.decisions.main import reconcile_guardrail_request
+
+                return dict(reconcile_guardrail_request(TypeAdapter(dict[str, object]).validate_python(response)))
             return response
         if isinstance(response, str):
             if call_type in ["completion", "text_completion"]:

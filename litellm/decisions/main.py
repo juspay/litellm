@@ -7,6 +7,7 @@ import httpx
 from pydantic import TypeAdapter, ValidationError
 
 import litellm
+from litellm.exceptions import GuardrailRaisedException
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 from litellm.llms.base_llm.decisions.transformation import DecisionsProviderConfig
 from litellm.llms.cloudflare.decisions.transformation import CLOUDFLARE_DECISIONS_ENDPOINT
@@ -21,9 +22,11 @@ from litellm.types.decisions import (
     DecisionsAudio,
     DecisionsJSON,
     DecisionsRequest,
+    DecisionsRequestBody,
     DecisionsResult,
 )
 from litellm.types.utils import LlmProviders
+from litellm.types.llms.openai import AllMessageValues
 from litellm.types.router import CustomPricingLiteLLMParams
 from litellm.utils import client
 
@@ -42,6 +45,46 @@ _DECISIONS_PAYLOAD_ADAPTER: Final[TypeAdapter[object]] = TypeAdapter(object)
 _DECISIONS_RESPONSE_ADAPTER: Final[TypeAdapter[DecisionsResult]] = TypeAdapter(DecisionsResult)
 _PRICING_PARAMS_ADAPTER: Final = TypeAdapter(CustomPricingLiteLLMParams)
 _PRICING_MAPPING_ADAPTER: Final[TypeAdapter[Mapping[str, object]]] = TypeAdapter(Mapping[str, object])
+_LEGACY_MESSAGES_ADAPTER: Final = TypeAdapter(tuple[Mapping[str, object], ...])
+_REQUEST_BODY_ADAPTER: Final = TypeAdapter(DecisionsRequestBody)
+
+
+def reconcile_guardrail_request(data: Mapping[str, object]) -> Mapping[str, object]:
+    if data.get("mock_response") is not None:
+        raise GuardrailRaisedException(message="Decisions request blocked by a guardrail")
+    if data.get("messages") is None:
+        return data
+    try:
+        messages: Final = _LEGACY_MESSAGES_ADAPTER.validate_python(data["messages"])
+        if len(messages) != 1 or not isinstance(messages[0].get("content"), str):
+            raise litellm.BadRequestError(
+                "Decisions guardrail must return one JSON message", model=str(data.get("model", "")), llm_provider=""
+            )
+        content: Final = TypeAdapter(str).validate_python(messages[0]["content"])
+        guarded: Final = _REQUEST_BODY_ADAPTER.validate_json(content)
+        return {
+            **{key: value for key, value in data.items() if key != "messages"},
+            **guarded.model_dump(mode="json", include={"state", "context", "questions"}),
+        }
+    except ValidationError as error:
+        raise litellm.BadRequestError(
+            f"Invalid Decisions guardrail request: {error}", model=str(data.get("model", "")), llm_provider=""
+        ) from error
+
+
+def decisions_routing_messages(data: Mapping[str, object]) -> list[AllMessageValues]:
+    try:
+        request: Final = _REQUEST_BODY_ADAPTER.validate_python(reconcile_guardrail_request(data))
+    except ValidationError as error:
+        raise litellm.BadRequestError(
+            f"Invalid Decisions guardrail request: {error}", model=str(data.get("model", "")), llm_provider=""
+        ) from error
+    return [
+        {
+            "role": "user",
+            "content": request.model_dump_json(include={"state", "context", "questions"}, exclude_none=True),
+        }
+    ]
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -112,18 +155,26 @@ def _prepare_request(
     images: Sequence[str] | None = None,
     audio: DecisionsAudio | Mapping[str, str] | None = None,
     context: DecisionsJSON | None = None,
+    guardrail_data: Mapping[str, object] | None = None,
 ) -> _PreparedDecisionsRequest:
     provider, upstream_model = _resolve_provider_model(model, custom_llm_provider)
     try:
         validated_request: Final = _DECISIONS_REQUEST_ADAPTER.validate_python(
-            {
-                "model": model,
-                "state": state,
-                "context": context,
-                "questions": questions,
-                "images": images,
-                "audio": audio,
-            }
+            reconcile_guardrail_request(
+                {
+                    "model": model,
+                    "state": state,
+                    "context": context,
+                    "questions": questions,
+                    "images": images,
+                    "audio": audio,
+                    **(
+                        {key: guardrail_data[key] for key in ("messages", "mock_response") if key in guardrail_data}
+                        if guardrail_data is not None
+                        else {}
+                    ),
+                }
+            )
         )
     except ValidationError as error:
         raise litellm.BadRequestError(
@@ -312,6 +363,7 @@ async def adecisions(
         images=images,
         audio=audio,
         context=context,
+        guardrail_data=kwargs,
     )
     logging_obj: Final = _log_request(prepared, kwargs)
     try:
@@ -361,6 +413,7 @@ def decisions(
         images=images,
         audio=audio,
         context=context,
+        guardrail_data=kwargs,
     )
     logging_obj: Final = _log_request(prepared, kwargs)
     try:

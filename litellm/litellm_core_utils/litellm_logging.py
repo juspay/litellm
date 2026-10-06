@@ -1777,7 +1777,7 @@ class Logging(LiteLLMLoggingBaseClass):
         return payload
 
     def _transform_usage_objects(self, result):
-        if isinstance(result, ExtractionResponse):
+        if isinstance(result, (ExtractionResponse, DecisionsResponse)) and result.usage is not None:
             return result.model_copy(
                 update={
                     "usage": ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(

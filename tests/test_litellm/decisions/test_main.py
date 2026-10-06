@@ -29,6 +29,170 @@ _QUESTIONS: Final[Mapping[str, object]] = MappingProxyType(
         "severity": {"type": "score", "criteria": ["none", "low", "high"]},
     }
 )
+
+
+def test_decisions_routing_estimates_grounding_and_questions() -> None:
+    from litellm.decisions.main import decisions_routing_messages
+
+    messages = decisions_routing_messages(
+        {"state": "long grounding " * 100, "context": "context", "questions": dict(_QUESTIONS)}
+    )
+    content = messages[0]["content"]
+    assert isinstance(content, str)
+    assert "long grounding" in content and "context" in content and "unhappy" in content and "defect" in content
+    assert litellm.token_counter(messages=messages) > 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        "simple-shuffle",
+        "least-busy",
+        "latency-based-routing",
+        "cost-based-routing",
+        "usage-based-routing",
+        "usage-based-routing-v2",
+        "sticky-least-busy",
+        "sticky-least-busy-weighted",
+    ],
+)
+async def test_decisions_routes_across_multiple_deployments(strategy: str, respx_mock: respx.MockRouter) -> None:
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "xor",
+                "model_info": {"id": f"deployment-{index}"},
+                "litellm_params": {
+                    "model": "strands_decider/test",
+                    "api_base": f"https://xor-{index}.example",
+                    "rpm": 10000,
+                    "tpm": 1000000,
+                    "input_cost_per_token": 0.000001,
+                    "output_cost_per_token": 0.000002,
+                },
+            }
+            for index in (1, 2)
+        ],
+        routing_strategy=strategy,
+        num_retries=0,
+    )
+    routes = [
+        respx_mock.post(f"https://xor-{index}.example/v1/systemone").respond(
+            json={"model": "test", "answers": {}, "usage": {"input_tokens": 20, "output_tokens": 3}}
+        )
+        for index in (1, 2)
+    ]
+    for _ in range(2):
+        response = await router.adecisions(
+            model="xor", state="grounding", questions={"q": {"type": "noul", "instructions": "Check"}}
+        )
+        assert isinstance(response, DecisionsResponse)
+    assert sum(route.call_count for route in routes) == 2
+    router.shutdown_routing_strategy()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extraction", (False, True))
+@pytest.mark.parametrize("normalized", (False, True))
+async def test_usage_routing_callbacks_count_decisions_and_thinking(extraction: bool, normalized: bool) -> None:
+    from datetime import datetime
+    from litellm.caching.caching import DualCache
+    from litellm.router_strategy.lowest_tpm_rpm import LowestTPMLoggingHandler
+    from litellm.responses.utils import ResponseAPILoggingUtils
+
+    response = (
+        ExtractionResponse(
+            result={},
+            thinking={},
+            confidence={},
+            usage={"input_tokens": 20, "completion_tokens": 3, "thinking_tokens": 100},
+        )
+        if extraction
+        else DecisionsResponse(answers={}, usage=DecisionsUsage(input_tokens=20, output_tokens=3))
+    )
+    cache = DualCache()
+    handler = LowestTPMLoggingHandler(cache)
+    kwargs = {"litellm_params": {"metadata": {"model_group": "xor"}, "model_info": {"id": "deployment"}}}
+    logged_response = (
+        response.model_copy(
+            update={
+                "usage": ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+                    response.usage.model_dump()
+                )
+            }
+        )
+        if normalized
+        else response
+    )
+    handler.log_success_event(kwargs, logged_response, datetime.now(), datetime.now())
+    await handler.async_log_success_event(kwargs, logged_response, datetime.now(), datetime.now())
+    assert cache.get_cache(f"xor:tpm:{datetime.now().strftime('%H-%M')}")["deployment"] == (246 if extraction else 46)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extraction", (False, True))
+@pytest.mark.parametrize("latency", (False, True))
+async def test_cost_and_latency_routing_account_for_decisions_tokens(extraction: bool, latency: bool) -> None:
+    from datetime import datetime, timedelta
+    from litellm.caching.caching import DualCache
+    from litellm.router_strategy.lowest_cost import LowestCostLoggingHandler
+    from litellm.router_strategy.lowest_latency import LowestLatencyLoggingHandler
+
+    response = (
+        ExtractionResponse(
+            result={},
+            thinking={},
+            confidence={},
+            usage={"input_tokens": 20, "completion_tokens": 3, "thinking_tokens": 100},
+        )
+        if extraction
+        else DecisionsResponse(answers={}, usage=DecisionsUsage(input_tokens=20, output_tokens=3))
+    )
+    cache = DualCache()
+    handler = LowestLatencyLoggingHandler(cache) if latency else LowestCostLoggingHandler(cache)
+    kwargs = {"litellm_params": {"metadata": {"model_group": "xor"}, "model_info": {"id": "deployment"}}}
+    start = datetime.now()
+    end = start + timedelta(seconds=2)
+    handler.log_success_event(kwargs, response, start, end)
+    await handler.async_log_success_event(kwargs, response, start, end)
+    metrics = cache.get_cache("xor_map")["deployment"]
+    assert metrics[start.strftime("%Y-%m-%d-%H-%M")]["tpm"] == (246 if extraction else 46)
+    if latency:
+        assert all(value == timedelta(seconds=2) or value == 2.0 for value in metrics["latency"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_call", (False, True))
+async def test_usage_routing_rejects_request_exceeding_text_tpm(respx_mock: respx.MockRouter, async_call: bool) -> None:
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "xor",
+                "litellm_params": {
+                    "model": "strands_decider/test",
+                    "api_base": "https://xor.example",
+                    "tpm": 1,
+                    "rpm": 10000,
+                },
+            }
+        ],
+        routing_strategy="usage-based-routing-v2",
+        num_retries=0,
+    )
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json={"answers": {}, "usage": {}})
+    with pytest.raises(litellm.RateLimitError if async_call else ValueError):
+        if async_call:
+            await router.adecisions(
+                model="xor", state="grounding " * 100, questions={"q": {"type": "noul", "instructions": "Check"}}
+            )
+        else:
+            router.decisions(
+                model="xor", state="grounding " * 100, questions={"q": {"type": "noul", "instructions": "Check"}}
+            )
+    assert not upstream.called
+
+
 _EXTRACTION_RESPONSE: Final[Mapping[str, object]] = {
     "result": {"author": "Example Author"},
     "usage": {"input_tokens": 18, "thinking_tokens": 0, "completion_tokens": 7, "requests": 1, "wall_s": 0.09},
@@ -37,11 +201,22 @@ _EXTRACTION_RESPONSE: Final[Mapping[str, object]] = {
 }
 
 
+@pytest.mark.parametrize("thinking_tokens", (0, 100))
 @pytest.mark.parametrize("audio", (None, {"data": "UklGRg==", "format": "wav"}))
 def test_extraction_preserves_wire_contract_and_cost(
-    audio: Mapping[str, str] | None, respx_mock: respx.MockRouter
+    audio: Mapping[str, str] | None, respx_mock: respx.MockRouter, thinking_tokens: int
 ) -> None:
-    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json=_EXTRACTION_RESPONSE)
+    wire = {
+        **_EXTRACTION_RESPONSE,
+        "usage": {
+            "input_tokens": 18,
+            "completion_tokens": 7,
+            "thinking_tokens": thinking_tokens,
+            "requests": 1,
+            "wall_s": 0.09,
+        },
+    }
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json=wire)
     response = litellm.decisions(
         model="strands_decider/jev-trained",
         api_base="https://xor.example",
@@ -52,7 +227,7 @@ def test_extraction_preserves_wire_contract_and_cost(
         output_cost_per_token=0.000002,
     )
     assert isinstance(response, ExtractionResponse)
-    assert response.model_dump() == _EXTRACTION_RESPONSE
+    assert response.model_dump() == wire
     payload = json.loads(upstream.calls[0].request.content)
     assert payload["context"] == "This paper was written by Example Author."
     assert "state" not in payload
@@ -62,13 +237,14 @@ def test_extraction_preserves_wire_contract_and_cost(
     assert litellm.completion_cost(
         completion_response=response,
         custom_cost_per_token={"input_cost_per_token": 0.000001, "output_cost_per_token": 0.000002},
-    ) == pytest.approx(0.000032)
+    ) == pytest.approx(0.000032 + thinking_tokens * 0.000002)
     from litellm.cost_calculator import _get_usage_object
 
     usage = _get_usage_object(response)
     assert usage.prompt_tokens == 18
-    assert usage.completion_tokens == 7
-    assert usage.total_tokens == 25
+    assert usage.completion_tokens == 7 + thinking_tokens
+    assert usage.total_tokens == 25 + thinking_tokens
+    assert usage.completion_tokens_details.reasoning_tokens == thinking_tokens
 
 
 @pytest.mark.asyncio

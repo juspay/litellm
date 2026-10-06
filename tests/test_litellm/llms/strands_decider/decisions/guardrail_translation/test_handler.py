@@ -1,19 +1,76 @@
 from typing import Literal
+import json
+import respx
+import litellm
 
 import pytest
 from pydantic import TypeAdapter
 
 from litellm.caching.caching import DualCache
-from litellm.exceptions import BadRequestError
+from litellm.exceptions import BadRequestError, GuardrailRaisedException
 from litellm.integrations.custom_guardrail import CustomGuardrail
 from litellm.litellm_core_utils.litellm_logging import Logging
 from litellm.llms import load_guardrail_translation_mappings
 from litellm.llms.strands_decider.decisions.guardrail_translation.handler import DecisionsHandler
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.utils import ProxyLogging
 from litellm.proxy.guardrails.guardrail_hooks.unified_guardrail.unified_guardrail import UnifiedLLMGuardrails
 from litellm.types.decisions import DecisionsResult
 from litellm.types.guardrails import GuardrailEventHooks
 from litellm.types.utils import CallTypes, GenericGuardrailAPIInputs
+from litellm.proxy.guardrails.guardrail_hooks.bedrock_guardrails import BedrockGuardrail
+from litellm.types.proxy.guardrails.guardrail_hooks.bedrock_guardrails import BedrockGuardrailResponse
+
+
+class LegacyBedrockMask(BedrockGuardrail):
+    async def make_bedrock_api_request(self, **kwargs: object) -> BedrockGuardrailResponse:
+        return BedrockGuardrailResponse(outputs=[{"text": json.dumps(request()).replace("secret", "masked")}])
+
+
+@pytest.mark.asyncio
+async def test_legacy_bedrock_mask_reaches_actual_decisions_payload(respx_mock: respx.MockRouter) -> None:
+    guard = LegacyBedrockMask(guardrail_name="legacy-mask", event_hook=GuardrailEventHooks.pre_call, default_on=True)
+    data = await guard.async_pre_call_hook(UserAPIKeyAuth(), DualCache(), request(), "adecisions")
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json={"answers": {}, "usage": {}})
+    litellm.decisions(**{**data, "model": "strands_decider/test", "api_base": "https://xor.example"})
+    payload = json.loads(upstream.calls[0].request.content)
+    assert "secret" not in json.dumps(payload)
+    assert payload["state"] == {"text": "masked state"}
+    assert payload["context"] == "masked context"
+    assert payload["questions"]["q"]["instructions"] == "masked instruction"
+    assert payload["questions"]["q"]["criteria"]["yes"] == "masked criterion"
+
+
+@pytest.mark.asyncio
+async def test_chained_guards_do_not_restore_stale_legacy_messages(respx_mock: respx.MockRouter) -> None:
+    guard = LegacyBedrockMask(guardrail_name="legacy-mask", event_hook=GuardrailEventHooks.pre_call, default_on=True)
+    data = await guard.async_pre_call_hook(UserAPIKeyAuth(), DualCache(), request(), "adecisions")
+    reconciled = await ProxyLogging(DualCache()).process_pre_call_hook_response(data, data, "adecisions")
+    assert "messages" not in reconciled
+    later = {**reconciled, "state": "redacted by a later guard"}
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json={"answers": {}, "usage": {}})
+    litellm.decisions(**{**later, "model": "strands_decider/test", "api_base": "https://xor.example"})
+    assert json.loads(upstream.calls[0].request.content)["state"] == "redacted by a later guard"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "messages,mock_response", [(None, "blocked"), ([], None), ([{"role": "user", "content": "not JSON"}], None)]
+)
+async def test_legacy_guardrail_failures_never_reach_upstream(
+    messages: object, mock_response: object, respx_mock: respx.MockRouter
+) -> None:
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(json={"answers": {}, "usage": {}})
+    with pytest.raises((litellm.BadRequestError, GuardrailRaisedException)):
+        await litellm.adecisions(
+            model="strands_decider/test",
+            api_base="https://xor.example",
+            state="secret",
+            questions={"q": {"type": "noul", "instructions": "Check"}},
+            messages=messages,
+            mock_response=mock_response,
+        )
+    assert not upstream.called
 
 
 class MaskGuard(CustomGuardrail):

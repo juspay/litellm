@@ -8,6 +8,7 @@ import litellm
 from litellm import ModelResponse, token_counter, verbose_logger
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.types.decisions import DecisionsResponse, ExtractionResponse
 from litellm.litellm_core_utils.core_helpers import safe_divide_seconds
 from litellm.litellm_core_utils.core_helpers import _get_parent_otel_span_from_kwargs
 from litellm.types.utils import LiteLLMPydanticObjectBase
@@ -82,6 +83,11 @@ class LowestLatencyLoggingHandler(CustomLogger):
                 final_value: Union[float, timedelta] = response_ms
                 time_to_first_token: Optional[float] = None
                 total_tokens = 0
+                if isinstance(response_obj, (DecisionsResponse, ExtractionResponse)):
+                    from litellm.cost_calculator import _get_usage_object
+
+                    decisions_usage = _get_usage_object(response_obj)
+                    total_tokens = decisions_usage.total_tokens if decisions_usage is not None else 0
 
                 if isinstance(response_obj, ModelResponse):
                     _usage = getattr(response_obj, "usage", None)
@@ -269,6 +275,11 @@ class LowestLatencyLoggingHandler(CustomLogger):
 
                 final_value: Union[float, timedelta] = response_ms
                 total_tokens = 0
+                if isinstance(response_obj, (DecisionsResponse, ExtractionResponse)):
+                    from litellm.cost_calculator import _get_usage_object
+
+                    decisions_usage = _get_usage_object(response_obj)
+                    total_tokens = decisions_usage.total_tokens if decisions_usage is not None else 0
                 time_to_first_token: Optional[float] = None
 
                 if isinstance(response_obj, ModelResponse):

@@ -43,6 +43,13 @@ def test_decisions_token_usage(rate_limit_type, expected, usage):
     assert handler._get_total_tokens_from_usage(usage, rate_limit_type) == expected
 
 
+@pytest.mark.parametrize("rate_limit_type,expected", [("input", 20), ("output", 130), ("total", 150)])
+def test_extraction_thinking_tokens_count_toward_limits(rate_limit_type: str, expected: int) -> None:
+    handler = _PROXY_MaxParallelRequestsHandler(internal_usage_cache=InternalUsageCache(DualCache()))
+    usage = ExtractionUsage(input_tokens=20, completion_tokens=30, thinking_tokens=100)
+    assert handler._get_total_tokens_from_usage(usage, rate_limit_type) == expected
+
+
 class TimeController:
     def __init__(self):
         self._current = datetime.utcnow()
