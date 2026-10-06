@@ -25,12 +25,19 @@ from litellm.proxy.hooks.parallel_request_limiter_v3 import (
 )
 from litellm.proxy.utils import InternalUsageCache, ProxyLogging, hash_token
 from litellm.types.caching import RedisPipelineIncrementOperation
+from litellm.types.decisions import DecisionsResponse, DecisionsUsage
 from litellm.types.utils import (
     EmbeddingResponse,
     ModelResponse,
     TextCompletionResponse,
     Usage,
 )
+
+
+@pytest.mark.parametrize("rate_limit_type,expected", [("input", 20), ("output", 30), ("total", 50)])
+def test_decisions_token_usage(rate_limit_type, expected):
+    handler = _PROXY_MaxParallelRequestsHandler(internal_usage_cache=InternalUsageCache(DualCache()))
+    assert handler._get_total_tokens_from_usage(DecisionsUsage(input_tokens=20, output_tokens=30), rate_limit_type) == expected
 
 
 class TimeController:
@@ -568,6 +575,7 @@ async def test_token_rate_limit_type_respected_v3(monkeypatch, token_rate_limit_
             model="gpt-3.5-turbo-instruct",
             usage=Usage(prompt_tokens=20, completion_tokens=30, total_tokens=50),
         ),
+        DecisionsResponse(model="xor", answers={}, usage=DecisionsUsage(input_tokens=20, output_tokens=30)),
     ],
 )
 @pytest.mark.asyncio

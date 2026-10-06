@@ -403,6 +403,8 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/search",
         "/search/{search_tool_name}",
         "/v1/search/{search_tool_name}",
+        "/decisions",
+        "/v1/decisions",
         # OCR
         "/ocr",
         "/v1/ocr",
@@ -445,7 +447,6 @@ class LiteLLMRoutes(enum.Enum):
         "/v1/rag/ingest",
         "/rag/query",
         "/v1/rag/query",
-        "/v1/systemone",
     ]
 
     anthropic_routes = [

@@ -235,6 +235,15 @@ def llm_passthrough_route(
     if "model_id" in kwargs:
         litellm_params_dict["model_id"] = kwargs["model_id"]
 
+    litellm_logging_obj.update_environment_variables(
+        model=model,
+        litellm_params=litellm_params_dict,
+        optional_params={},
+        endpoint=endpoint,
+        custom_llm_provider=custom_llm_provider,
+        request_data=data if data else json,
+    )
+
     provider_config = cast(
         Optional["BasePassthroughConfig"], kwargs.get("provider_config")
     ) or ProviderConfigManager.get_provider_passthrough_config(
@@ -243,16 +252,6 @@ def llm_passthrough_route(
     )
     if provider_config is None:
         raise Exception(f"Provider {custom_llm_provider} not found")
-
-    litellm_logging_obj.update_environment_variables(
-        model=model,
-        litellm_params=litellm_params_dict,
-        optional_params={},
-        endpoint=endpoint,
-        custom_llm_provider=custom_llm_provider,
-        request_data=data if data else json,
-        provider_config=provider_config,
-    )
 
     updated_url, base_target_url = provider_config.get_complete_url(
         api_base=api_base,
@@ -296,7 +295,7 @@ def llm_passthrough_route(
     )
 
     ## SWAP MODEL IN JSON BODY [TODO: REFACTOR TO A provider_config.transform_request method]
-    if json and isinstance(json, dict) and "model" in json and provider_config.should_replace_model_in_request():
+    if json and isinstance(json, dict) and "model" in json:
         json["model"] = model
 
     request = client.client.build_request(

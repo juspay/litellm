@@ -1536,6 +1536,11 @@ class Router:
         self.asearch = self.factory_function(asearch, call_type="asearch")
         self.search = self.factory_function(search, call_type="search")
 
+        from litellm.decisions import adecisions, decisions
+
+        self.adecisions = self.factory_function(adecisions, call_type="adecisions")
+        self.decisions = self.factory_function(decisions, call_type="decisions")
+
     def _initialize_video_endpoints(self):
         """Initialize video endpoints."""
         from litellm.videos import (
@@ -4587,17 +4592,11 @@ class Router:
         """
 
         passthrough_on_no_deployment = kwargs.pop("passthrough_on_no_deployment", False)
-        use_pass_through_deployments = kwargs.pop("use_pass_through_deployments", False)
         function_name = "_ageneric_api_call_with_fallbacks"
         try:
             parent_otel_span = _get_parent_otel_span_from_kwargs(kwargs)
             try:
-                deployment_selector = (
-                    self.async_get_available_deployment_for_pass_through
-                    if use_pass_through_deployments
-                    else self.async_get_available_deployment
-                )
-                deployment = await deployment_selector(
+                deployment = await self.async_get_available_deployment(
                     model=model,
                     request_kwargs=kwargs,
                     messages=kwargs.get("messages", None),
@@ -5671,6 +5670,8 @@ class Router:
             "ocr",
             "asearch",
             "search",
+            "adecisions",
+            "decisions",
             "aadapter_generate_content",
             "avideo_generation",
             "video_generation",
@@ -5746,6 +5747,7 @@ class Router:
             "vector_store_create",
             "ocr",
             "search",
+            "decisions",
             "video_generation",
             "video_list",
             "video_status",
@@ -5893,6 +5895,7 @@ class Router:
                 "agenerate_content_stream",
                 "aocr",
                 "ocr",
+                "adecisions",
                 "avideo_generation",
                 "avideo_list",
                 "avideo_status",
@@ -5928,9 +5931,9 @@ class Router:
                     **kwargs,
                 )
             elif call_type == "allm_passthrough_route":
-                kwargs.setdefault("passthrough_on_no_deployment", True)
                 return await self._ageneric_api_call_with_fallbacks(
                     original_function=original_function,
+                    passthrough_on_no_deployment=True,
                     **kwargs,
                 )
             elif call_type in (

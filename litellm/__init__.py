@@ -1361,6 +1361,7 @@ from .ocr.main import *
 from .rust_bridge.ocr import use_litellm_rust
 from .rag.main import *
 from .sandbox.main import *
+from .decisions.main import *
 from .search.main import *
 from .realtime_api.main import (
     _arealtime,

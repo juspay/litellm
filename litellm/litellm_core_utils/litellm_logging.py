@@ -80,6 +80,7 @@ from litellm.llms.base_llm.search.transformation import SearchResponse
 from litellm.responses.utils import ResponseAPILoggingUtils
 from litellm.types.agents import LiteLLMSendMessageResponse
 from litellm.types.containers.main import ContainerObject
+from litellm.types.decisions import DecisionsResponse
 from litellm.types.llms.openai import (
     AllMessageValues,
     Batch,
@@ -1369,6 +1370,7 @@ class Logging(LiteLLMLoggingBaseClass):
             LiteLLMRealtimeStreamLoggingObject,
             OpenAIModerationResponse,
             "SearchResponse",
+            DecisionsResponse,
             dict,
             list,
         ],
@@ -1680,10 +1682,9 @@ class Logging(LiteLLMLoggingBaseClass):
         ) and isinstance(result, Response):
             from litellm.utils import ProviderConfigManager
 
-            provider_config = self.model_call_details.get(
-                "provider_config"
-            ) or ProviderConfigManager.get_provider_passthrough_config(
-                provider=self.model_call_details.get("custom_llm_provider", ""), model=self.model
+            provider_config = ProviderConfigManager.get_provider_passthrough_config(
+                provider=self.model_call_details.get("custom_llm_provider", ""),
+                model=self.model,
             )
             if provider_config is not None:
                 logging_result = provider_config.logging_non_streaming_response(
@@ -1893,6 +1894,7 @@ class Logging(LiteLLMLoggingBaseClass):
             or isinstance(logging_result, OpenAIModerationResponse)
             or isinstance(logging_result, OCRResponse)  # OCR
             or isinstance(logging_result, SearchResponse)  # Search API
+            or isinstance(logging_result, DecisionsResponse)
             or isinstance(logging_result, dict)
             and logging_result.get("object") == "vector_store.search_results.page"
             or isinstance(logging_result, dict)

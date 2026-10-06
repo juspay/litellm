@@ -81,6 +81,7 @@ from litellm.llms.vertex_ai.cost_calculator import cost_router as google_cost_ro
 from litellm.llms.xai.cost_calculator import cost_per_token as xai_cost_per_token
 from litellm.responses.utils import ResponseAPILoggingUtils
 from litellm.types.agents import LiteLLMSendMessageResponse
+from litellm.types.decisions import DecisionsResponse, DecisionsUsage
 from litellm.types.llms.openai import (
     HttpxBinaryResponseContent,
     ImageGenerationRequestQuality,
@@ -751,12 +752,7 @@ def _select_model_name_for_cost_calc(
     region_name: Optional[str] = None
     custom_llm_provider = _get_provider_for_cost_calc(model=model, custom_llm_provider=custom_llm_provider)
 
-    completion_response_model: Optional[str] = None
-    if completion_response is not None:
-        if isinstance(completion_response, BaseModel):
-            completion_response_model = getattr(completion_response, "model", None)
-        elif isinstance(completion_response, dict):
-            completion_response_model = completion_response.get("model", None)
+    completion_response_model = _get_response_model(completion_response)
     hidden_params: Optional[dict] = getattr(completion_response, "_hidden_params", None)
 
     if custom_pricing is True:
@@ -815,6 +811,10 @@ def _get_response_model(completion_response: Any) -> Optional[str]:
     """
     if completion_response is None:
         return None
+
+    if isinstance(completion_response, DecisionsResponse):
+        decision_model = completion_response._hidden_params.get("model")
+        return decision_model if isinstance(decision_model, str) else completion_response.model
 
     if isinstance(completion_response, BaseModel):
         return getattr(completion_response, "model", None)
@@ -911,6 +911,7 @@ def _is_known_usage_objects(usage_obj):
     return (
         isinstance(usage_obj, litellm.Usage)
         or isinstance(usage_obj, ResponseAPIUsage)
+        or isinstance(usage_obj, DecisionsUsage)
         or TranscriptionUsageObjectTransformation.is_transcription_usage_object(usage_obj)
     )
 
@@ -1717,6 +1718,7 @@ def response_cost_calculator(
         OpenAIModerationResponse,
         Response,
         SearchResponse,
+        DecisionsResponse,
     ],
     model: str,
     custom_llm_provider: Optional[str],
@@ -1739,6 +1741,8 @@ def response_cost_calculator(
         "arerank",
         "search",
         "asearch",
+        "decisions",
+        "adecisions",
     ],
     optional_params: dict,
     cache_hit: Optional[bool] = None,
