@@ -352,9 +352,7 @@ async def _aclose_upstream_response(response: Any) -> None:
             try:
                 await response.aclose()
             except BaseException as e:
-                verbose_proxy_logger.debug(
-                    "error closing upstream response stream: %s", e
-                )
+                verbose_proxy_logger.debug("error closing upstream response stream: %s", e)
 
 
 class _UpstreamClosingStreamingResponse(StreamingResponse):
@@ -379,9 +377,7 @@ class _UpstreamClosingStreamingResponse(StreamingResponse):
         status_code: int = status.HTTP_200_OK,
         upstream_generator: Optional[AsyncGenerator[str, None]] = None,
     ) -> None:
-        super().__init__(
-            content, status_code=status_code, headers=headers, media_type=media_type
-        )
+        super().__init__(content, status_code=status_code, headers=headers, media_type=media_type)
         self._upstream_generator = upstream_generator
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -598,7 +594,6 @@ async def create_response(
         }
         if merged_fields:
             error_obj["provider_specific_fields"] = merged_fields
-
 
         async def error_gen_message() -> AsyncGenerator[str, None]:
             yield f"data: {json.dumps({'error': error_obj})}\n\n"
@@ -1081,6 +1076,7 @@ class ProxyBaseLLMRequestProcessing:
             "avector_store_file_delete",
             "aocr",
             "asearch",
+            "adecisions",
             "avideo_generation",
             "avideo_list",
             "avideo_status",
@@ -1376,6 +1372,7 @@ class ProxyBaseLLMRequestProcessing:
             "aocr",
             "asearch",
             "avideo_generation",
+            "adecisions",
             "avideo_list",
             "avideo_status",
             "avideo_content",
@@ -2388,9 +2385,7 @@ class ProxyBaseLLMRequestProcessing:
         except asyncio.CancelledError:
             pass
         except Exception:
-            verbose_proxy_logger.exception(
-                "_handle_llm_api_exception(): failure hook errored during exception cleanup"
-            )
+            verbose_proxy_logger.exception("_handle_llm_api_exception(): failure hook errored during exception cleanup")
         litellm_debug_info = getattr(e, "litellm_debug_info", "")
         verbose_proxy_logger.debug(
             "\033[1;31mAn error occurred: %s %s\n\n Debug this by setting `--debug`, e.g. `litellm --model gpt-3.5-turbo --debug`",
@@ -2680,9 +2675,7 @@ class ProxyBaseLLMRequestProcessing:
             except asyncio.CancelledError:
                 pass
             except Exception:
-                verbose_proxy_logger.exception(
-                    "async_data_generator: failure hook errored during exception cleanup"
-                )
+                verbose_proxy_logger.exception("async_data_generator: failure hook errored during exception cleanup")
             verbose_proxy_logger.debug(
                 f"\033[1;31mAn error occurred: {e}\n\n Debug this by setting `--debug`, e.g. `litellm --model gpt-3.5-turbo --debug`"
             )

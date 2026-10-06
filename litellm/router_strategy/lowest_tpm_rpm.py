@@ -9,6 +9,7 @@ from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.utils import LiteLLMPydanticObjectBase
+from litellm.types.decisions import DecisionsResponse, ExtractionResponse
 from litellm.utils import print_verbose
 
 
@@ -44,7 +45,13 @@ class LowestTPMLoggingHandler(CustomLogger):
                 elif isinstance(id, int):
                     id = str(id)
 
-                total_tokens = response_obj["usage"]["total_tokens"]
+                if isinstance(response_obj, (DecisionsResponse, ExtractionResponse)):
+                    from litellm.cost_calculator import _get_usage_object
+
+                    decisions_usage = _get_usage_object(response_obj)
+                    total_tokens = decisions_usage.total_tokens if decisions_usage is not None else 0
+                else:
+                    total_tokens = response_obj["usage"]["total_tokens"]
 
                 # ------------
                 # Setup values
@@ -102,9 +109,18 @@ class LowestTPMLoggingHandler(CustomLogger):
                 elif isinstance(id, int):
                     id = str(id)
 
-                if "usage" not in response_obj:
+                if (
+                    not isinstance(response_obj, (DecisionsResponse, ExtractionResponse))
+                    and "usage" not in response_obj
+                ):
                     return
-                total_tokens = response_obj["usage"]["total_tokens"]
+                if isinstance(response_obj, (DecisionsResponse, ExtractionResponse)):
+                    from litellm.cost_calculator import _get_usage_object
+
+                    decisions_usage = _get_usage_object(response_obj)
+                    total_tokens = decisions_usage.total_tokens if decisions_usage is not None else 0
+                else:
+                    total_tokens = response_obj["usage"]["total_tokens"]
 
                 # ------------
                 # Setup values

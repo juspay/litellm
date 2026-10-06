@@ -932,7 +932,7 @@ class ResponseAPILoggingUtils:
         """returns True if usage is from OpenAI Response API"""
         if isinstance(usage, ResponseAPIUsage):
             return True
-        if "input_tokens" in usage and "output_tokens" in usage:
+        if "input_tokens" in usage and ("output_tokens" in usage or "completion_tokens" in usage):
             return True
         return False
 
@@ -955,6 +955,10 @@ class ResponseAPILoggingUtils:
         response_api_usage: ResponseAPIUsage
         if isinstance(usage_input, dict):
             usage_input = dict(usage_input)  # shallow copy; avoid mutating caller
+            if "output_tokens" not in usage_input and "completion_tokens" in usage_input:
+                usage_input["output_tokens"] = usage_input["completion_tokens"] + usage_input.get("thinking_tokens", 0)
+                if usage_input.get("thinking_tokens") is not None:
+                    usage_input["output_tokens_details"] = {"reasoning_tokens": usage_input["thinking_tokens"]}
             # Realtime *_token_details → *_tokens_details when unset.
             if usage_input.get("input_tokens_details") is None and "input_token_details" in usage_input:
                 usage_input["input_tokens_details"] = usage_input["input_token_details"]

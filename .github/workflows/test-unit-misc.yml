@@ -28,6 +28,8 @@ jobs:
         tests/test_litellm/anthropic_interface
         tests/test_litellm/completion_extras
         tests/test_litellm/containers
+        tests/test_litellm/decisions
+        tests/test_litellm/llms/strands_decider/decisions/guardrail_translation
         tests/test_litellm/experimental_mcp_client
         tests/test_litellm/models
         tests/test_litellm/repositories

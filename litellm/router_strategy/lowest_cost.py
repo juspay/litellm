@@ -8,6 +8,7 @@ from litellm import ModelResponse, token_counter, verbose_logger
 from litellm._logging import verbose_router_logger
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.types.decisions import DecisionsResponse, ExtractionResponse
 
 
 class LowestCostLoggingHandler(CustomLogger):
@@ -55,6 +56,11 @@ class LowestCostLoggingHandler(CustomLogger):
                 response_ms: timedelta = end_time - start_time
 
                 total_tokens = 0
+                if isinstance(response_obj, (DecisionsResponse, ExtractionResponse)):
+                    from litellm.cost_calculator import _get_usage_object
+
+                    decisions_usage = _get_usage_object(response_obj)
+                    total_tokens = decisions_usage.total_tokens if decisions_usage is not None else 0
 
                 if isinstance(response_obj, ModelResponse):
                     _usage = getattr(response_obj, "usage", None)
@@ -135,6 +141,11 @@ class LowestCostLoggingHandler(CustomLogger):
                 response_ms: timedelta = end_time - start_time
 
                 total_tokens = 0
+                if isinstance(response_obj, (DecisionsResponse, ExtractionResponse)):
+                    from litellm.cost_calculator import _get_usage_object
+
+                    decisions_usage = _get_usage_object(response_obj)
+                    total_tokens = decisions_usage.total_tokens if decisions_usage is not None else 0
 
                 if isinstance(response_obj, ModelResponse):
                     _usage = getattr(response_obj, "usage", None)

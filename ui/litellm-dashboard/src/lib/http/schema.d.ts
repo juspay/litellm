@@ -731,6 +731,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/audit/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit Logs
+         * @description Backward-compatible audit-log endpoint used by grid-ai-onboarding.
+         *
+         *     Keep this response shape aligned with the release/v1.83.3 custom endpoint:
+         *     {data, total, page, page_size, total_pages}.
+         */
+        get: operations["get_audit_logs_audit_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audit/{id}": {
         parameters: {
             query?: never;
@@ -1014,6 +1037,68 @@ export interface paths {
          *     [Docs](https://docs.litellm.ai/docs/pass_through/bedrock)
          */
         patch: operations["bedrock_proxy_route_bedrock__endpoint__patch"];
+        trace?: never;
+    };
+    "/bench/run/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete Bench Run
+         * @description Delete a bench run by id.
+         */
+        post: operations["delete_bench_run_bench_run_delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bench/run/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Bench Runs
+         * @description All bench runs, newest first. Volume is low (manual entries); grid
+         *     derives filter options and filters client-side.
+         */
+        get: operations["list_bench_runs_bench_run_list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/bench/run/new": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * New Bench Run
+         * @description Record a benchmark run. Only model_name is required; everything else is
+         *     optional (grid pre-fills what it can parse from the run command).
+         */
+        post: operations["new_bench_run_bench_run_new_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/budget/delete": {
@@ -1838,6 +1923,161 @@ export interface paths {
          *     - Art. 30: Audit record complete (user_id, model, timestamp, guardrail_results)
          */
         post: operations["check_gdpr_compliance_compliance_gdpr_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/concurrent_request_logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Concurrent Request Logs
+         * @description Get concurrent request logs by querying GCP Cloud Logging for parallel requests metrics,
+         *     then fetching SpendLogs concurrency for those keys.
+         *
+         *     Query flow:
+         *     1. Query GCP Cloud Logging for [METRICS] log entries from last N seconds before target timestamp
+         *     2. For each token, find the log entry with the LATEST timestamp (closest to input_timestamp)
+         *        The current_count from this entry represents the Redis counter value at that time
+         *     3. Query SpendLogs using the input timestamp directly (not GCP log timestamps)
+         *     4. Return ALL combined data (pagination is handled client-side to avoid repeated GCP API calls)
+         *
+         *     Requires GOOGLE_CLOUD_PROJECT or GCP_PROJECT environment variable to be set,
+         *     and appropriate GCP credentials (GOOGLE_APPLICATION_CREDENTIALS).
+         */
+        get: operations["concurrent_request_logs_concurrent_request_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/concurrent_request_logs/operation_counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Concurrent Request Operation Counts
+         * @description Count the parallel_requests counter increment vs decrement [METRICS] log entries
+         *     emitted by the max_parallel_requests limiter, for a key over a time range.
+         *
+         *     The GCP log lines carry only `token` and `key_alias` (never the masked key), so:
+         *       - api_key input is resolved to its token(s) via LiteLLM_VerificationToken,
+         *         then GCP logs are filtered by token.
+         *       - key_alias input filters GCP logs by key_alias directly.
+         *
+         *     Returns increment_count, decrement_count and their difference. Range is capped
+         *     at 10 days.
+         */
+        get: operations["concurrent_request_operation_counts_concurrent_request_logs_operation_counts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/concurrent_request_logs/rate_limit_hits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Concurrent Request Rate Limit Hits
+         * @description Return the timestamps at which a key was rate limited by the
+         *     max_parallel_requests (MPR) rate limiter.
+         *
+         *     Flow:
+         *     1. Require exactly one of api_key / key_alias.
+         *     2. Resolve the key's token(s) from LiteLLM_VerificationToken.
+         *     3. Query LiteLLM_SpendLogs for failure logs in [start_date, end_date] for that
+         *        token where the stored error is a 429 HTTPException raised by the
+         *        max_parallel_requests limiter.
+         *     4. Return the matching startTime timestamps (UTC, ISO 8601), paginated.
+         */
+        get: operations["concurrent_request_rate_limit_hits_concurrent_request_logs_rate_limit_hits_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/concurrent_request_logs/reset_mpr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset Mpr Counter
+         * @description Reset the max_parallel_requests (MPR) Redis state for a key by deleting its
+         *     MPR Redis keys.
+         *
+         *     Use this when a key is blocked by a stale MPR counter (e.g. after a pod
+         *     restart an increment happened without a matching decrement). Deleting the
+         *     keys immediately unblocks the key — the next request recreates the counter
+         *     fresh starting at 1.
+         *
+         *     Requires PROXY_ADMIN.
+         *
+         *     Flow:
+         *       1. Hash the incoming token if a raw `sk-...` key was passed.
+         *       2. Delete both MPR Redis keys for descriptor ("api_key", token):
+         *            - legacy string counter: `{api_key:<token>}:max_parallel_requests`
+         *            - lease ZSET:            `{api_key:<token>}:max_parallel_requests_leases`
+         */
+        post: operations["reset_mpr_counter_concurrent_request_logs_reset_mpr_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/concurrent_request_logs/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Concurrent Request Timeline
+         * @description For a single key, return the Redis counter value and SpendLogs concurrency
+         *     sampled once per minute across the time window (max 30 minutes).
+         *
+         *     Mirrors the per-row columns of the Concurrent Request Logs view
+         *     (key_alias, key_token, spend_logs_concurrency, redis_concurrency, is_match),
+         *     but one row per minute timestamp instead of one row per key.
+         *
+         *     For each minute T:
+         *       - redis_concurrency = current_count of the latest [METRICS] log entry at or
+         *         before T (carried forward), summed across the key's token(s).
+         *       - spend_logs_concurrency = number of SpendLogs requests active at T
+         *         (startTime in [T-60m, T] and endTime >= T), same definition as the
+         *         Concurrent Request Logs view.
+         */
+        get: operations["concurrent_request_timeline_concurrent_request_logs_timeline_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3147,6 +3387,23 @@ export interface paths {
         get: operations["get_memory_summary_debug_memory_summary_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decisions */
+        post: operations["decisions_decisions_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7428,6 +7685,11 @@ export interface paths {
          *
          *     Each model in the list response includes `model_info.access_via_team_ids` and
          *     `model_info.direct_access` when the proxy database is connected.
+         *
+         *         include_experimental: bool = False - deployments tagged `"experimental"` (or
+         *         `"experimental:<id>"`) in `litellm_params.tags` — e.g. temporarily scaled down in
+         *         GPUStack — are hidden from the listing by default for every caller. Only a
+         *         PROXY_ADMIN that explicitly passes `include_experimental=true` gets them back.
          *
          *     Returns:
          *         Returns a dictionary containing information about each model.
@@ -12193,6 +12455,118 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/service-account/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Service Account
+         * @description Approve a service account creation OR key-rotation request.
+         *
+         *     Branches on the SA's current state:
+         *         - creation-pending (is_active=False): issue the first key → SA activated.
+         *         - rotation-pending (is_active=True, is_key_rotation_requested=True):
+         *           EXTEND the existing key's `expires` in place (now + duration) and clear
+         *           the rotation flag. The key's secret, alias, and team are unchanged —
+         *           the owners keep using the key they already have, so the key value is
+         *           NOT re-revealed. No new key is minted and no prior key is blocked.
+         *
+         *     Creation approval calls generate_key_helper_fn (which creates a key with
+         *     `expires` from `data.duration`) and then
+         *     _activate_service_account_and_block_previous_keys (which flips
+         *     is_active→True, is_key_rotation_requested→False, and blocks the SA's prior
+         *     keys). The new key value is returned once.
+         */
+        post: operations["approve_service_account_service_account_approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/service-account/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Service Accounts
+         * @description List service accounts filtered by lifecycle state.
+         *
+         *     status:
+         *         - my_keys:            is_active=True, is_key_rotation_requested=False
+         *         - creation_requests:  is_active=False, is_key_rotation_requested=False
+         *         - rotation_requests:  is_active=True, is_key_rotation_requested=True
+         *
+         *     For my_keys, owner_user_id further restricts to SAs where that user is an
+         *     owner (Prisma `has` filter on the owner_ids array).
+         */
+        get: operations["list_service_accounts_service_account_list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/service-account/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Service Account
+         * @description Reject a service account creation OR key-rotation request.
+         *
+         *     Branches on the SA's current state:
+         *         - creation-pending: delete the SA row and the underlying LiteLLM user
+         *           row (a rejected creation leaves an orphan user with no key).
+         *         - rotation-pending: clear is_key_rotation_requested only — keep the SA
+         *           active and its existing key intact.
+         */
+        post: operations["reject_service_account_service_account_reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/service-account/request-rotation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request Service Account Rotation
+         * @description Owner-side: file a key-rotation request for a service account.
+         *
+         *     Flips is_key_rotation_requested False→True. The caller (requested_by_user_id)
+         *     must be in the SA's owner_ids. Only an active SA with no pending rotation
+         *     can request one.
+         */
+        post: operations["request_service_account_rotation_service_account_request_rotation_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/settings": {
         parameters: {
             query?: never;
@@ -12374,6 +12748,54 @@ export interface paths {
          *     ```
          */
         get: operations["view_spend_logs_spend_logs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/spend/logs/error_stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ui View Error Stats
+         * @description Get error statistics grouped by error_class from spend logs
+         *
+         *     Returns:
+         *         [
+         *             {"extracted_error": "error_class_name", "count": 123},
+         *             ...
+         *         ]
+         */
+        get: operations["ui_view_error_stats_spend_logs_error_stats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/spend/logs/failure_logs_analytics_paginated": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ui View Failure Logs Analytics Paginated
+         * @description Get paginated failure logs filtered by error classes and other criteria.
+         *
+         *     Only returns logs where metadata.error_information.error_class is set.
+         */
+        get: operations["ui_view_failure_logs_analytics_paginated_spend_logs_failure_logs_analytics_paginated_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -12784,17 +13206,21 @@ export interface paths {
         };
         /**
          * Get Daily Active Users
-         * @description Get Daily Active Users (DAU) by tags for the last {MAX_DAYS} days ending on UTC today + 1 day.
+         * @description Get Daily Active Users (DAU) by tags for a customizable date range.
          *
-         *     This endpoint efficiently calculates unique users per tag for each of the last {MAX_DAYS} days
+         *     This endpoint calculates unique users per tag for each day in the selected range
          *     using a single optimized SQL query, perfect for dashboard time series visualization.
          *
          *     Args:
+         *         start_date: Start date for the analytics period (YYYY-MM-DD, defaults to 7 days ago)
+         *         end_date: End date for the analytics period (YYYY-MM-DD, defaults to today)
          *         tag_filter: Optional filter to specific tag (legacy)
          *         tag_filters: Optional filter to multiple specific tags (takes precedence over tag_filter)
+         *         custom_llm_provider: Optional filter to custom LLM provider
+         *         team_id: Optional filter to team ID
          *
          *     Returns:
-         *         ActiveUsersAnalyticsResponse: DAU data by tag for each of the last {MAX_DAYS} days
+         *         ActiveUsersAnalyticsResponse: DAU data by tag for each day in the date range
          */
         get: operations["get_daily_active_users_tag_dau_get"];
         put?: never;
@@ -12906,21 +13332,17 @@ export interface paths {
         };
         /**
          * Get Monthly Active Users
-         * @description Get Monthly Active Users (MAU) by tags for the last {MAX_MONTHS} months ending on UTC today + 1 day.
+         * @description Get Monthly Active Users (MAU) by tags for the last N months ending on UTC today + 1 day.
          *
-         *     Shows month-by-month breakdown:
-         *     - Month 1 (Nov): Earliest month (7 months ago, 30-day period)
-         *     - Month 2 (Dec): Next month (6 months ago)
-         *     - Month 3 (Jan): Next month (5 months ago)
-         *     - ... and so on for {MAX_MONTHS} months total
-         *     - Month 7: Most recent month ending on UTC today + 1 day
+         *     Shows month-by-month breakdown with proper month names (e.g., "December 2025").
          *
          *     Args:
+         *         months: Number of months to show (1-12, default: 7)
          *         tag_filter: Optional filter to specific tag (legacy)
          *         tag_filters: Optional filter to multiple specific tags (takes precedence over tag_filter)
          *
          *     Returns:
-         *         ActiveUsersAnalyticsResponse: MAU data by tag for each of the last {MAX_MONTHS} months with descriptive month labels (e.g., "Month 1 (Nov)")
+         *         ActiveUsersAnalyticsResponse: MAU data by tag for each of the last N months
          */
         get: operations["get_monthly_active_users_tag_mau_get"];
         put?: never;
@@ -13083,6 +13505,8 @@ export interface paths {
          *     Args:
          *         tag_filter: Optional filter to specific tag (legacy)
          *         tag_filters: Optional filter to multiple specific tags (takes precedence over tag_filter)
+         *         custom_llm_provider: Optional filter to custom LLM provider
+         *         team_id: Optional filter to team ID
          *
          *     Returns:
          *         ActiveUsersAnalyticsResponse: WAU data by tag for each of the last {MAX_WEEKS} weeks with descriptive week labels (e.g., "Week 1 (Jan 1)")
@@ -14279,6 +14703,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/user/analytics/leaderboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get User Leaderboard
+         * @description Get all active users by request count with customizable date range.
+         *
+         *     Returns ALL users sorted by their total request count.
+         *     Frontend handles pagination and email search.
+         */
+        get: operations["get_user_leaderboard_user_analytics_leaderboard_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/user/available_roles": {
         parameters: {
             query?: never;
@@ -14442,6 +14889,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/user/dau": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get User Daily Active Users
+         * @description Get daily unique user count (not broken down by user-agent tag).
+         *
+         *     Returns the total count of unique users per day for the selected date range.
+         */
+        get: operations["get_user_daily_active_users_user_dau_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/user/delete": {
         parameters: {
             query?: never;
@@ -14569,6 +15038,28 @@ export interface paths {
          *             Sort order ('asc' or 'desc')
          */
         get: operations["get_users_user_list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/user/mau": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get User Monthly Active Users
+         * @description Get monthly unique user count for the last N months.
+         *
+         *     Returns total unique users per month (not broken down by user-agent tag).
+         */
+        get: operations["get_user_monthly_active_users_user_mau_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -14713,6 +15204,90 @@ export interface paths {
          *         - budget_limits: Optional[list] - List of concurrent budget windows for the user. Each window specifies a budget_limit, time_period, and optional budget_duration. Example - [{"budget_limit": 10.0, "time_period": "1d"}, {"budget_limit": 50.0, "time_period": "7d"}].
          */
         post: operations["user_update_user_update_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/user/update/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch Update User Budgets
+         * @description Batch update budget for multiple users using database operations.
+         *     Supports three modes:
+         *     1. Update all users (target_type: "all")
+         *     2. Update specific users (target_type: "users" with user_emails list)
+         *     3. Update users in teams (target_type: "team" with team_ids list)
+         *     Also supports resetting spend to 0 when reset_spend=True
+         *
+         *     Example request for all users:
+         *     ```bash
+         *     curl --location 'http://0.0.0.0:4000/user/update/batch'     --header 'Authorization: Bearer sk-1234'     --header 'Content-Type: application/json'     --data '{
+         *         "target_type": "all",
+         *         "budget_limit": 100.0,
+         *         "budget_duration": "30d"
+         *     }'
+         *     ```
+         *
+         *     Example request for specific users:
+         *     ```bash
+         *     curl --location 'http://0.0.0.0:4000/user/update/batch'     --header 'Authorization: Bearer sk-1234'     --header 'Content-Type: application/json'     --data '{
+         *         "target_type": "users",
+         *         "user_emails": ["user1@example.com", "user2@example.com"],
+         *         "budget_limit": 50.0,
+         *         "budget_duration": "30d"
+         *     }'
+         *     ```
+         *
+         *     Example request for users in teams:
+         *     ```bash
+         *     curl --location 'http://0.0.0.0:4000/user/update/batch'     --header 'Authorization: Bearer sk-1234'     --header 'Content-Type: application/json'     --data '{
+         *         "target_type": "team",
+         *         "team_ids": ["team-123", "team-456"],
+         *         "budget_limit": 75.0,
+         *         "budget_duration": "30d"
+         *     }'
+         *     ```
+         *
+         *     Example request to reset spend:
+         *     ```bash
+         *     curl --location 'http://0.0.0.0:4000/user/update/batch'     --header 'Authorization: Bearer sk-1234'     --header 'Content-Type: application/json'     --data '{
+         *         "target_type": "all",
+         *         "reset_spend": true
+         *     }'
+         *     ```
+         */
+        post: operations["batch_update_user_budgets_user_update_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/user/wau": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get User Weekly Active Users
+         * @description Get weekly unique user count for the last 7 weeks.
+         *
+         *     Returns total unique users per week (not broken down by user-agent tag).
+         */
+        get: operations["get_user_weekly_active_users_user_wau_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -15609,6 +16184,23 @@ export interface paths {
         get: operations["handler_binary_content_v1_containers__container_id__files__file_id__content_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decisions */
+        post: operations["decisions_v1_decisions_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -16766,6 +17358,11 @@ export interface paths {
          *
          *     Each model in the list response includes `model_info.access_via_team_ids` and
          *     `model_info.direct_access` when the proxy database is connected.
+         *
+         *         include_experimental: bool = False - deployments tagged `"experimental"` (or
+         *         `"experimental:<id>"`) in `litellm_params.tags` — e.g. temporarily scaled down in
+         *         GPUStack — are hidden from the listing by default for every caller. Only a
+         *         PROXY_ADMIN that explicitly passes `include_experimental=true` gets them back.
          *
          *     Returns:
          *         Returns a dictionary containing information about each model.
@@ -20534,7 +21131,7 @@ export interface components {
          * @description Enum for alert types and management event types
          * @enum {string}
          */
-        AlertType: "llm_exceptions" | "llm_too_slow" | "llm_requests_hanging" | "budget_alerts" | "spend_reports" | "failed_tracking_spend" | "db_exceptions" | "daily_reports" | "cooldown_deployment" | "new_model_added" | "outage_alerts" | "region_outage_alerts" | "fallback_reports" | "new_virtual_key_created" | "virtual_key_updated" | "virtual_key_deleted" | "new_team_created" | "team_updated" | "team_deleted" | "new_internal_user_created" | "internal_user_updated" | "internal_user_deleted";
+        AlertType: "llm_exceptions" | "llm_too_slow" | "llm_requests_hanging" | "budget_alerts" | "spend_reports" | "failed_tracking_spend" | "db_exceptions" | "daily_reports" | "cooldown_deployment" | "new_model_added" | "outage_alerts" | "region_outage_alerts" | "fallback_reports" | "new_virtual_key_created" | "virtual_key_updated" | "virtual_key_deleted" | "new_team_created" | "team_updated" | "team_deleted" | "new_internal_user_created" | "internal_user_updated" | "internal_user_deleted" | "service_account_request";
         /** AllowedVectorStoreIndexItem */
         AllowedVectorStoreIndexItem: {
             /** Index Name */
@@ -20566,6 +21163,49 @@ export interface components {
         ApplyGuardrailResponse: {
             /** Response Text */
             response_text: string;
+        };
+        /**
+         * ApproveServiceAccountRequest
+         * @description Approve a creation OR rotation request (litellm branches on SA state).
+         *
+         *     For a creation-pending SA, the approver may edit the request's fields
+         *     (name, use_case, requested_models, limits, owner_ids, team_id) before
+         *     issuing the key. Provided (non-None) editable fields overwrite the SA row.
+         *     Rotation approval only uses duration/team_id (identity fields are ignored).
+         */
+        ApproveServiceAccountRequest: {
+            /** Duration */
+            duration: string;
+            /** Name */
+            name?: string | null;
+            /** Owner Ids */
+            owner_ids?: string[] | null;
+            /** Requested Models */
+            requested_models?: string[] | null;
+            /** Requested Parallel Requests Limit */
+            requested_parallel_requests_limit?: number | null;
+            /** Requested Rpm Limit */
+            requested_rpm_limit?: number | null;
+            /** Team Id */
+            team_id?: string | null;
+            /** Use Case */
+            use_case?: string | null;
+            /** User Id */
+            user_id: string;
+        };
+        /**
+         * ApproveServiceAccountResponse
+         * @description Returned after an approve — the freshly generated key value (shown once).
+         */
+        ApproveServiceAccountResponse: {
+            /** Expires */
+            expires?: string | null;
+            /** Key */
+            key: string;
+            /** Key Id */
+            key_id?: string | null;
+            /** User Id */
+            user_id: string;
         };
         /**
          * AttachmentImpactResponse
@@ -20990,6 +21630,104 @@ export interface components {
         };
         /** BaseModel */
         BaseModel: Record<string, never>;
+        /**
+         * BatchUpdateUserBudgetRequest
+         * @description Request for batch updating user budgets.
+         *     Supports three modes:
+         *     1. Update all users (target_type: "all")
+         *     2. Update specific users (target_type: "users" with user_emails list)
+         *     3. Update users in teams (target_type: "team" with team_ids list)
+         *     Also supports resetting spend to 0 when reset_spend=True
+         */
+        BatchUpdateUserBudgetRequest: {
+            /** Budget Duration */
+            budget_duration?: string | null;
+            /** Budget Limit */
+            budget_limit?: number | null;
+            /**
+             * Reset Spend
+             * @default false
+             */
+            reset_spend: boolean;
+            /**
+             * Target Type
+             * @enum {string}
+             */
+            target_type: "all" | "users" | "team";
+            /** Team Ids */
+            team_ids?: string[] | null;
+            /** User Emails */
+            user_emails?: string[] | null;
+        };
+        /**
+         * BatchUpdateUserBudgetResponse
+         * @description Response for batch update user budget operations
+         */
+        BatchUpdateUserBudgetResponse: {
+            /** Affected Rows */
+            affected_rows: number;
+            /** Budget Duration */
+            budget_duration?: string | null;
+            /** Budget Limit */
+            budget_limit?: number | null;
+            /** Message */
+            message: string;
+            /** Reset Spend */
+            reset_spend: boolean;
+            /** Success */
+            success: boolean;
+            /** Target Type */
+            target_type: string;
+        };
+        /** BenchRunResponse */
+        BenchRunResponse: {
+            /** Bench Run Id */
+            bench_run_id: string;
+            /** Bench Type */
+            bench_type?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by?: string | null;
+            /** Data Parallel Size */
+            data_parallel_size?: number | null;
+            /** Deployment Server */
+            deployment_server?: string | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Kv Cache Dtype */
+            kv_cache_dtype?: string | null;
+            /** Max Concurrency */
+            max_concurrency?: number | null;
+            /** Max Num Batched Tokens */
+            max_num_batched_tokens?: number | null;
+            /** Model Name */
+            model_name: string;
+            /** Num Speculative Tokens */
+            num_speculative_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Pipeline Parallel Size */
+            pipeline_parallel_size?: number | null;
+            /** Raw Command */
+            raw_command?: string | null;
+            /** Raw Results */
+            raw_results?: string | null;
+            /** Speculative Draft Model */
+            speculative_draft_model?: string | null;
+            /** Tensor Parallel Size */
+            tensor_parallel_size?: number | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Updated By */
+            updated_by?: string | null;
+        };
         /** BlockKeyRequest */
         BlockKeyRequest: {
             /** Key */
@@ -21586,7 +22324,7 @@ export interface components {
          * CallTypes
          * @enum {string}
          */
-        CallTypes: "embedding" | "aembedding" | "completion" | "acompletion" | "atext_completion" | "text_completion" | "image_generation" | "aimage_generation" | "image_edit" | "aimage_edit" | "moderation" | "amoderation" | "atranscription" | "transcription" | "aspeech" | "speech" | "rerank" | "arerank" | "search" | "asearch" | "_arealtime" | "_aresponses_websocket" | "create_batch" | "acreate_batch" | "aretrieve_batch" | "retrieve_batch" | "acancel_batch" | "cancel_batch" | "pass_through_endpoint" | "anthropic_messages" | "get_assistants" | "aget_assistants" | "create_assistants" | "acreate_assistants" | "delete_assistant" | "adelete_assistant" | "acreate_thread" | "create_thread" | "aget_thread" | "get_thread" | "a_add_message" | "add_message" | "aget_messages" | "get_messages" | "arun_thread" | "run_thread" | "arun_thread_stream" | "run_thread_stream" | "afile_retrieve" | "file_retrieve" | "afile_delete" | "file_delete" | "afile_list" | "file_list" | "acreate_file" | "create_file" | "afile_content" | "file_content" | "create_fine_tuning_job" | "acreate_fine_tuning_job" | "create_video" | "acreate_video" | "avideo_retrieve" | "video_retrieve" | "avideo_content" | "video_content" | "video_remix" | "avideo_remix" | "video_list" | "avideo_list" | "video_retrieve_job" | "avideo_retrieve_job" | "video_delete" | "avideo_delete" | "video_create_character" | "avideo_create_character" | "video_get_character" | "avideo_get_character" | "video_edit" | "avideo_edit" | "video_extension" | "avideo_extension" | "vector_store_file_create" | "avector_store_file_create" | "vector_store_file_list" | "avector_store_file_list" | "vector_store_file_retrieve" | "avector_store_file_retrieve" | "vector_store_file_content" | "avector_store_file_content" | "vector_store_file_update" | "avector_store_file_update" | "vector_store_file_delete" | "avector_store_file_delete" | "vector_store_create" | "avector_store_create" | "vector_store_search" | "avector_store_search" | "create_container" | "acreate_container" | "list_containers" | "alist_containers" | "retrieve_container" | "aretrieve_container" | "delete_container" | "adelete_container" | "list_container_files" | "alist_container_files" | "upload_container_file" | "aupload_container_file" | "create_sandbox" | "acreate_sandbox" | "delete_sandbox" | "adelete_sandbox" | "run_code" | "arun_code" | "code_interpreter_tool" | "acode_interpreter_tool" | "acancel_fine_tuning_job" | "cancel_fine_tuning_job" | "alist_fine_tuning_jobs" | "list_fine_tuning_jobs" | "aretrieve_fine_tuning_job" | "retrieve_fine_tuning_job" | "responses" | "aresponses" | "alist_input_items" | "llm_passthrough_route" | "allm_passthrough_route" | "generate_content" | "agenerate_content" | "generate_content_stream" | "agenerate_content_stream" | "ocr" | "aocr" | "call_mcp_tool" | "list_mcp_tools" | "asend_message" | "send_message" | "acreate_skill";
+        CallTypes: "embedding" | "aembedding" | "completion" | "acompletion" | "atext_completion" | "text_completion" | "image_generation" | "aimage_generation" | "image_edit" | "aimage_edit" | "moderation" | "amoderation" | "atranscription" | "transcription" | "aspeech" | "speech" | "rerank" | "arerank" | "search" | "asearch" | "decisions" | "adecisions" | "_arealtime" | "_aresponses_websocket" | "create_batch" | "acreate_batch" | "aretrieve_batch" | "retrieve_batch" | "acancel_batch" | "cancel_batch" | "pass_through_endpoint" | "anthropic_messages" | "get_assistants" | "aget_assistants" | "create_assistants" | "acreate_assistants" | "delete_assistant" | "adelete_assistant" | "acreate_thread" | "create_thread" | "aget_thread" | "get_thread" | "a_add_message" | "add_message" | "aget_messages" | "get_messages" | "arun_thread" | "run_thread" | "arun_thread_stream" | "run_thread_stream" | "afile_retrieve" | "file_retrieve" | "afile_delete" | "file_delete" | "afile_list" | "file_list" | "acreate_file" | "create_file" | "afile_content" | "file_content" | "create_fine_tuning_job" | "acreate_fine_tuning_job" | "create_video" | "acreate_video" | "avideo_retrieve" | "video_retrieve" | "avideo_content" | "video_content" | "video_remix" | "avideo_remix" | "video_list" | "avideo_list" | "video_retrieve_job" | "avideo_retrieve_job" | "video_delete" | "avideo_delete" | "video_create_character" | "avideo_create_character" | "video_get_character" | "avideo_get_character" | "video_edit" | "avideo_edit" | "video_extension" | "avideo_extension" | "vector_store_file_create" | "avector_store_file_create" | "vector_store_file_list" | "avector_store_file_list" | "vector_store_file_retrieve" | "avector_store_file_retrieve" | "vector_store_file_content" | "avector_store_file_content" | "vector_store_file_update" | "avector_store_file_update" | "vector_store_file_delete" | "avector_store_file_delete" | "vector_store_create" | "avector_store_create" | "vector_store_search" | "avector_store_search" | "create_container" | "acreate_container" | "list_containers" | "alist_containers" | "retrieve_container" | "aretrieve_container" | "delete_container" | "adelete_container" | "list_container_files" | "alist_container_files" | "upload_container_file" | "aupload_container_file" | "create_sandbox" | "acreate_sandbox" | "delete_sandbox" | "adelete_sandbox" | "run_code" | "arun_code" | "code_interpreter_tool" | "acode_interpreter_tool" | "acancel_fine_tuning_job" | "cancel_fine_tuning_job" | "alist_fine_tuning_jobs" | "list_fine_tuning_jobs" | "aretrieve_fine_tuning_job" | "retrieve_fine_tuning_job" | "responses" | "aresponses" | "alist_input_items" | "llm_passthrough_route" | "allm_passthrough_route" | "generate_content" | "agenerate_content" | "generate_content_stream" | "agenerate_content_stream" | "ocr" | "aocr" | "call_mcp_tool" | "list_mcp_tools" | "asend_message" | "send_message" | "acreate_skill";
         /** CallbackDelete */
         CallbackDelete: {
             /** Callback Name */
@@ -22566,6 +23304,11 @@ export interface components {
              * @description Controls how non-admin users interact with MCP servers in the dashboard. 'restricted' shows only accessible servers, 'view_all' lists every server in read-only mode.
              */
             user_mcp_management_mode?: ("restricted" | "view_all") | null;
+            /**
+             * Vision Fallback Model
+             * @description Fallback model to use when a request contains images but the requested model doesn't support vision. The fallback model must support vision and be available in model_list.
+             */
+            vision_fallback_model?: string | null;
         };
         /** ConfigList */
         ConfigList: {
@@ -23078,6 +23821,11 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** DeleteBenchRunRequest */
+        DeleteBenchRunRequest: {
+            /** Bench Run Id */
+            bench_run_id: string;
+        };
         /**
          * DeleteCustomerRequest
          * @description Delete multiple Customers
@@ -23386,6 +24134,15 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** ErrorStatsResponse */
+        ErrorStatsResponse: {
+            /** Data */
+            data: {
+                [key: string]: unknown;
+            }[];
+            /** Time Bucket Size */
+            time_bucket_size: string;
+        };
         /**
          * Eval
          * @description Represents an evaluation from the OpenAI Evals API
@@ -23430,6 +24187,21 @@ export interface components {
             key_info?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** FailureLogsAnalyticsPaginatedResponse */
+        FailureLogsAnalyticsPaginatedResponse: {
+            /** Data */
+            data: {
+                [key: string]: unknown;
+            }[];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
+            /** Total Pages */
+            total_pages: number;
         };
         /**
          * FallbackCreateRequest
@@ -24384,6 +25156,28 @@ export interface components {
             prompt_injection?: number;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * LeaderboardResponse
+         * @description Response for user leaderboard - returns all users sorted by request count
+         */
+        LeaderboardResponse: {
+            /** Results */
+            results: components["schemas"]["LeaderboardUser"][];
+            /** Total Count */
+            total_count: number;
+        };
+        /**
+         * LeaderboardUser
+         * @description User entry in the leaderboard
+         */
+        LeaderboardUser: {
+            /** Request Count */
+            request_count: number;
+            /** User Email */
+            user_email?: string | null;
+            /** User Id */
+            user_id: string;
         };
         /** ListAccessGroupsResponse */
         ListAccessGroupsResponse: {
@@ -27117,10 +27911,10 @@ export interface components {
         Member: {
             /**
              * Role
-             * @description The role of the user within the team. 'admin' users can manage team settings and members, 'user' is a regular team member
+             * @description The role of the user within the team. 'admin' users can manage team settings and members, 'user' is a regular team member, 'service_account' is a non-human member treated as a non-admin user for permission checks.
              * @enum {string}
              */
-            role: "admin" | "user";
+            role: "admin" | "user" | "service_account";
             /**
              * User Email
              * @description The email address of the user to add. Either user_id or user_email must be provided
@@ -27360,6 +28154,41 @@ export interface components {
              * @constant
              */
             type: "mutualTLS";
+        };
+        /** NewBenchRunRequest */
+        NewBenchRunRequest: {
+            /** Bench Type */
+            bench_type?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Data Parallel Size */
+            data_parallel_size?: number | null;
+            /** Deployment Server */
+            deployment_server?: string | null;
+            /** Input Tokens */
+            input_tokens?: number | null;
+            /** Kv Cache Dtype */
+            kv_cache_dtype?: string | null;
+            /** Max Concurrency */
+            max_concurrency?: number | null;
+            /** Max Num Batched Tokens */
+            max_num_batched_tokens?: number | null;
+            /** Model Name */
+            model_name: string;
+            /** Num Speculative Tokens */
+            num_speculative_tokens?: number | null;
+            /** Output Tokens */
+            output_tokens?: number | null;
+            /** Pipeline Parallel Size */
+            pipeline_parallel_size?: number | null;
+            /** Raw Command */
+            raw_command?: string | null;
+            /** Raw Results */
+            raw_results?: string | null;
+            /** Speculative Draft Model */
+            speculative_draft_model?: string | null;
+            /** Tensor Parallel Size */
+            tensor_parallel_size?: number | null;
         };
         /**
          * NewCustomerRequest
@@ -27941,6 +28770,8 @@ export interface components {
             duration?: string | null;
             /** Guardrails */
             guardrails?: string[] | null;
+            /** Is Service Account */
+            is_service_account?: boolean | null;
             /** Key Alias */
             key_alias?: string | null;
             /** Max Budget */
@@ -27978,9 +28809,13 @@ export interface components {
              * @default []
              */
             models: unknown[] | null;
+            /** Name */
+            name?: string | null;
             object_permission?: components["schemas"]["LiteLLM_ObjectPermissionBase"] | null;
             /** Organizations */
             organizations?: string[] | null;
+            /** Owner Ids */
+            owner_ids?: string[] | null;
             /**
              * Permissions
              * @default {}
@@ -27992,6 +28827,16 @@ export interface components {
             policies?: string[] | null;
             /** Prompts */
             prompts?: string[] | null;
+            /** Public Key */
+            public_key?: string | null;
+            /** Requested Models */
+            requested_models?: string[] | null;
+            /** Requested Parallel Requests Limit */
+            requested_parallel_requests_limit?: number | null;
+            /** Requested Rpm Limit */
+            requested_rpm_limit?: number | null;
+            /** Requester */
+            requester?: string | null;
             /** Rpm Limit */
             rpm_limit?: number | null;
             /** Send Invite Email */
@@ -28009,6 +28854,8 @@ export interface components {
             teams?: string[] | components["schemas"]["NewUserRequestTeam"][] | null;
             /** Tpm Limit */
             tpm_limit?: number | null;
+            /** Use Case */
+            use_case?: string | null;
             /** User Alias */
             user_alias?: string | null;
             /** User Email */
@@ -29538,6 +30385,11 @@ export interface components {
                 [key: string]: unknown;
             } | null;
             /**
+             * Return Token Ids
+             * @default null
+             */
+            return_token_ids: boolean | null;
+            /**
              * Seed
              * @default null
              */
@@ -29892,6 +30744,34 @@ export interface components {
         RejectMCPServerRequest: {
             /** Review Notes */
             review_notes?: string | null;
+        };
+        /**
+         * RejectServiceAccountRequest
+         * @description Reject a creation OR rotation request (litellm branches on SA state).
+         */
+        RejectServiceAccountRequest: {
+            /** Reason */
+            reason?: string | null;
+            /** User Id */
+            user_id: string;
+        };
+        /**
+         * RequestRotationRequest
+         * @description Owner-side: file a key-rotation request for a service account they own.
+         */
+        RequestRotationRequest: {
+            /** Requested By User Id */
+            requested_by_user_id: string;
+            /** User Id */
+            user_id: string;
+        };
+        /** ResetMprRequest */
+        ResetMprRequest: {
+            /**
+             * Api Key
+             * @description The key token (hashed) as shown in the Virtual Keys UI, e.g. the `token` field of a key. A raw `sk-...` key is also accepted and will be hashed server-side.
+             */
+            api_key: string;
         };
         /** ResetSpendRequest */
         ResetSpendRequest: {
@@ -30478,6 +31358,78 @@ export interface components {
             search_provider: string;
             /** Timeout */
             timeout?: number | null;
+        };
+        /**
+         * ServiceAccountKeyInfo
+         * @description A single VerificationToken key owned by a service account user.
+         */
+        ServiceAccountKeyInfo: {
+            /** Blocked */
+            blocked?: boolean | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Expires */
+            expires?: string | null;
+            /** Key Alias */
+            key_alias?: string | null;
+            /** Key Name */
+            key_name?: string | null;
+            /** Spend */
+            spend?: number | null;
+            /** Token */
+            token: string;
+        };
+        /**
+         * ServiceAccountListItem
+         * @description One service account row joined with its keys.
+         */
+        ServiceAccountListItem: {
+            /** Created At */
+            created_at?: string | null;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /**
+             * Is Key Rotation Requested
+             * @default false
+             */
+            is_key_rotation_requested: boolean;
+            /**
+             * Keys
+             * @default []
+             */
+            keys: components["schemas"]["ServiceAccountKeyInfo"][];
+            /** Name */
+            name?: string | null;
+            /**
+             * Owner Ids
+             * @default []
+             */
+            owner_ids: string[];
+            /** Public Key */
+            public_key?: string | null;
+            /**
+             * Requested Models
+             * @default []
+             */
+            requested_models: string[];
+            /** Requested Parallel Requests Limit */
+            requested_parallel_requests_limit?: number | null;
+            /** Requested Rpm Limit */
+            requested_rpm_limit?: number | null;
+            /** Requester */
+            requester?: string | null;
+            /** Use Case */
+            use_case?: string | null;
+            /** User Id */
+            user_id: string;
+        };
+        /** ServiceAccountListResponse */
+        ServiceAccountListResponse: {
+            /** Service Accounts */
+            service_accounts: components["schemas"]["ServiceAccountListItem"][];
         };
         /**
          * Skill
@@ -32681,6 +33633,16 @@ export interface components {
             user_tpm_limit?: number | null;
         };
         /**
+         * UserActiveUsersResponse
+         * @description Response for user-count based active users analytics (not broken down by tag)
+         */
+        UserActiveUsersResponse: {
+            /** Results */
+            results: {
+                [key: string]: unknown;
+            }[];
+        };
+        /**
          * UserHeaderMapping
          * @description Map an incoming HTTP header to a LiteLLM user role.
          */
@@ -33060,6 +34022,8 @@ export interface components {
             db_model: boolean;
             /** Id */
             id: string | null;
+            /** Sticky Weight */
+            sticky_weight?: number | null;
             /** Team Id */
             team_id?: string | null;
             /** Team Public Model Name */
@@ -34414,6 +35378,52 @@ export interface operations {
             };
         };
     };
+    get_audit_logs_audit_logs_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by action: created, updated, deleted */
+                action?: string | null;
+                /** @description Filter by table name */
+                table_name?: string | null;
+                /** @description Filter by object ID */
+                object_id?: string | null;
+                /** @description Filter by user who made the change */
+                changed_by?: string | null;
+                /** @description Start date filter, ISO 8601 */
+                start_date?: string | null;
+                /** @description End date filter, ISO 8601 */
+                end_date?: string | null;
+                /** @description Page number, 1-indexed */
+                page?: number;
+                /** @description Number of records per page */
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_audit_log_by_id_audit__id__get: {
         parameters: {
             query?: never;
@@ -35056,6 +36066,94 @@ export interface operations {
             };
         };
     };
+    delete_bench_run_bench_run_delete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteBenchRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bench_runs_bench_run_list_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BenchRunResponse"][];
+                };
+            };
+        };
+    };
+    new_bench_run_bench_run_new_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewBenchRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BenchRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     delete_budget_budget_delete_post: {
         parameters: {
             query?: never;
@@ -35562,6 +36660,11 @@ export interface operations {
                     response_format?: {
                         [key: string]: unknown;
                     } | null;
+                    /**
+                     * Return Token Ids
+                     * @default null
+                     */
+                    return_token_ids?: boolean | null;
                     /**
                      * Seed
                      * @default null
@@ -36266,6 +37369,195 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ComplianceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    concurrent_request_logs_concurrent_request_logs_get: {
+        parameters: {
+            query: {
+                /** @description Target timestamp in ISO 8601 format (e.g., 2026-03-27T15:30:00.123Z) */
+                timestamp: string;
+                /** @description Optional API key filter (e.g., sk-...gQxg) */
+                api_key?: string | null;
+                /** @description Optional key alias filter (partial match supported) */
+                key_alias?: string | null;
+                /** @description Filter by match status: 'matching', 'mismatching', or null for all */
+                match_status?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    concurrent_request_operation_counts_concurrent_request_logs_operation_counts_get: {
+        parameters: {
+            query: {
+                /** @description Start of the time range (UTC), e.g. '2026-05-20 06:00:00' or ISO 8601 */
+                start_date: string;
+                /** @description End of the time range (UTC), e.g. '2026-05-20 07:00:00' or ISO 8601 */
+                end_date: string;
+                /** @description API key to look up (masked key / full key / hashed token). Provide either this or key_alias, not both. */
+                api_key?: string | null;
+                /** @description Key alias to look up. Provide either this or api_key, not both. */
+                key_alias?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    concurrent_request_rate_limit_hits_concurrent_request_logs_rate_limit_hits_get: {
+        parameters: {
+            query: {
+                /** @description Start of the time range (UTC), e.g. '2026-05-20 06:00:00' or ISO 8601 */
+                start_date: string;
+                /** @description End of the time range (UTC), e.g. '2026-05-20 07:00:00' or ISO 8601 */
+                end_date: string;
+                /** @description API key to look up (raw key or hashed token). Provide either this or key_alias, not both. */
+                api_key?: string | null;
+                /** @description Key alias to look up. Provide either this or api_key, not both. */
+                key_alias?: string | null;
+                /** @description Page number for pagination */
+                page?: number;
+                /** @description Number of items per page */
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_mpr_counter_concurrent_request_logs_reset_mpr_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetMprRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    concurrent_request_timeline_concurrent_request_logs_timeline_get: {
+        parameters: {
+            query: {
+                /** @description Start of the time range (UTC), e.g. '2026-05-22 06:00:00' or ISO 8601 */
+                start_date: string;
+                /** @description End of the time range (UTC), e.g. '2026-05-22 06:30:00' or ISO 8601 */
+                end_date: string;
+                /** @description API key to look up (masked key / full key / hashed token). Provide either this or key_alias, not both. */
+                api_key?: string | null;
+                /** @description Key alias to look up. Provide either this or api_key, not both. */
+                key_alias?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -37951,6 +39243,26 @@ export interface operations {
             };
         };
     };
+    decisions_decisions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     delete_allowed_ip_delete_allowed_ip_post: {
         parameters: {
             query?: never;
@@ -38528,6 +39840,11 @@ export interface operations {
                     response_format?: {
                         [key: string]: unknown;
                     } | null;
+                    /**
+                     * Return Token Ids
+                     * @default null
+                     */
+                    return_token_ids?: boolean | null;
                     /**
                      * Seed
                      * @default null
@@ -43068,6 +44385,7 @@ export interface operations {
         parameters: {
             query?: {
                 litellm_model_id?: string | null;
+                include_experimental?: boolean;
                 /** @description When true, filter to deployments the caller can use via direct access or team membership. */
                 include_team_models?: boolean | null;
                 /** @description Filter models by team ID. Returns models with direct_access=True or teamId in access_via_team_ids */
@@ -43876,6 +45194,11 @@ export interface operations {
                     response_format?: {
                         [key: string]: unknown;
                     } | null;
+                    /**
+                     * Return Token Ids
+                     * @default null
+                     */
+                    return_token_ids?: boolean | null;
                     /**
                      * Seed
                      * @default null
@@ -48392,6 +49715,137 @@ export interface operations {
             };
         };
     };
+    approve_service_account_service_account_approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApproveServiceAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApproveServiceAccountResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_service_accounts_service_account_list_get: {
+        parameters: {
+            query?: {
+                status?: string;
+                owner_user_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServiceAccountListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_service_account_service_account_reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RejectServiceAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_service_account_rotation_service_account_request_rotation_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestRotationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     active_callbacks_settings_get: {
         parameters: {
             query?: never;
@@ -48500,6 +49954,122 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LiteLLM_SpendLogs"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ui_view_error_stats_spend_logs_error_stats_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by api key */
+                api_key?: string | null;
+                /** @description Filter by team_id */
+                team_id?: string | null;
+                /** @description Filter by request_id */
+                request_id?: string | null;
+                /** @description Time from which to start viewing error stats */
+                start_date?: string | null;
+                /** @description Time till which to view error stats */
+                end_date?: string | null;
+                /** @description Filter by user_id */
+                user_id?: string | null;
+                /** @description Filter by end user */
+                end_user?: string | null;
+                /** @description Filter by status (e.g., success, failure) */
+                status_filter?: string | null;
+                /** @description Filter by model */
+                model?: string | null;
+                /** @description Filter by model ID (litellm model deployment id) */
+                model_id?: string | null;
+                /** @description Filter by key alias */
+                key_alias?: string | null;
+                /** @description Filter by error code */
+                error_code?: string | null;
+                /** @description Filter by error message (partial match) */
+                error_message?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorStatsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ui_view_failure_logs_analytics_paginated_spend_logs_failure_logs_analytics_paginated_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by api key */
+                api_key?: string | null;
+                /** @description Filter by team_id */
+                team_id?: string | null;
+                /** @description Filter by request_id */
+                request_id?: string | null;
+                /** @description Time from which to start viewing failure logs */
+                start_date?: string | null;
+                /** @description Time till which to view failure logs */
+                end_date?: string | null;
+                /** @description Filter by user_id */
+                user_id?: string | null;
+                /** @description Filter by end user */
+                end_user?: string | null;
+                /** @description Filter by model */
+                model?: string | null;
+                /** @description Filter by model ID (litellm model deployment id) */
+                model_id?: string | null;
+                /** @description Filter by key alias */
+                key_alias?: string | null;
+                /** @description Filter by error code */
+                error_code?: string | null;
+                /** @description Filter by error message (partial match) */
+                error_message?: string | null;
+                /** @description Comma-separated list of error classes to filter by */
+                error_classes?: string | null;
+                /** @description Page number for pagination */
+                page?: number;
+                /** @description Number of items per page */
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FailureLogsAnalyticsPaginatedResponse"];
                 };
             };
             /** @description Validation Error */
@@ -49065,10 +50635,18 @@ export interface operations {
     get_daily_active_users_tag_dau_get: {
         parameters: {
             query?: {
+                /** @description Start date in YYYY-MM-DD format (defaults to 7 days ago) */
+                start_date?: string | null;
+                /** @description End date in YYYY-MM-DD format (defaults to today) */
+                end_date?: string | null;
                 /** @description Filter by specific tag (optional) */
                 tag_filter?: string | null;
                 /** @description Filter by multiple specific tags (optional, takes precedence over tag_filter) */
                 tag_filters?: string[] | null;
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -49219,10 +50797,16 @@ export interface operations {
     get_monthly_active_users_tag_mau_get: {
         parameters: {
             query?: {
+                /** @description Number of months to show (1-12) */
+                months?: number;
                 /** @description Filter by specific tag (optional) */
                 tag_filter?: string | null;
                 /** @description Filter by multiple specific tags (optional, takes precedence over tag_filter) */
                 tag_filters?: string[] | null;
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -49294,6 +50878,10 @@ export interface operations {
                 tag_filter?: string | null;
                 /** @description Filter by multiple specific tags (optional, takes precedence over tag_filter) */
                 tag_filters?: string[] | null;
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -49399,6 +50987,10 @@ export interface operations {
                 tag_filter?: string | null;
                 /** @description Filter by multiple specific tags (optional, takes precedence over tag_filter) */
                 tag_filters?: string[] | null;
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -50887,6 +52479,44 @@ export interface operations {
             };
         };
     };
+    get_user_leaderboard_user_analytics_leaderboard_get: {
+        parameters: {
+            query?: {
+                /** @description Start date in YYYY-MM-DD format (defaults to 7 days ago) */
+                start_date?: string | null;
+                /** @description End date in YYYY-MM-DD format (defaults to today) */
+                end_date?: string | null;
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaderboardResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     ui_get_available_role_user_available_roles_get: {
         parameters: {
             query?: never;
@@ -51038,6 +52668,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SpendAnalyticsPaginatedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_user_daily_active_users_user_dau_get: {
+        parameters: {
+            query?: {
+                /** @description Start date in YYYY-MM-DD format (defaults to 7 days ago) */
+                start_date?: string | null;
+                /** @description End date in YYYY-MM-DD format (defaults to today) */
+                end_date?: string | null;
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserActiveUsersResponse"];
                 };
             };
             /** @description Validation Error */
@@ -51209,6 +52877,42 @@ export interface operations {
             };
         };
     };
+    get_user_monthly_active_users_user_mau_get: {
+        parameters: {
+            query?: {
+                /** @description Number of months to show (1-12) */
+                months?: number;
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserActiveUsersResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     new_user_user_new_post: {
         parameters: {
             query?: never;
@@ -51262,6 +52966,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    batch_update_user_budgets_user_update_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchUpdateUserBudgetRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BatchUpdateUserBudgetResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_user_weekly_active_users_user_wau_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by custom LLM provider (e.g., 'hosted_vllm') (optional) */
+                custom_llm_provider?: string | null;
+                /** @description Filter by team ID (optional) */
+                team_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserActiveUsersResponse"];
                 };
             };
             /** @description Validation Error */
@@ -52253,6 +54024,11 @@ export interface operations {
                         [key: string]: unknown;
                     } | null;
                     /**
+                     * Return Token Ids
+                     * @default null
+                     */
+                    return_token_ids?: boolean | null;
+                    /**
                      * Seed
                      * @default null
                      */
@@ -52624,6 +54400,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decisions_v1_decisions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
@@ -54567,6 +56363,7 @@ export interface operations {
         parameters: {
             query?: {
                 litellm_model_id?: string | null;
+                include_experimental?: boolean;
                 /** @description When true, filter to deployments the caller can use via direct access or team membership. */
                 include_team_models?: boolean | null;
                 /** @description Filter models by team ID. Returns models with direct_access=True or teamId in access_via_team_ids */

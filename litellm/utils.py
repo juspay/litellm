@@ -968,6 +968,9 @@ def function_setup(
             messages = args[0] if len(args) > 0 else kwargs["prompt"]
         elif call_type == CallTypes.rerank.value or call_type == CallTypes.arerank.value:
             messages = kwargs.get("query")
+        elif call_type in (CallTypes.decisions.value, CallTypes.adecisions.value):
+            decisions_state = args[1] if len(args) > 1 else kwargs.get("state", "")
+            messages = decisions_state if isinstance(decisions_state, str) else json.dumps(decisions_state)
         elif call_type == CallTypes.atranscription.value or call_type == CallTypes.transcription.value:
             _file_obj: FileTypes = args[1] if len(args) > 1 else kwargs["file"]
             # Lazy import audio_utils.utils only when needed for transcription calls

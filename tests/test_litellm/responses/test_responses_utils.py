@@ -19,6 +19,20 @@ from litellm.types.llms.openai import ResponsesAPIOptionalRequestParams
 from litellm.types.utils import Usage
 
 
+@pytest.mark.parametrize("usage_data,expected_output", [
+    ({"input_tokens": 18, "completion_tokens": 7, "thinking_tokens": 0}, 7),
+    ({"input_tokens": 18, "output_tokens": 5, "completion_tokens": 7}, 5),
+])
+def test_extraction_usage_normalization_preserves_source(usage_data, expected_output):
+    original = dict(usage_data)
+    assert ResponseAPILoggingUtils._is_response_api_usage(usage_data)
+    normalized = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(usage_data)
+    assert normalized.prompt_tokens == 18
+    assert normalized.completion_tokens == expected_output
+    assert normalized.total_tokens == 18 + expected_output
+    assert usage_data == original
+
+
 class TestResponsesAPIRequestUtils:
     def test_get_optional_params_responses_api(self):
         """Test that optional parameters are correctly processed for responses API"""

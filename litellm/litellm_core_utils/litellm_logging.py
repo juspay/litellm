@@ -38,11 +38,6 @@ from litellm import (
     turn_off_message_logging,
 )
 from litellm._logging import _is_debugging_on, _redact_string, verbose_logger
-from litellm.litellm_core_utils.core_helpers import _truncate_str, truncate_error_str
-from litellm.exceptions import (
-    validate_rate_limit_category,
-    validate_rate_limit_type,
-)
 from litellm._uuid import uuid
 from litellm.batches.batch_utils import _handle_completed_batch
 from litellm.caching.caching import DualCache, InMemoryCache
@@ -57,6 +52,10 @@ from litellm.cost_calculator import (
     RealtimeAPITokenUsageProcessor,
     _select_model_name_for_cost_calc,
 )
+from litellm.exceptions import (
+    validate_rate_limit_category,
+    validate_rate_limit_type,
+)
 from litellm.integrations.agentops import AgentOps
 from litellm.integrations.anthropic_cache_control_hook import AnthropicCacheControlHook
 from litellm.integrations.arize.arize import ArizeLogger
@@ -65,7 +64,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.deepeval.deepeval import DeepEvalLogger
 from litellm.integrations.mlflow import MlflowLogger
 from litellm.integrations.sqs import SQSLogger
-from litellm.litellm_core_utils.core_helpers import reconstruct_model_name
+from litellm.litellm_core_utils.core_helpers import _truncate_str, reconstruct_model_name, truncate_error_str
 from litellm.litellm_core_utils.get_litellm_params import get_litellm_params
 from litellm.litellm_core_utils.llm_cost_calc.tool_call_cost_tracking import (
     StandardBuiltInToolCostTracking,
@@ -81,6 +80,7 @@ from litellm.llms.base_llm.search.transformation import SearchResponse
 from litellm.responses.utils import ResponseAPILoggingUtils
 from litellm.types.agents import LiteLLMSendMessageResponse
 from litellm.types.containers.main import ContainerObject
+from litellm.types.decisions import DecisionsResponse, ExtractionResponse
 from litellm.types.llms.openai import (
     AllMessageValues,
     Batch,
@@ -203,7 +203,9 @@ try:
         EnterpriseStandardLoggingPayloadSetup
     )
 except Exception as e:
-    verbose_logger.debug(f"[Non-Blocking] Unable to import GenericAPILogger - LiteLLM Enterprise Feature - {truncate_error_str(e)}")
+    verbose_logger.debug(
+        f"[Non-Blocking] Unable to import GenericAPILogger - LiteLLM Enterprise Feature - {truncate_error_str(e)}"
+    )
     GenericAPILogger = CustomLogger  # type: ignore
     ResendEmailLogger = CustomLogger  # type: ignore
     SendGridEmailLogger = CustomLogger  # type: ignore
@@ -1370,6 +1372,8 @@ class Logging(LiteLLMLoggingBaseClass):
             LiteLLMRealtimeStreamLoggingObject,
             OpenAIModerationResponse,
             "SearchResponse",
+            DecisionsResponse,
+            ExtractionResponse,
             dict,
             list,
         ],
@@ -1773,6 +1777,14 @@ class Logging(LiteLLMLoggingBaseClass):
         return payload
 
     def _transform_usage_objects(self, result):
+        if isinstance(result, (ExtractionResponse, DecisionsResponse)) and result.usage is not None:
+            return result.model_copy(
+                update={
+                    "usage": ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(
+                        result.usage.model_dump()
+                    )
+                }
+            )
         if isinstance(result, ResponsesAPIResponse):
             result = result.model_copy()
             transformed_usage = ResponseAPILoggingUtils._transform_response_api_usage_to_chat_usage(result.usage)
@@ -1893,6 +1905,7 @@ class Logging(LiteLLMLoggingBaseClass):
             or isinstance(logging_result, OpenAIModerationResponse)
             or isinstance(logging_result, OCRResponse)  # OCR
             or isinstance(logging_result, SearchResponse)  # Search API
+            or isinstance(logging_result, (DecisionsResponse, ExtractionResponse))
             or isinstance(logging_result, dict)
             and logging_result.get("object") == "vector_store.search_results.page"
             or isinstance(logging_result, dict)
@@ -2363,9 +2376,7 @@ class Logging(LiteLLMLoggingBaseClass):
                 "LiteLLM.LoggingError: [Non-Blocking] Exception occurred while success logging {}".format(str(e)),
             )
 
-    async def async_success_handler(
-        self, result=None, start_time=None, end_time=None, cache_hit=None, **kwargs
-    ):
+    async def async_success_handler(self, result=None, start_time=None, end_time=None, cache_hit=None, **kwargs):
         """
         Public entry point for the async success-callback dispatch.
 
@@ -2739,7 +2750,9 @@ class Logging(LiteLLMLoggingBaseClass):
         self.model_call_details["log_event_type"] = "failed_api_call"
         self.model_call_details["exception"] = exception
         self.model_call_details["traceback_exception"] = (
-            _redact_string(_truncate_str(traceback_exception)) if isinstance(traceback_exception, str) else traceback_exception
+            _redact_string(_truncate_str(traceback_exception))
+            if isinstance(traceback_exception, str)
+            else traceback_exception
         )
         self.model_call_details["end_time"] = end_time
         self.model_call_details.setdefault("original_response", None)

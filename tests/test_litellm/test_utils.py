@@ -693,6 +693,18 @@ def validate_model_cost_values(model_data, exceptions=None):
     return len(violations) == 0, violations
 
 
+@pytest.mark.parametrize(
+    "pricing_file", ["model_prices_and_context_window.json", "litellm/model_prices_and_context_window_backup.json"]
+)
+def test_pricing_files_have_no_duplicate_keys(pricing_file: str) -> None:
+    from collections import Counter
+    from pathlib import Path
+
+    pairs = json.loads((Path(__file__).parents[2] / pricing_file).read_text(), object_pairs_hook=lambda values: values)
+    counts = Counter(key for key, value in pairs)
+    assert {key: count for key, count in counts.items() if count > 1} == {}
+
+
 def test_aaamodel_prices_and_context_window_json_is_valid():
     """
     Validates the `model_prices_and_context_window.json` file.
@@ -797,6 +809,7 @@ def test_aaamodel_prices_and_context_window_json_is_valid():
                         "ocr",
                         "search",
                         "vector_store",
+                        "evaluation",
                     ],
                 },
                 "output_cost_per_audio_token": {"type": "number"},
@@ -4705,5 +4718,3 @@ class TestValidateEnvironmentTencent:
 
         assert result["keys_in_environment"] is False
         assert "TENCENT_API_KEY" in result["missing_keys"]
-
-
