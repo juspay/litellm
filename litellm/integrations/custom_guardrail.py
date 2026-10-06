@@ -988,6 +988,13 @@ class CustomGuardrail(CustomLogger):
         if call_type is None or data is None:
             return None
 
+        if call_type in (CallTypes.decisions.value, CallTypes.adecisions.value):
+            from litellm.llms.strands_decider.decisions.guardrail_translation.handler import (
+                decisions_guardrail_messages,
+            )
+
+            return decisions_guardrail_messages(data)
+
         #########################################################
         # /chat/completions
         # /messages

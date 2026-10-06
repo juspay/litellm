@@ -8,6 +8,7 @@ from typing import Final
 
 import pytest
 import respx
+import httpx
 
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
@@ -555,6 +556,62 @@ def test_upstream_bad_request_maps_to_litellm_error(respx_mock: respx.MockRouter
             questions={"is_defect": {"type": "noul", "instructions": "Is this a defect?"}},
             api_key="caller-key",
         )
+
+
+@pytest.mark.parametrize("provider", ("strands_decider", "typesafe", "cloudflare", "perplexity", "openrouter"))
+@pytest.mark.parametrize("status", (400, 401, 403, 404, 422, 429, 500, 503))
+@pytest.mark.asyncio
+async def test_decisions_preserves_upstream_status_and_retry_headers(
+    provider: str, status: int, respx_mock: respx.MockRouter
+) -> None:
+    upstream = respx_mock.route().mock(
+        return_value=httpx.Response(status, json={"error": "fixture"}, headers={"retry-after": "3"})
+    )
+    with pytest.raises(Exception) as caught:
+        await litellm.adecisions(
+            model=f"{provider}/fixture",
+            api_base="https://fixture.example",
+            api_key="fixture",
+            state="review",
+            questions={"q": {"type": "noul", "instructions": "Is this a defect?"}},
+        )
+    assert caught.value.status_code == status
+    assert upstream.call_count == 1
+    if status == 429:
+        assert isinstance(caught.value, litellm.RateLimitError)
+        assert caught.value.response.headers["retry-after"] == "3"
+
+
+@pytest.mark.parametrize("path", ("/v1/systemone", "/v1/generate"))
+def test_strands_decider_accepts_full_endpoint(path: str, respx_mock: respx.MockRouter) -> None:
+    upstream = respx_mock.post("https://xor.example" + path).respond(json=_EXTRACTION_RESPONSE)
+    response = litellm.decisions(
+        model="strands_decider/jev-trained",
+        api_base="https://xor.example" + path,
+        context="A paper by Example Author",
+        questions={"author": {"type": "string", "instructions": "Who wrote it?"}},
+    )
+    assert response.model_dump() == _EXTRACTION_RESPONSE
+    assert upstream.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_router_does_not_retry_upstream_bad_requests(respx_mock: respx.MockRouter) -> None:
+    upstream = respx_mock.post("https://xor.example/v1/systemone").respond(status_code=400, json={"error": "fixture"})
+    router = litellm.Router(
+        num_retries=2,
+        model_list=[
+            {
+                "model_name": "xor",
+                "litellm_params": {"model": "strands_decider/jev-trained", "api_base": "https://xor.example"},
+            }
+        ],
+    )
+    with pytest.raises(litellm.BadRequestError):
+        await router.adecisions(
+            model="xor", state="review", questions={"q": {"type": "noul", "instructions": "Review?"}}
+        )
+    assert upstream.call_count == 1
 
 
 def test_server_key_is_sent_to_an_explicit_api_base(

@@ -947,6 +947,8 @@ def _infer_call_type(call_type: Optional[CallTypesLiteral], completion_response:
         return "text_completion"
     elif isinstance(completion_response, LiteLLMSendMessageResponse):
         return "send_message"
+    elif isinstance(completion_response, (DecisionsResponse, ExtractionResponse)):
+        return "decisions"
 
     return call_type
 

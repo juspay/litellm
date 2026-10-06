@@ -24,6 +24,7 @@ from litellm.types.decisions import (
     DecisionsResult,
 )
 from litellm.types.utils import LlmProviders
+from litellm.types.router import CustomPricingLiteLLMParams
 from litellm.utils import client
 
 DECISIONS_ENDPOINTS: Final[Mapping[str, DecisionsProviderConfig]] = MappingProxyType(
@@ -39,6 +40,8 @@ DECISIONS_ENDPOINTS: Final[Mapping[str, DecisionsProviderConfig]] = MappingProxy
 _DECISIONS_REQUEST_ADAPTER: Final[TypeAdapter[DecisionsRequest]] = TypeAdapter(DecisionsRequest)
 _DECISIONS_PAYLOAD_ADAPTER: Final[TypeAdapter[object]] = TypeAdapter(object)
 _DECISIONS_RESPONSE_ADAPTER: Final[TypeAdapter[DecisionsResult]] = TypeAdapter(DecisionsResult)
+_PRICING_PARAMS_ADAPTER: Final = TypeAdapter(CustomPricingLiteLLMParams)
+_PRICING_MAPPING_ADAPTER: Final[TypeAdapter[Mapping[str, object]]] = TypeAdapter(Mapping[str, object])
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -195,6 +198,9 @@ def _log_request(
         model=prepared.upstream_model,
         litellm_params={
             **logging_obj.litellm_params,
+            **_PRICING_MAPPING_ADAPTER.validate_python(
+                _PRICING_PARAMS_ADAPTER.validate_python(kwargs).model_dump(exclude_none=True)
+            ),
             "litellm_call_id": kwargs.get("litellm_call_id"),
             "api_base": prepared.url,
         },
@@ -233,6 +239,46 @@ def _parse_response(
 
 
 def _map_upstream_exception(error: Exception, prepared: _PreparedDecisionsRequest) -> Exception:
+    if isinstance(error, httpx.HTTPStatusError):
+        model: Final = f"{prepared.provider}/{prepared.upstream_model}"
+        message: Final = f"Decisions upstream returned HTTP {error.response.status_code}: {error.response.text}"
+        match error.response.status_code:
+            case 400:
+                return litellm.BadRequestError(
+                    message, model=model, llm_provider=prepared.provider, response=error.response
+                )
+            case 422:
+                return litellm.UnprocessableEntityError(
+                    message, model=model, llm_provider=prepared.provider, response=error.response
+                )
+            case 401:
+                return litellm.AuthenticationError(
+                    message, model=model, llm_provider=prepared.provider, response=error.response
+                )
+            case 403:
+                return litellm.PermissionDeniedError(
+                    message, model=model, llm_provider=prepared.provider, response=error.response
+                )
+            case 404:
+                return litellm.NotFoundError(
+                    message, model=model, llm_provider=prepared.provider, response=error.response
+                )
+            case 429:
+                return litellm.RateLimitError(
+                    message, model=model, llm_provider=prepared.provider, response=error.response
+                )
+            case 503:
+                return litellm.ServiceUnavailableError(
+                    message, model=model, llm_provider=prepared.provider, response=error.response
+                )
+            case _:
+                return litellm.APIError(
+                    error.response.status_code,
+                    message,
+                    model=model,
+                    llm_provider=prepared.provider,
+                    request=error.request,
+                )
     return litellm.exception_type(
         model=f"{prepared.provider}/{prepared.upstream_model}",
         custom_llm_provider=prepared.provider,

@@ -9,6 +9,7 @@ class JevCompatibleDecisionsEndpoint:
     api_key_env: tuple[str, ...]
     api_base_env: str
     api_key_required: bool = True
+    alternate_paths: tuple[str, ...] = ()
 
     def default_api_base(self) -> str | None:
         return self.default_api_base_value
@@ -23,6 +24,8 @@ class JevCompatibleDecisionsEndpoint:
         return model
 
     def endpoint_url(self, api_base: str, model: str) -> str:
+        if api_base.rstrip("/").endswith((self.path, *self.alternate_paths)):
+            return api_base.rstrip("/")
         return f"{api_base.rstrip('/').removesuffix('/v1')}{self.path}"
 
     def unwrap_response(self, payload: object) -> object:

@@ -75,6 +75,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
                     "litellm_params": {
                         "model": "strands_decider/jev-trained",
                         "api_base": "https://xor.example/v1",
+                        "input_cost_per_token": 0.000001,
+                        "output_cost_per_token": 0.000002,
                     },
                     "model_info": {"mode": "evaluation"},
                 },
@@ -334,6 +336,13 @@ def test_proxy_decisions_dispatches_strands_decider(
         "questions": {"is_defect": {"type": "noul", "instructions": "Is this a defect?"}},
     }
     assert "authorization" not in upstream.calls[0].request.headers
+
+
+def test_proxy_precreated_logger_uses_deployment_prices(client: TestClient, respx_mock: respx.MockRouter) -> None:
+    respx_mock.post("https://xor.example/v1/systemone").respond(json=_RESPONSE)
+    response = client.post("/v1/decisions", json={**_REQUEST, "model": "xor"})
+    assert response.status_code == 200, response.text
+    assert float(response.headers["x-litellm-response-cost"]) == pytest.approx(0.000373)
 
 
 def test_proxy_decisions_without_model_uses_the_proxy_default_model(

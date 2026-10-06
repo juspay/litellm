@@ -21,6 +21,8 @@ general_settings:
 
 Set `XOR_API_BASE` to the wrapper's origin, such as `http://localhost:8000`, or its `/v1` base. The adapter appends `/v1/systemone`. Set `litellm_params.api_key` if the wrapper requires authentication. Configure input/output pricing explicitly if infrastructure cost should appear in spend accounting; the provider name does not supply a price for a custom model.
 
+For an extraction deployment, `api_base` can be the complete `/v1/generate` URL. Complete `/v1/systemone` URLs are also accepted without appending the path again. Keep classification and extraction deployments as separate aliases when their upstream endpoints differ.
+
 Grant the team's and virtual key's normal model permissions access to `xor`. Multiple deployments with `model_name: xor` use the normal Router selection and fallback pipeline.
 
 ## Call Decisions
@@ -51,6 +53,10 @@ The alternative `value` question used by voice clients accepts an optional `patt
 Extraction `usage.completion_tokens` is normalized internally as output tokens for cost, logging and TPM accounting, while the original usage fields remain in the public response. `thinking_tokens` is preserved separately and is not added again to the reported completion count. Confirm the upstream's completion/reasoning accounting convention before enabling nonzero-thinking workloads.
 
 Audio and extraction require a capable upstream; this extension does not add those capabilities to third-party providers. Mixed extraction/classification inference is not verified and remains upstream-dependent. Legacy pass-through routes are unaffected.
+
+Decisions-aware unified guardrails scan the JSON containing `state`, `context`, and `questions`, including instructions and criteria. Sanitized JSON is validated before forwarding. Image references are supplied to image-aware guardrails. Extraction and classification output guardrails scan the response JSON while preserving original usage and billing metadata. Message-based guardrails also receive the Decisions text fields. Text guardrails cannot inspect audio: a guarded audio request is rejected explicitly rather than silently bypassing the policy. Unguarded audio requests remain supported.
+
+Upstream error statuses are preserved, including authentication errors and rate limits with `Retry-After`. Router retry/fallback policy operates on those errors rather than treating every upstream rejection as a connection failure.
 
 Both `POST /v1/decisions` and `POST /decisions` use virtual-key authentication, model routing, request hooks, usage logging and configured pricing. The SDK exposes `litellm.decisions` and `litellm.adecisions` with the same optional `images` parameter.
 
