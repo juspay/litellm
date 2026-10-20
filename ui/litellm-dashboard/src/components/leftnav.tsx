@@ -210,6 +210,17 @@ const menuGroups: MenuGroup[] = [
         label: "Usage",
       },
       {
+        key: "analytics",
+        page: "analytics",
+        icon: <LineChartOutlined />,
+        roles: [...all_admin_roles, ...internalUserRoles],
+        label: (
+          <span className="flex items-center gap-2">
+            Analytics <NewBadge />
+          </span>
+        ),
+      },
+      {
         key: "logs",
         page: "logs",
         label: "Logs",

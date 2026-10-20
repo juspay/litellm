@@ -20,6 +20,7 @@ export const pageDescriptions: Record<string, string> = {
   "tool-policies": "Configure tool use policies and permissions",
   "vector-stores": "Manage vector databases for embeddings",
   new_usage: "View usage analytics and metrics",
+  analytics: "Analytics wallboard: tokens, spend, and top models at a glance",
   logs: "Access request and response logs",
   "guardrails-monitor": "Monitor guardrail performance and view logs",
   users: "Manage internal user accounts and permissions",

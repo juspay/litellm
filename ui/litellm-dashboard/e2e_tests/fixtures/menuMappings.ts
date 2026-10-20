@@ -10,6 +10,7 @@ export const menuLabelToPage: Record<string, Page> = {
   Models: Page.Models,
   "Models + Endpoints": Page.Models,
   Usage: Page.NewUsage,
+  Analytics: Page.Analytics,
   Teams: Page.Teams,
   "Internal Users": Page.Users,
   "Internal User": Page.Users, // Legacy label support

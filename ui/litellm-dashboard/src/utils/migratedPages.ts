@@ -43,6 +43,7 @@ export const MIGRATED_PAGES: Record<string, string> = {
   "model-hub-table": "model-hub-table",
   // The modern usage dashboard; the legacy ?page=usage report routes to /old-usage.
   new_usage: "usage",
+  analytics: "analytics",
   usage: "old-usage",
   agents: "agents",
   "router-settings": "router-settings",

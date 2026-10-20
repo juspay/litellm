@@ -76,6 +76,7 @@ describe("Sidebar (leftnav)", () => {
       "Policies",
       "Tools",
       "Usage",
+      "Analytics",
       "Logs",
       "Guardrails Monitor",
       "Teams",

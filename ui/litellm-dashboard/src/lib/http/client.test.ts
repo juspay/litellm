@@ -14,7 +14,7 @@ const rawErrorResponse = (status: number, text: string): Response =>
 
 describe("createApiClient", () => {
   it("builds the URL from base + path + query and sets the auth + JSON headers", async () => {
-    const fetchImpl = vi.fn(async () => okResponse({ ok: true }));
+    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse({ ok: true }));
     const client = createApiClient({
       getBaseUrl: () => "https://proxy.example",
       getAuthHeaderName: () => "x-litellm-key",
@@ -28,22 +28,22 @@ describe("createApiClient", () => {
     const [url, init] = fetchImpl.mock.calls[0];
     expect(url).toBe("https://proxy.example/models?team=t1&page=2");
     expect(init).toMatchObject({ method: "GET" });
-    expect(init.headers).toEqual({
+    expect(init?.headers).toEqual({
       "Content-Type": "application/json",
       "x-litellm-key": "Bearer sk-123",
     });
-    expect(init.body).toBeUndefined();
+    expect(init?.body).toBeUndefined();
   });
 
   it("JSON-serializes the body for writes", async () => {
-    const fetchImpl = vi.fn(async () => okResponse({}));
+    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse({}));
     const client = createApiClient({ getBaseUrl: () => "", fetchImpl });
 
     await client.post("/model/new", { accessToken: "sk", body: { model_name: "gpt" } });
 
     const [, init] = fetchImpl.mock.calls[0];
-    expect(init.method).toBe("POST");
-    expect(init.body).toBe(JSON.stringify({ model_name: "gpt" }));
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ model_name: "gpt" }));
   });
 
   it("throws ApiError with the derived message and invokes onError on a non-2xx response", async () => {
@@ -77,13 +77,13 @@ describe("createApiClient", () => {
   });
 
   it("omits the auth header when no token is provided", async () => {
-    const fetchImpl = vi.fn(async () => okResponse({}));
+    const fetchImpl = vi.fn<typeof fetch>(async () => okResponse({}));
     const client = createApiClient({ getBaseUrl: () => "", getAuthHeaderName: () => "Authorization", fetchImpl });
 
     await client.get("/public/info");
 
     const [, init] = fetchImpl.mock.calls[0];
-    expect(init.headers).toEqual({ "Content-Type": "application/json" });
+    expect(init?.headers).toEqual({ "Content-Type": "application/json" });
   });
 
   it("resolves the global fetch per call, so a swap after construction takes effect", async () => {
