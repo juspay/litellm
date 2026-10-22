@@ -37,6 +37,9 @@ USER root
 COPY --from=uvbin /uv /usr/local/bin/uv
 COPY --from=uvbin /uvx /usr/local/bin/uvx
 
+# ca-certificates: eMudra remediation — drop emSign ECC Root CA - G3 / AAA
+# Certificate Services from the system bundle (>=20260909-r3).
+# nodejs>=26.12.1: patched Node TLS trust (Prisma CLI makes outbound TLS).
 RUN apk add --no-cache \
     bash \
     gcc \
@@ -45,7 +48,8 @@ RUN apk add --no-cache \
     rust \
     openssl \
     openssl-dev \
-    nodejs \
+    'ca-certificates>=20260909-r3' \
+    'nodejs>=26.12.1' \
     npm \
     libsndfile
 
@@ -96,8 +100,16 @@ FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 USER root
 
-# node (without npm) is required by the prisma CLI at runtime
-RUN apk add --no-cache bash openssl tzdata nodejs python3 libsndfile
+# node (without npm) is required by the prisma CLI at runtime.
+# ca-certificates / nodejs floors: eMudra CA remediation (emSign G3 / AAA roots).
+RUN apk add --no-cache \
+    bash \
+    openssl \
+    tzdata \
+    'ca-certificates>=20260909-r3' \
+    'nodejs>=26.12.1' \
+    python3 \
+    libsndfile
 
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}"

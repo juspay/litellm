@@ -34,8 +34,9 @@ COPY --from=uvbin /uv /uvx /usr/local/bin/
 # nodejs/npm so `prisma generate` uses Wolfi's Node via PRISMA_USE_GLOBAL_NODE
 # instead of nodeenv downloading one whose dynamic deps may not be in Wolfi
 # (e.g. Node 26.2.0 needs libatomic). Retry for transient apk.cgr.dev flakes.
+# ca-certificates / nodejs floors: eMudra CA remediation (emSign G3 / AAA roots).
 RUN for i in 1 2 3; do \
-      apk add --no-cache bash gcc python3 python3-dev openssl openssl-dev libsndfile nodejs npm && break; \
+      apk add --no-cache bash gcc python3 python3-dev openssl openssl-dev libsndfile 'ca-certificates>=20260909-r3' 'nodejs>=26.12.1' npm && break; \
       [ $i = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
       sleep 5; \
     done
@@ -86,8 +87,9 @@ FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
 USER root
 
+# ca-certificates floor: eMudra CA remediation (emSign G3 / AAA roots).
 RUN for i in 1 2 3; do \
-      apk add --no-cache bash openssl tzdata python3 libsndfile libatomic && break; \
+      apk add --no-cache bash openssl tzdata python3 libsndfile libatomic 'ca-certificates>=20260909-r3' && break; \
       [ $i = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
       sleep 5; \
     done
