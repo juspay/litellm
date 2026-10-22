@@ -35,6 +35,7 @@ USER root
 COPY --from=uvbin /uv /usr/local/bin/uv
 COPY --from=uvbin /uvx /usr/local/bin/uvx
 
+# ca-certificates / nodejs floors: eMudra CA remediation (emSign G3 / AAA roots).
 RUN for i in 1 2 3; do \
       apk add --no-cache \
         python3 \
@@ -46,7 +47,8 @@ RUN for i in 1 2 3; do \
         curl \
         openssl \
         libsndfile \
-        nodejs \
+        'ca-certificates>=20260909-r3' \
+        'nodejs>=26.12.1' \
         npm && break || sleep 5; \
     done
 
@@ -120,7 +122,14 @@ RUN for i in 1 2 3; do \
       apk upgrade --no-cache && break || sleep 5; \
     done && \
     for i in 1 2 3; do \
-      apk add --no-cache python3 bash openssl tzdata libsndfile nodejs && break || sleep 5; \
+      apk add --no-cache \
+        python3 \
+        bash \
+        openssl \
+        tzdata \
+        libsndfile \
+        'ca-certificates>=20260909-r3' \
+        'nodejs>=26.12.1' && break || sleep 5; \
     done
 
 # Copy only what runtime needs. The application is installed inside the venv;
