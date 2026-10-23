@@ -404,6 +404,135 @@ def test_virtual_key_llm_api_routes_rejects_mcp_multi_segment_admin_subpaths(
 
 
 @pytest.mark.parametrize(
+    "route",
+    [
+        "/v1/models",
+        "/models",
+        "/v1/model/info",
+        "/model/info",
+    ],
+)
+def test_virtual_key_llm_api_routes_allows_model_discovery_routes(route):
+    """Virtual keys with allowed_routes=["llm_api_routes"] ("AI APIs" key_type)
+    must be able to list models and fetch model info.
+
+    `/v1/model/info` and `/model/info` are only in `info_routes`, so this used to
+    403 for llm_api-scoped keys even though `/v1/models` worked. The carve-out
+    lives in `is_virtual_key_allowed_to_call_route` — see
+    `_LLM_API_KEY_MODEL_DISCOVERY_ROUTES`.
+    """
+
+    valid_token = UserAPIKeyAuth(
+        user_id="test_user",
+        allowed_routes=["llm_api_routes"],
+    )
+
+    result = RouteChecks.is_virtual_key_allowed_to_call_route(
+        route=route,
+        valid_token=valid_token,
+        request=_mock_request("GET"),
+    )
+
+    assert result is True
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        # Out of scope: other model-info variants stay info_routes-only.
+        "/v2/model/info",
+        "/model_group/info",
+        # Sub-resource lookups are not the discovery listing routes.
+        "/v1/models/gpt-4",
+    ],
+)
+def test_virtual_key_llm_api_routes_rejects_non_discovery_model_routes(route):
+    """Only the four named discovery routes are carved out — not every
+    /models/* or /model/* path."""
+
+    valid_token = UserAPIKeyAuth(
+        user_id="test_user",
+        allowed_routes=["llm_api_routes"],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks.is_virtual_key_allowed_to_call_route(
+            route=route,
+            valid_token=valid_token,
+            request=_mock_request("GET"),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/v1/model/info",
+        "/model/info",
+    ],
+)
+def test_model_info_routes_are_not_llm_api_routes(route):
+    """Regression guard: the model-discovery carve-out must NOT make
+    `/v1/model/info` / `/model/info` count as llm_api routes.
+
+    `is_llm_api_route() == True` would let `DISABLE_LLM_API_ENDPOINTS` block
+    these on admin nodes (they are not in `LLM_API_EXEMPT_ROUTES`) and would
+    change PROXY_ADMIN_VIEW_ONLY handling in
+    `_check_proxy_admin_viewer_access`, which 403s llm_api routes.
+
+    (`/v1/models` and `/models` already were llm_api routes via `openai_routes`
+    before this change; that is pre-existing and stays.)
+    """
+
+    assert RouteChecks.is_llm_api_route(route=route) is False
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        # /v1/models + /models are also in info_routes already.
+        "/v1/models",
+        "/models",
+        "/v1/model/info",
+        "/model/info",
+    ],
+)
+def test_model_discovery_routes_stay_info_routes(route):
+    """The carve-out must not remove these from info_routes — read_only keys
+    and info_routes-scoped virtual keys keep their existing access."""
+
+    assert RouteChecks.is_info_route(route=route) is True
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/v1/model/info",
+        "/v1/models",
+    ],
+)
+def test_virtual_key_management_routes_rejects_v1_model_routes(route):
+    """management-scoped keys are unchanged: /model/info is already in
+    management_routes, but the v1 variants and /v1/models stay unreachable
+    for them (the carve-out is scoped to llm_api_routes)."""
+
+    valid_token = UserAPIKeyAuth(
+        user_id="test_user",
+        allowed_routes=["management_routes"],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks.is_virtual_key_allowed_to_call_route(
+            route=route,
+            valid_token=valid_token,
+            request=_mock_request("GET"),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize(
     "route, method",
     [
         ("/mcp", "POST"),

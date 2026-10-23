@@ -60,6 +60,28 @@ _PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES = ("/regenerate", "/reset_spend")
 
 _AUTH_ENFORCED_PASS_THROUGH_ROUTE_GROUPS = frozenset(("openai_routes", "llm_api_routes"))
 
+# Read-only model discovery routes virtual keys scoped to `llm_api_routes`
+# (the "AI APIs" key_type preset) may call. `/v1/models` and `/models` are
+# already in `openai_routes`, but `/v1/model/info` and `/model/info` live only
+# in `info_routes`, so `allowed_routes=["llm_api_routes"]` used to 403 on them.
+#
+# Deliberately NOT added to `openai_routes`/`llm_api_routes`: `is_llm_api_route()`
+# would then start matching them, which would let `DISABLE_LLM_API_ENDPOINTS`
+# block them on admin nodes (they are not in `LLM_API_EXEMPT_ROUTES`) and change
+# PROXY_ADMIN_VIEW_ONLY handling in `_check_proxy_admin_viewer_access`. The
+# carve-out is scoped to the virtual-key `allowed_routes` check only.
+#
+# No method filter needed (unlike the MCP server discovery carve-out below):
+# these paths only have GET handlers, with no write variants sharing the prefix.
+_LLM_API_KEY_MODEL_DISCOVERY_ROUTES = frozenset(
+    {
+        "/v1/models",
+        "/models",
+        "/v1/model/info",
+        "/model/info",
+    }
+)
+
 
 class RouteChecks:
     @staticmethod
@@ -134,6 +156,12 @@ class RouteChecks:
                     #  For llm_api_routes, also check registered pass-through endpoints
                     ################################################
                     if allowed_route == "llm_api_routes":
+                        # Read-only model discovery carve-out: "AI APIs" keys can
+                        # list models and fetch model info. Scoped to this
+                        # virtual-key check — see `_LLM_API_KEY_MODEL_DISCOVERY_ROUTES`.
+                        if route in _LLM_API_KEY_MODEL_DISCOVERY_ROUTES:
+                            return True
+
                         from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
                             InitPassThroughEndpointHelpers,
                         )
