@@ -426,7 +426,7 @@ export function KeyEditView({
                   <div style={{ padding: "4px 0" }}>
                     <div style={{ fontWeight: 500 }}>AI APIs</div>
                     <div style={{ fontSize: "11px", color: "#6b7280", marginTop: "2px" }}>
-                      Can call only AI API routes (chat/completions, embeddings, etc.)
+                      Can call AI API routes (chat/completions, embeddings, etc.) and list models via /v1/models + /v1/model/info
                     </div>
                   </div>
                 </Select.Option>

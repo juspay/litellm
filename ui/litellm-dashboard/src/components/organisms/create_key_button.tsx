@@ -994,7 +994,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                     <div style={{ padding: "4px 0" }}>
                       <Typography.Text strong>AI APIs</Typography.Text>
                       <Typography.Paragraph type="secondary" style={{ fontSize: 11, margin: "2px 0 0" }}>
-                        Can call only AI API routes (chat/completions, embeddings, etc.)
+                        Can call AI API routes (chat/completions, embeddings, etc.) and list models via /v1/models + /v1/model/info
                       </Typography.Paragraph>
                     </div>
                   </Option>
