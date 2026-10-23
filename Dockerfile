@@ -53,6 +53,14 @@ RUN apk add --no-cache \
     npm \
     libsndfile
 
+# eMudra / emSign G3 advisory: the ca-certificates version number is not a
+# trustworthy signal on Wolfi (20260909-r3 shipped a stale bundle still
+# anchoring emSign ECC Root CA - G3). Strip distrusted roots by content and
+# fail the build if any survive. Must run BEFORE the TLS downloads below
+# (uv sync, prisma, npm). Self-verifying — see docker/strip_distrusted_cas.py.
+COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
+RUN python3 /usr/local/bin/strip_distrusted_cas.py
+
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
     PATH="/app/.venv/bin:${PATH}"
@@ -91,6 +99,11 @@ RUN uv sync --frozen --no-default-groups --no-editable \
     --python python3.13
 
 RUN prisma generate --schema=./schema.prisma
+
+# eMudra / emSign G3: second pass after uv sync + prisma, so vendored bundles
+# (botocore/cacert.pem ships AAA Certificate Services) in the venv are covered.
+COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
+RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
 RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh && \
     sed -i 's/\r$//' docker/prod_entrypoint.sh && chmod +x docker/prod_entrypoint.sh
@@ -133,6 +146,12 @@ COPY --from=builder /app/enterprise /app/enterprise
 # on the runtime sys.path).
 COPY --from=builder /root/.cache/prisma /root/.cache/prisma
 COPY --from=builder /root/.cache/prisma-python /root/.cache/prisma-python
+
+# eMudra / emSign G3: re-run now that the venv is present, so vendored bundles
+# (botocore/cacert.pem still ships AAA Certificate Services) get stripped too.
+# Self-verifying — fails the build if any distrusted root survives anywhere.
+COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
+RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
 RUN find /app/.venv -type f -path "*/tornado/test/*" -delete && \
     find /app/.venv -type d -path "*/tornado/test" -delete
