@@ -30,6 +30,7 @@ from litellm._uuid import uuid
 from litellm.litellm_core_utils.model_response_utils import (
     is_model_response_stream_empty,
 )
+from litellm.litellm_core_utils.asyncify import asyncify
 from litellm.litellm_core_utils.redact_messages import LiteLLMLoggingObject
 from litellm.litellm_core_utils.thread_pool_executor import executor
 from litellm.types.llms.openai import OpenAIChatCompletionChunk
@@ -1686,6 +1687,51 @@ class CustomStreamWrapper:
             model_response.choices[0].finish_reason = "tool_calls"
         return model_response
 
+    # Mirrors BerriAI/litellm main (`_build_complete_streaming_response` /
+    # `_async_build_complete_streaming_response`) so a future sync takes their
+    # version instead of reconciling a one-off wrapper. ``stream_chunk_builder``
+    # is synchronous CPU work (multi-pass chunk scans, usage accumulation, token
+    # counting) — prod py-spy captures on 2026-10-23 showed it holding the GIL
+    # on the event loop inside ``__anext__`` and tripping liveness probes.
+    def _builder_failure_response(self, error: Exception) -> Optional[ModelResponse]:
+        """
+        stream_chunk_builder can re-raise (as APIError) on large agentic streams.
+        A raise that escapes the end-of-stream handler drops the request from
+        SpendLogs, so recover best-effort usage from the raw chunks instead.
+        """
+        verbose_logger.warning(
+            "stream_chunk_builder raised at end-of-stream (%s); logging best-effort usage from chunks.",
+            str(error),
+        )
+        try:
+            return self.model_response_creator(
+                chunk={"usage": calculate_total_usage(chunks=self.chunks)}
+            )
+        except Exception:
+            return None
+
+    def _build_complete_streaming_response(self) -> Optional[ModelResponse]:
+        try:
+            return litellm.stream_chunk_builder(
+                chunks=self.chunks,
+                messages=self.messages,
+                logging_obj=self.logging_obj,
+            )
+        except Exception as e:
+            return self._builder_failure_response(e)
+
+    async def _async_build_complete_streaming_response(self) -> Optional[ModelResponse]:
+        try:
+            # asyncify runs the builder on a worker thread (anyio.to_thread),
+            # keeping the event loop free for health checks and other requests.
+            return await asyncify(litellm.stream_chunk_builder)(
+                chunks=self.chunks,
+                messages=self.messages,
+                logging_obj=self.logging_obj,
+            )
+        except Exception as e:
+            return self._builder_failure_response(e)
+
     def __next__(self) -> "ModelResponseStream":
         cache_hit = False
         if self.custom_llm_provider is not None and self.custom_llm_provider == "cached_response":
@@ -1764,28 +1810,8 @@ class CustomStreamWrapper:
 
         except StopIteration:
             if self.sent_last_chunk is True:
-                try:
-                    complete_streaming_response = litellm.stream_chunk_builder(
-                        chunks=self.chunks,
-                        messages=self.messages,
-                        logging_obj=self.logging_obj,
-                    )
-                except Exception as e:
-                    # stream_chunk_builder can re-raise (as APIError) on large agentic
-                    # streams. The raise originates inside this except-StopIteration block,
-                    # so the sibling `except Exception` below does not catch it; it would
-                    # escape __next__ and drop the request from SpendLogs. Recover
-                    # best-effort usage from the raw chunks so cost is still tracked
-                    verbose_logger.warning(
-                        "stream_chunk_builder raised at end-of-stream (%s); logging best-effort usage from chunks.",
-                        str(e),
-                    )
-                    try:
-                        complete_streaming_response = self.model_response_creator(
-                            chunk={"usage": calculate_total_usage(chunks=self.chunks)}
-                        )
-                    except Exception:
-                        complete_streaming_response = None
+                # log the final chunk with accurate streaming values
+                complete_streaming_response = self._build_complete_streaming_response()
 
                 response = self.model_response_creator()
                 if complete_streaming_response is not None:
@@ -1976,26 +2002,7 @@ class CustomStreamWrapper:
         except (StopAsyncIteration, StopIteration):
             if self.sent_last_chunk is True:
                 # log the final chunk with accurate streaming values
-                try:
-                    complete_streaming_response = litellm.stream_chunk_builder(
-                        chunks=self.chunks,
-                        messages=self.messages,
-                        logging_obj=self.logging_obj,
-                    )
-                except Exception as e:
-                    # see sync __next__: a raise from stream_chunk_builder inside this
-                    # except handler escapes __anext__ and drops the request from SpendLogs.
-                    # Recover best-effort usage from the raw chunks so cost is still tracked
-                    verbose_logger.warning(
-                        "stream_chunk_builder raised at end-of-stream (%s); logging best-effort usage from chunks.",
-                        str(e),
-                    )
-                    try:
-                        complete_streaming_response = self.model_response_creator(
-                            chunk={"usage": calculate_total_usage(chunks=self.chunks)}
-                        )
-                    except Exception:
-                        complete_streaming_response = None
+                complete_streaming_response = await self._async_build_complete_streaming_response()
 
                 response = self.model_response_creator()
                 if complete_streaming_response is not None:
@@ -2070,7 +2077,7 @@ class CustomStreamWrapper:
             ## ADD DEBUG INFORMATION - E.G. LITELLM REQUEST TIMEOUT
             traceback_exception += "\nLiteLLM Default Request Timeout - {}".format(litellm.request_timeout)
             if self.logging_obj is not None:
-                self._record_partial_usage_for_failure()
+                await asyncify(self._record_partial_usage_for_failure)()
                 ## LOGGING
                 threading.Thread(
                     target=self.logging_obj.failure_handler,
@@ -2082,7 +2089,7 @@ class CustomStreamWrapper:
         except Exception as e:
             traceback_exception = traceback.format_exc()
             if self.logging_obj is not None:
-                self._record_partial_usage_for_failure()
+                await asyncify(self._record_partial_usage_for_failure)()
                 ## LOGGING
                 threading.Thread(
                     target=self.logging_obj.failure_handler,

@@ -1961,7 +1961,13 @@ class Logging(LiteLLMLoggingBaseClass):
         raw_bytes: List[bytes],
         provider_config: "BasePassthroughConfig",
     ):
-        complete_streaming_response = self._flush_passthrough_collected_chunks_helper(
+        # Chunk reassembly is CPU-bound (stream_chunk_builder on the collected
+        # SSE). Offload it so a large passthrough body cannot stall the loop.
+        from litellm.litellm_core_utils.asyncify import asyncify
+
+        complete_streaming_response = await asyncify(
+            self._flush_passthrough_collected_chunks_helper
+        )(
             raw_bytes=raw_bytes,
             provider_config=provider_config,
         )

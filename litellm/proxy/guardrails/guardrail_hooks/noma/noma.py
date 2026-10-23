@@ -38,6 +38,7 @@ from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
     httpxSpecialProvider,
 )
+from litellm.litellm_core_utils.asyncify import asyncify
 from litellm.main import stream_chunk_builder
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.types.guardrails import GuardrailEventHooks
@@ -805,7 +806,7 @@ class NomaGuardrail(CustomGuardrail):
         if not all_chunks:
             return
 
-        assembled_model_response: Optional[Union[ModelResponse, TextCompletionResponse]] = stream_chunk_builder(
+        assembled_model_response: Optional[Union[ModelResponse, TextCompletionResponse]] = await asyncify(stream_chunk_builder)(
             chunks=all_chunks
         )
 

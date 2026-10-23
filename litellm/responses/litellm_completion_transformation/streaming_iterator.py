@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Union, cast
@@ -703,6 +704,18 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
             return True
         return False
 
+    async def acommon_done_event_logic(self) -> BaseLiteLLMOpenAIResponseObject:
+        """
+        Async twin of ``common_done_event_logic(sync_mode=False)``.
+
+        ``create_litellm_model_response`` runs ``stream_chunk_builder`` (CPU);
+        offload it so end-of-stream assembly does not stall the event loop.
+        """
+        if not self.litellm_model_response or isinstance(self.litellm_model_response, TextCompletionResponse):
+            from litellm.litellm_core_utils.asyncify import asyncify
+            self.litellm_model_response = await asyncify(self.create_litellm_model_response)()
+        return self.common_done_event_logic(sync_mode=False)
+
     def common_done_event_logic(self, sync_mode: bool = True) -> BaseLiteLLMOpenAIResponseObject:
         if not self.litellm_model_response or isinstance(self.litellm_model_response, TextCompletionResponse):
             self.litellm_model_response = self.create_litellm_model_response()
@@ -894,7 +907,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
                         return self._pending_response_events.pop(0)
 
                 except StopAsyncIteration:
-                    return self.common_done_event_logic(sync_mode=False)
+                    return await self.acommon_done_event_logic()
 
         except Exception as e:
             # Handle HTTP errors

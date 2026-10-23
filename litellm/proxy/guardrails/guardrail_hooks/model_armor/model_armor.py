@@ -746,6 +746,7 @@ class ModelArmorGuardrail(CustomGuardrail, VertexBase):
         """Process streaming response chunks."""
 
         from litellm.llms.base_llm.base_model_iterator import MockResponseIterator
+        from litellm.litellm_core_utils.asyncify import asyncify
         from litellm.main import stream_chunk_builder
 
         # Collect all chunks
@@ -754,7 +755,7 @@ class ModelArmorGuardrail(CustomGuardrail, VertexBase):
             all_chunks.append(chunk)
 
         # Build complete response
-        assembled_response = stream_chunk_builder(chunks=all_chunks)
+        assembled_response = await asyncify(stream_chunk_builder)(chunks=all_chunks)
 
         if isinstance(assembled_response, ModelResponse):
             # Extract content

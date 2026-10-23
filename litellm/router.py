@@ -2229,9 +2229,10 @@ class Router:
                 async for item in model_response:
                     yield item
             except MidStreamFallbackError as e:
+                from litellm.litellm_core_utils.asyncify import asyncify
                 from litellm.main import stream_chunk_builder
 
-                complete_response_object = stream_chunk_builder(chunks=model_response.chunks)
+                complete_response_object = await asyncify(stream_chunk_builder)(chunks=model_response.chunks)
                 complete_response_object_usage = cast(
                     Optional[Usage],
                     getattr(complete_response_object, "usage", None),
@@ -2642,7 +2643,8 @@ class Router:
                 async for item in source_iterator:
                     yield item
             except MidStreamFallbackError as e:
-                partial_usage = Router._extract_partial_responses_usage(source_iterator)
+                from litellm.litellm_core_utils.asyncify import asyncify
+                partial_usage = await asyncify(Router._extract_partial_responses_usage)(source_iterator)
                 try:
                     model_group = cast(str, initial_kwargs.get("model"))
                     fallbacks: Optional[List] = initial_kwargs.get("fallbacks", self.fallbacks)

@@ -1102,7 +1102,11 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
                 )
                 return
 
-            assembled_model_response = stream_chunk_builder(chunks=all_chunks, messages=request_data.get("messages"))
+            from litellm.litellm_core_utils.asyncify import asyncify
+
+            assembled_model_response = await asyncify(stream_chunk_builder)(
+                chunks=all_chunks, messages=request_data.get("messages")
+            )
 
             if not isinstance(assembled_model_response, ModelResponse):
                 for chunk in all_chunks:
@@ -1227,7 +1231,9 @@ class _OPTIONAL_PresidioPIIMasking(CustomGuardrail):
             if not remaining_chunks:
                 return
 
-            assembled_model_response = stream_chunk_builder(
+            from litellm.litellm_core_utils.asyncify import asyncify
+
+            assembled_model_response = await asyncify(stream_chunk_builder)(
                 chunks=remaining_chunks, messages=request_data.get("messages")
             )
 

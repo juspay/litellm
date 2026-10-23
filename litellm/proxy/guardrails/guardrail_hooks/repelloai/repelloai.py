@@ -459,7 +459,9 @@ class RepelloAIGuardrail(CustomGuardrail):
         async for chunk in response:
             chunks.append(chunk)
 
-        assembled = litellm_main.stream_chunk_builder(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
+        from litellm.litellm_core_utils.asyncify import asyncify
+
+        assembled = await asyncify(litellm_main.stream_chunk_builder)(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             chunks=chunks
         )
         text = self._extract_response_text(assembled) if isinstance(assembled, ModelResponse) else None

@@ -439,6 +439,7 @@ class CiscoAIDefenseGuardrail(_CiscoAIDefenseMcpMixin, CustomGuardrail):
     ):
         """Buffer and inspect streaming chat output before delivery."""
         from litellm.llms.base_llm.base_model_iterator import MockResponseIterator
+        from litellm.litellm_core_utils.asyncify import asyncify
         from litellm.main import stream_chunk_builder
 
         if self.inspection_type != "chat":
@@ -479,7 +480,7 @@ class CiscoAIDefenseGuardrail(_CiscoAIDefenseMcpMixin, CustomGuardrail):
             yield f"data: {json.dumps({'error': {'message': 'Cisco AI Defense: unsupported streaming format — response withheld for safety', 'type': 'guardrail_unsupported_stream', 'code': 400, 'guardrail': self.guardrail_name}})}\n\n"
             return
 
-        assembled = stream_chunk_builder(chunks=all_chunks)
+        assembled = await asyncify(stream_chunk_builder)(chunks=all_chunks)
         if assembled is None:
             for chunk in all_chunks:
                 yield chunk
