@@ -494,6 +494,7 @@ class MicrosoftPurviewDLPGuardrail(PurviewGuardrailBase, CustomGuardrail):
         guardrails that define this method, preventing duplicate scans.
         """
         from litellm.llms.base_llm.base_model_iterator import MockResponseIterator
+        from litellm.litellm_core_utils.asyncify import asyncify
         from litellm.main import stream_chunk_builder
 
         # Resolve user ID up-front so identity failures don't waste work
@@ -544,7 +545,7 @@ class MicrosoftPurviewDLPGuardrail(PurviewGuardrailBase, CustomGuardrail):
                 yield chunk
             return
 
-        assembled_response = stream_chunk_builder(chunks=all_chunks)
+        assembled_response = await asyncify(stream_chunk_builder)(chunks=all_chunks)
 
         if assembled_response is None and all_chunks:
             # Fail closed: stream_chunk_builder dropped all chunks, so we cannot

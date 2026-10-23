@@ -201,6 +201,7 @@ async def acompletion_with_mcp(
             return initial_stream
 
         # Create a custom async generator that collects chunks and handles tool execution
+        from litellm.litellm_core_utils.asyncify import asyncify
         from litellm.main import stream_chunk_builder
         from litellm.types.utils import ModelResponseStream
 
@@ -420,7 +421,7 @@ async def acompletion_with_mcp(
                     return
 
                 # Build complete response from chunks
-                complete_response = stream_chunk_builder(
+                complete_response = await asyncify(stream_chunk_builder)(
                     chunks=self.collected_chunks,
                     messages=self.messages,
                 )

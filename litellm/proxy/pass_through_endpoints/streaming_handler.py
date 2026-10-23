@@ -3,6 +3,8 @@ from typing import List, Optional, Tuple
 
 import httpx
 
+from litellm.litellm_core_utils.asyncify import asyncify
+
 import litellm
 from litellm._logging import verbose_proxy_logger
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -135,7 +137,9 @@ class PassThroughStreamingHandler:
             (
                 standard_logging_response_object,
                 kwargs,
-            ) = PassThroughStreamingHandler._build_passthrough_logging_result(
+            ) = await asyncify(
+                PassThroughStreamingHandler._build_passthrough_logging_result
+            )(
                 litellm_logging_obj=litellm_logging_obj,
                 passthrough_success_handler_obj=passthrough_success_handler_obj,
                 url_route=url_route,
@@ -177,8 +181,9 @@ class PassThroughStreamingHandler:
         Synchronous, CPU-bound reconstruction of the standard logging payload
         from collected raw SSE bytes. Extracted from
         _route_streaming_logging_to_handler so the per-endpoint dispatch can
-        be unit-tested in isolation. Still invoked synchronously on the event
-        loop; an off-loop dispatch is a future change, not part of this PR.
+        be unit-tested in isolation. The async caller runs this via
+        ``asyncify`` — chunk assembly is CPU-bound and used to stall
+        the event loop on large SSE payloads.
         """
         all_chunks = PassThroughStreamingHandler._convert_raw_bytes_to_str_lines(raw_bytes)
         standard_logging_response_object: Optional[PassThroughEndpointLoggingResultValues] = None

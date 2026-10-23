@@ -5,9 +5,10 @@ This module provides functions to query GCP Cloud Logging for parallel request
 counters that are emitted by parallel_request_limiter_v3.py via print() statements.
 """
 
+import asyncio
 import os
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 from litellm.integrations.gcp_logging_helpers.parallel_requests_metrics import (
     encode_metric_field,
@@ -55,6 +56,44 @@ def get_gcp_logging_client(project_id: Optional[str] = None):
         print(f"[gcp_logs_query] Failed to create GCP logging client: {e}")
         print(f"[gcp_logs_query] Stack trace: {traceback.format_exc()}")
         return None
+
+
+# Bound every google-cloud-logging call so a hung Logging API / ADC lookup
+# cannot stall the proxy event loop (and with it the liveness probe). 10s
+# matches the SpendLogs half of /concurrent_request_logs.
+GCP_LOG_QUERY_TIMEOUT_SECONDS = float(
+    os.environ.get("GCP_LOG_QUERY_TIMEOUT_SECONDS", "10")
+)
+
+_T = TypeVar("_T")
+
+
+async def _run_blocking(fn: Callable[..., _T], *args: Any, **kwargs: Any) -> _T:
+    """
+    Run blocking GCP Logging work in a worker thread, bounded in wall-clock time.
+
+    Prod py-spy captures (2026-10-23) showed sync ``client.list_entries`` on the
+    event loop inside ``query_parallel_requests_metrics_last_n_seconds`` — the
+    loop froze for the duration of the paging. ``asyncio.to_thread`` moves that
+    I/O off the loop; ``wait_for`` caps how long the caller waits (the worker
+    thread itself cannot be killed and may still finish later).
+    """
+    return await asyncio.wait_for(
+        asyncio.to_thread(fn, *args, **kwargs),
+        timeout=GCP_LOG_QUERY_TIMEOUT_SECONDS,
+    )
+
+
+def _entry_text_payload(entry: Any) -> Optional[str]:
+    text_payload = None
+    if hasattr(entry, "payload") and entry.payload:
+        if isinstance(entry.payload, str):
+            text_payload = entry.payload
+        elif hasattr(entry.payload, "text"):
+            text_payload = entry.payload.text
+    elif hasattr(entry, "text_payload"):
+        text_payload = entry.text_payload
+    return text_payload
 
 
 def parse_metrics_log_line(text_payload: str) -> Optional[Dict]:
@@ -106,7 +145,7 @@ async def query_parallel_requests_metrics_last_n_seconds(
         )
         return []
 
-    client = get_gcp_logging_client(project_id)
+    client = await _run_blocking(get_gcp_logging_client, project_id)
     if client is None:
         return []
 
@@ -151,78 +190,91 @@ async def query_parallel_requests_metrics_last_n_seconds(
         MAX_ENTRIES = int(
             os.environ.get("GCP_LOG_QUERY_MAX_ENTRIES", "15000")
         )
-        all_entries = []
-        for entry in client.list_entries(
-            filter_=filter_str,
-            order_by="timestamp desc",  # Most recent first (by receipt time)
-            page_size=1000,  # Max page size to minimize API calls and avoid 429 rate limits
-        ):
-            all_entries.append(entry)
-            if len(all_entries) >= MAX_ENTRIES:
-                print(
-                    f"[gcp_logs_query] Hit max entries limit ({MAX_ENTRIES}), stopping"
-                )
-                break
-
-        print(
-            f"[gcp_logs_query] Found {len(all_entries)} log entries in last {time_window_seconds} second(s)"
+        results = await _run_blocking(
+            _scan_latest_metrics_per_token,
+            client,
+            filter_str,
+            MAX_ENTRIES,
+            time_window_seconds,
         )
-
-        # Parse entries and find the LATEST entry per token (highest log timestamp)
-        # This represents the Redis counter value closest to the target timestamp
-        token_latest_metrics: Dict[str, Dict] = {}
-
-        for entry in all_entries:
-            # Client API returns entry objects with payload attribute
-            text_payload = None
-            if hasattr(entry, "payload") and entry.payload:
-                if isinstance(entry.payload, str):
-                    text_payload = entry.payload
-                elif hasattr(entry.payload, "text"):
-                    text_payload = entry.payload.text
-            elif hasattr(entry, "text_payload"):
-                text_payload = entry.text_payload
-            if not text_payload:
-                continue
-
-            parsed = parse_metrics_log_line(text_payload)
-            if not parsed:
-                continue
-
-            token = parsed["token"]
-            log_timestamp = parsed["timestamp"]  # This is the timestamp from the log line itself
-
-            # For each token, keep the entry with the HIGHEST timestamp
-            # (closest to target_timestamp, representing the most recent Redis counter value)
-            if token not in token_latest_metrics:
-                token_latest_metrics[token] = {
-                    "token": token,
-                    "key_alias": parsed["key_alias"] or token[:16] + "...",
-                    "current_count": parsed["current_count"],
-                    "timestamp": log_timestamp,
-                    "operation": parsed["operation"],
-                }
-            else:
-                # Keep the entry with the higher timestamp (more recent)
-                if log_timestamp > token_latest_metrics[token]["timestamp"]:
-                    token_latest_metrics[token]["current_count"] = parsed["current_count"]
-                    token_latest_metrics[token]["timestamp"] = log_timestamp
-                    token_latest_metrics[token]["operation"] = parsed["operation"]
-                    token_latest_metrics[token]["key_alias"] = parsed["key_alias"] or token[:16] + "..."
-
-        # Convert to list and sort by token for consistent ordering
-        results = sorted(token_latest_metrics.values(), key=lambda x: x["token"])
-
-        print(
-            f"[gcp_logs_query] Returning {len(results)} unique token metrics "
-            f"(latest log entry per token from last 5 minutes)"
-        )
-
         return results
 
     except Exception as e:
         print(f"[gcp_logs_query] Error querying GCP logs: {e}")
         return []
+
+
+def _scan_latest_metrics_per_token(
+    client: Any,
+    filter_str: str,
+    max_entries: int,
+    time_window_seconds: int,
+) -> List[Dict]:
+    """
+    Blocking scan: page list_entries and keep the latest entry per token.
+
+    Must not run on the event loop — see ``_run_blocking``.
+    """
+    all_entries = []
+    for entry in client.list_entries(
+        filter_=filter_str,
+        order_by="timestamp desc",  # Most recent first (by receipt time)
+        page_size=1000,  # Max page size to minimize API calls and avoid 429 rate limits
+    ):
+        all_entries.append(entry)
+        if len(all_entries) >= max_entries:
+            print(
+                f"[gcp_logs_query] Hit max entries limit ({max_entries}), stopping"
+            )
+            break
+
+    print(
+        f"[gcp_logs_query] Found {len(all_entries)} log entries in last {time_window_seconds} second(s)"
+    )
+
+    # Parse entries and find the LATEST entry per token (highest log timestamp)
+    # This represents the Redis counter value closest to the target timestamp
+    token_latest_metrics: Dict[str, Dict] = {}
+
+    for entry in all_entries:
+        text_payload = _entry_text_payload(entry)
+        if not text_payload:
+            continue
+
+        parsed = parse_metrics_log_line(text_payload)
+        if not parsed:
+            continue
+
+        token = parsed["token"]
+        log_timestamp = parsed["timestamp"]  # This is the timestamp from the log line itself
+
+        # For each token, keep the entry with the HIGHEST timestamp
+        # (closest to target_timestamp, representing the most recent Redis counter value)
+        if token not in token_latest_metrics:
+            token_latest_metrics[token] = {
+                "token": token,
+                "key_alias": parsed["key_alias"] or token[:16] + "...",
+                "current_count": parsed["current_count"],
+                "timestamp": log_timestamp,
+                "operation": parsed["operation"],
+            }
+        else:
+            # Keep the entry with the higher timestamp (more recent)
+            if log_timestamp > token_latest_metrics[token]["timestamp"]:
+                token_latest_metrics[token]["current_count"] = parsed["current_count"]
+                token_latest_metrics[token]["timestamp"] = log_timestamp
+                token_latest_metrics[token]["operation"] = parsed["operation"]
+                token_latest_metrics[token]["key_alias"] = parsed["key_alias"] or token[:16] + "..."
+
+    # Convert to list and sort by token for consistent ordering
+    results = sorted(token_latest_metrics.values(), key=lambda x: x["token"])
+
+    print(
+        f"[gcp_logs_query] Returning {len(results)} unique token metrics "
+        f"(latest log entry per token from last 5 minutes)"
+    )
+
+    return results
 
 
 async def get_concurrent_requests_from_gcp_logs(
@@ -336,7 +388,7 @@ async def count_parallel_request_operations(
         )
         return counts, False, False
 
-    client = get_gcp_logging_client(project_id)
+    client = await _run_blocking(get_gcp_logging_client, project_id)
     if client is None:
         return counts, False, False
 
@@ -368,43 +420,12 @@ async def count_parallel_request_operations(
             f"key_alias_filter={'set' if key_alias_filter else 'none'})"
         )
 
-        truncated = False
-        scanned = 0
-        for entry in client.list_entries(
-            filter_=filter_str,
-            order_by="timestamp desc",
-            page_size=1000,
-        ):
-            scanned += 1
-            if scanned > max_entries:
-                truncated = True
-                print(
-                    f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
-                    f"while counting, stopping"
-                )
-                break
-
-            text_payload = None
-            if hasattr(entry, "payload") and entry.payload:
-                if isinstance(entry.payload, str):
-                    text_payload = entry.payload
-                elif hasattr(entry.payload, "text"):
-                    text_payload = entry.payload.text
-            elif hasattr(entry, "text_payload"):
-                text_payload = entry.text_payload
-            if not text_payload:
-                continue
-
-            parsed = parse_metrics_log_line(text_payload)
-            if not parsed:
-                continue
-
-            operation = parsed.get("operation")
-            if operation == "increment":
-                counts["increment"] += 1
-            elif operation == "decrement":
-                counts["decrement"] += 1
-
+        counts, truncated = await _run_blocking(
+            _count_operations_blocking,
+            client,
+            filter_str,
+            max_entries,
+        )
         counts["total"] = counts["increment"] + counts["decrement"]
         print(
             f"[gcp_logs_query] Counted increment={counts['increment']} "
@@ -415,6 +436,50 @@ async def count_parallel_request_operations(
     except Exception as e:
         print(f"[gcp_logs_query] Error counting parallel request operations: {e}")
         return counts, False, False
+
+
+def _count_operations_blocking(
+    client: Any,
+    filter_str: str,
+    max_entries: int,
+) -> Tuple[Dict[str, int], bool]:
+    """
+    Blocking scan: count increment/decrement [METRICS] entries.
+
+    Must not run on the event loop — see ``_run_blocking``.
+    """
+    counts = {"increment": 0, "decrement": 0, "total": 0}
+    truncated = False
+    scanned = 0
+    for entry in client.list_entries(
+        filter_=filter_str,
+        order_by="timestamp desc",
+        page_size=1000,
+    ):
+        scanned += 1
+        if scanned > max_entries:
+            truncated = True
+            print(
+                f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
+                f"while counting, stopping"
+            )
+            break
+
+        text_payload = _entry_text_payload(entry)
+        if not text_payload:
+            continue
+
+        parsed = parse_metrics_log_line(text_payload)
+        if not parsed:
+            continue
+
+        operation = parsed.get("operation")
+        if operation == "increment":
+            counts["increment"] += 1
+        elif operation == "decrement":
+            counts["decrement"] += 1
+
+    return counts, truncated
 
 
 async def get_parallel_request_metric_series(
@@ -458,7 +523,7 @@ async def get_parallel_request_metric_series(
         )
         return entries, False
 
-    client = get_gcp_logging_client(project_id)
+    client = await _run_blocking(get_gcp_logging_client, project_id)
     if client is None:
         return entries, False
 
@@ -486,53 +551,65 @@ async def get_parallel_request_metric_series(
             f"{start_rfc3339} to {end_rfc3339}"
         )
 
-        scanned = 0
-        for entry in client.list_entries(
-            filter_=filter_str,
-            order_by="timestamp asc",
-            page_size=1000,
-        ):
-            scanned += 1
-            if scanned > max_entries:
-                print(
-                    f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
-                    f"while building metric series, stopping"
-                )
-                break
-
-            entry_time = getattr(entry, "timestamp", None)
-            if entry_time is None:
-                continue
-
-            text_payload = None
-            if hasattr(entry, "payload") and entry.payload:
-                if isinstance(entry.payload, str):
-                    text_payload = entry.payload
-                elif hasattr(entry.payload, "text"):
-                    text_payload = entry.payload.text
-            elif hasattr(entry, "text_payload"):
-                text_payload = entry.text_payload
-            if not text_payload:
-                continue
-
-            parsed = parse_metrics_log_line(text_payload)
-            if not parsed:
-                continue
-
-            entries.append({
-                "entry_time": entry_time.timestamp(),
-                "current_count": parsed["current_count"],
-                "operation": parsed["operation"],
-                "token": parsed["token"],
-                "key_alias": parsed["key_alias"],
-            })
-
-        # Already ascending by order_by, but sort defensively.
-        entries.sort(key=lambda x: x["entry_time"])
-
+        entries = await _run_blocking(
+            _scan_metric_series_blocking,
+            client,
+            filter_str,
+            max_entries,
+        )
         print(f"[gcp_logs_query] Returning {len(entries)} metric series entries")
         return entries, True
 
     except Exception as e:
         print(f"[gcp_logs_query] Error fetching parallel request metric series: {e}")
         return entries, False
+
+
+def _scan_metric_series_blocking(
+    client: Any,
+    filter_str: str,
+    max_entries: int,
+) -> List[Dict]:
+    """
+    Blocking scan: collect [METRICS] entries ascending by receive time.
+
+    Must not run on the event loop — see ``_run_blocking``.
+    """
+    entries: List[Dict] = []
+    scanned = 0
+    for entry in client.list_entries(
+        filter_=filter_str,
+        order_by="timestamp asc",
+        page_size=1000,
+    ):
+        scanned += 1
+        if scanned > max_entries:
+            print(
+                f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
+                f"while building metric series, stopping"
+            )
+            break
+
+        entry_time = getattr(entry, "timestamp", None)
+        if entry_time is None:
+            continue
+
+        text_payload = _entry_text_payload(entry)
+        if not text_payload:
+            continue
+
+        parsed = parse_metrics_log_line(text_payload)
+        if not parsed:
+            continue
+
+        entries.append({
+            "entry_time": entry_time.timestamp(),
+            "current_count": parsed["current_count"],
+            "operation": parsed["operation"],
+            "token": parsed["token"],
+            "key_alias": parsed["key_alias"],
+        })
+
+    # Already ascending by order_by, but sort defensively.
+    entries.sort(key=lambda x: x["entry_time"])
+    return entries

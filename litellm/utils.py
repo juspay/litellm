@@ -1700,7 +1700,8 @@ def client(original_function):
                     chunks = []
                     for idx, chunk in enumerate(result):
                         chunks.append(chunk)
-                    return litellm.stream_chunk_builder(chunks, messages=kwargs.get("messages", None))
+                    from litellm.litellm_core_utils.asyncify import asyncify
+                    return await asyncify(litellm.stream_chunk_builder)(chunks, messages=kwargs.get("messages", None))
                 else:
                     _update_response_metadata(
                         result=result,

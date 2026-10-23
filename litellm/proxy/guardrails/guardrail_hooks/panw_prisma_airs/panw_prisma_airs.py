@@ -1266,6 +1266,7 @@ class PanwPrismaAirsHandler(CustomGuardrail):
         Process streaming response chunks and scan the assembled response.
         """
         from litellm.llms.base_llm.base_model_iterator import MockResponseIterator
+        from litellm.litellm_core_utils.asyncify import asyncify
         from litellm.main import stream_chunk_builder
 
         # Check if guardrail should run for this request
@@ -1310,7 +1311,7 @@ class PanwPrismaAirsHandler(CustomGuardrail):
                 return
 
             # Assemble complete response from chunks
-            assembled_model_response = stream_chunk_builder(chunks=all_chunks)
+            assembled_model_response = await asyncify(stream_chunk_builder)(chunks=all_chunks)
 
             if isinstance(assembled_model_response, ModelResponse):
                 # Scan and process the assembled response

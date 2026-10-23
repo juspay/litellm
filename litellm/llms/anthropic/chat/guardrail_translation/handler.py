@@ -12,6 +12,7 @@ Pattern Overview:
 4. Apply guardrail responses back to the original structure
 """
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
@@ -578,7 +579,11 @@ class AnthropicMessagesHandler(BaseTranslation):
         has_ended = self._check_streaming_has_ended(responses_so_far)
         if has_ended:
             # build the model response from the responses_so_far
-            built_response = AnthropicPassthroughLoggingHandler._build_complete_streaming_response(
+            from litellm.litellm_core_utils.asyncify import asyncify
+
+            built_response = await asyncify(
+                AnthropicPassthroughLoggingHandler._build_complete_streaming_response
+            )(
                 all_chunks=responses_so_far,
                 litellm_logging_obj=cast("LiteLLMLoggingObj", litellm_logging_obj),
                 model="",

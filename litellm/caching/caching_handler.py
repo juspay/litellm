@@ -1060,8 +1060,10 @@ class LLMCachingHandler:
 
         """
 
+        from litellm.litellm_core_utils.asyncify import asyncify
+
         complete_streaming_response: Optional[Union[ModelResponse, TextCompletionResponse]] = (
-            _assemble_complete_response_from_streaming_chunks(
+            await asyncify(_assemble_complete_response_from_streaming_chunks)(
                 result=processed_chunk,
                 start_time=self.start_time,
                 end_time=datetime.datetime.now(),

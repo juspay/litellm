@@ -25,6 +25,7 @@ from litellm.llms.base_llm.guardrail_translation.utils import (
     openai_messages_without_system,
     openai_messages_without_tool,
 )
+from litellm.litellm_core_utils.asyncify import asyncify
 from litellm.main import stream_chunk_builder
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionToolParam
 from litellm.types.utils import (
@@ -433,7 +434,7 @@ class OpenAIChatCompletionsHandler(BaseTranslation):
             # convert to model response
             model_response = cast(
                 ModelResponse,
-                stream_chunk_builder(chunks=responses_so_far, logging_obj=litellm_logging_obj),
+                await asyncify(stream_chunk_builder)(chunks=responses_so_far, logging_obj=litellm_logging_obj),
             )
             # run process_output_response
             await self.process_output_response(

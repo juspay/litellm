@@ -781,6 +781,7 @@ class ToolPermissionGuardrail(CustomGuardrail):
 
         # Import here to avoid circular imports
         from litellm.llms.base_llm.base_model_iterator import MockResponseIterator
+        from litellm.litellm_core_utils.asyncify import asyncify
         from litellm.main import stream_chunk_builder
         from litellm.types.utils import TextCompletionResponse
 
@@ -789,7 +790,7 @@ class ToolPermissionGuardrail(CustomGuardrail):
         async for chunk in response:
             all_chunks.append(chunk)
 
-        assembled_model_response: Optional[Union[ModelResponse, TextCompletionResponse]] = stream_chunk_builder(
+        assembled_model_response: Optional[Union[ModelResponse, TextCompletionResponse]] = await asyncify(stream_chunk_builder)(
             chunks=all_chunks,
         )
         if isinstance(assembled_model_response, ModelResponse):
