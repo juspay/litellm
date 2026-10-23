@@ -41,6 +41,13 @@ RUN for i in 1 2 3; do \
       sleep 5; \
     done
 
+# eMudra / emSign G3 advisory: the ca-certificates version number is not a
+# trustworthy signal on Wolfi (20260909-r3 shipped a stale bundle still
+# anchoring emSign ECC Root CA - G3). Strip distrusted roots by content and
+# fail the build if any survive. Self-verifying — see docker/strip_distrusted_cas.py.
+COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
+RUN python3 /usr/local/bin/strip_distrusted_cas.py
+
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
@@ -82,6 +89,11 @@ RUN mkdir -p /home/nonroot && \
     HOME=/home/nonroot prisma generate --schema=./schema.prisma && \
     chown -R nonroot:nonroot /home/nonroot/.cache
 
+# eMudra / emSign G3: second pass after uv sync + prisma, so vendored bundles
+# (botocore/cacert.pem ships AAA Certificate Services) in the venv are covered.
+COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
+RUN python3 /usr/local/bin/strip_distrusted_cas.py
+
 # ---------- Runtime ----------
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 
@@ -93,6 +105,7 @@ RUN for i in 1 2 3; do \
       [ $i = 3 ] && { echo "apk add failed after 3 retries" >&2; exit 1; }; \
       sleep 5; \
     done
+
 
 # wolfi-base ships an unprivileged `nonroot` account (UID/GID 65532). The
 # Prisma engine binaries are dynamically linked against libssl/libcrypto, so
@@ -106,6 +119,13 @@ ENV HOME=/home/nonroot \
 
 COPY --from=builder --chown=nonroot:nonroot /app /app
 COPY --from=builder --chown=nonroot:nonroot /home/nonroot/.cache /home/nonroot/.cache
+
+# eMudra / emSign G3 advisory: strip distrusted roots by content (the
+# ca-certificates version number is not a trustworthy signal on Wolfi).
+# MUST run after the venv COPY so vendored bundles (botocore/cacert.pem)
+# are covered. Self-verifying — see docker/strip_distrusted_cas.py.
+COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
+RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
 USER nonroot
 
