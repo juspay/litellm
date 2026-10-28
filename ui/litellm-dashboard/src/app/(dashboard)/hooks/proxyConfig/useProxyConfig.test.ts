@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React, { ReactNode } from "react";
@@ -109,7 +109,7 @@ vi.mock("../common/queryKeysFactory", () => ({
 
 describe("useProxyConfig", () => {
   let queryClient: QueryClient;
-  let fetchSpy: ReturnType<typeof vi.fn>;
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     queryClient = new QueryClient({
@@ -133,7 +133,7 @@ describe("useProxyConfig", () => {
       showSSOBanner: false,
     });
 
-    fetchSpy = vi.fn();
+    fetchSpy = vi.fn<typeof fetch>();
     global.fetch = fetchSpy;
   });
 
@@ -277,7 +277,7 @@ describe("useProxyConfig", () => {
 
 describe("useDeleteProxyConfigField", () => {
   let queryClient: QueryClient;
-  let fetchSpy: ReturnType<typeof vi.fn>;
+  let fetchSpy: Mock<typeof fetch>;
 
   beforeEach(() => {
     queryClient = new QueryClient({
@@ -304,7 +304,7 @@ describe("useDeleteProxyConfigField", () => {
       showSSOBanner: false,
     });
 
-    fetchSpy = vi.fn();
+    fetchSpy = vi.fn<typeof fetch>();
     global.fetch = fetchSpy;
   });
 
@@ -452,11 +452,11 @@ describe("useDeleteProxyConfigField", () => {
 });
 
 describe("getProxyConfigCall", () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
+  let fetchSpy: Mock<typeof fetch>;
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    fetchSpy = vi.fn();
+    fetchSpy = vi.fn<typeof fetch>();
     global.fetch = fetchSpy;
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -508,11 +508,11 @@ describe("getProxyConfigCall", () => {
 });
 
 describe("deleteProxyConfigFieldCall", () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
+  let fetchSpy: Mock<typeof fetch>;
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    fetchSpy = vi.fn();
+    fetchSpy = vi.fn<typeof fetch>();
     global.fetch = fetchSpy;
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });

@@ -1,4 +1,19 @@
 [[IgnoredVulns]]
 id = "GHSA-w8v5-vhqr-4h9v"
-ignoreUntil = 2026-09-09
+ignoreUntil = 2026-11-30
 reason = "diskcache has no fixed release published; remove this entry once one exists"
+
+[[IgnoredVulns]]
+id = "GHSA-3cv6-jpf6-8222"
+ignoreUntil = 2026-11-30
+reason = "Fix (upstream #34189) is cherry-picked into this fork as bbdc06d5d5, but uv.lock still records the litellm workspace version 1.92.0, which is inside the advisory's affected range. Remove this entry once the fork's version string moves past 1.92.2"
+
+[[IgnoredVulns]]
+id = "GHSA-7hp6-4w63-5g45"
+ignoreUntil = 2026-11-30
+reason = "Fix (upstream d098b02ed9, released in 1.100.4) is cherry-picked into this fork as 603d95be4d: session tokens use encrypt_bearer_token with the litellm_login_ prefix as AES-GCM AAD, so management-route encrypted values are no longer replayable as bearer tokens. uv.lock still records the workspace version 1.92.0, which is inside the advisory's affected range. Remove this entry once the fork's version string moves past 1.100.4"
+
+[[IgnoredVulns]]
+id = "GHSA-g5ff-637f-6q2m"
+ignoreUntil = 2026-11-30
+reason = "Fix (released in 1.95.0) is already in this fork: both vertex_credentials and vertex_ai_credentials are in _BANNED_REQUEST_BODY_PARAMS in litellm/proxy/auth/auth_utils.py, so request bodies cannot alias credential file reads. uv.lock still records the workspace version 1.92.0, which is inside the advisory's affected range. Remove this entry once the fork's version string moves past 1.95.0"

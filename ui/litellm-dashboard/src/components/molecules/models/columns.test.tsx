@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, type Mock } from "vitest";
 import { useReactTable, getCoreRowModel, flexRender } from "@tanstack/react-table";
 import { columns } from "./columns";
 import { ModelData } from "../../model_dashboard/types";
@@ -938,7 +938,7 @@ describe("columns", () => {
   describe("pause/resume toggle", () => {
     const renderWithToggle = (
       overrides: Partial<ReturnType<typeof createMockModel>["model_info"]> = {},
-      togglePauseHandler?: ReturnType<typeof vi.fn>,
+      togglePauseHandler?: Mock<(modelId: string, blocked: boolean) => void | Promise<void>>,
       userRole: string = "Admin",
     ) => {
       const handler = togglePauseHandler ?? vi.fn();
