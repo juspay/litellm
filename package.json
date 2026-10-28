@@ -16,6 +16,7 @@
     "picomatch": "2.3.2",
     "@isaacs/brace-expansion": "5.0.0",
     "@babel/traverse": "7.28.5",
-    "braces": "3.0.3"
+    "braces": "3.0.3",
+    "deepmerge": "4.1.2"
   }
 }
