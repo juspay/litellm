@@ -475,7 +475,9 @@ async def _persist_cli_sso_user_metadata(
             f"{list(_flatten_cli_sso_metadata_for_poll(attribution_metadata).keys())}"
         )
     except Exception as e:
-        verbose_proxy_logger.error(f"Failed to persist CLI SSO attribution metadata for user {user_id}: {truncate_error_str(e)}")
+        verbose_proxy_logger.error(
+            f"Failed to persist CLI SSO attribution metadata for user {user_id}: {truncate_error_str(e)}"
+        )
 
 
 def _cli_poll_attribution_metadata_from_session(
@@ -651,6 +653,20 @@ async def cli_sso_complete(request: Request, login_id: str):
     return HTMLResponse(content=html_content, status_code=200)
 
 
+def _decode_sso_jwt_unverified(token: str) -> dict:
+    """
+    Decode an SSO provider's JWT without signature verification.
+
+    Signature trust comes from the provider's token endpoint over TLS
+    (fastapi_sso), not from us verifying it. But an unsecured token
+    (alg=none) can be forged by anyone, so reject those outright.
+    """
+    unverified_header = jwt.get_unverified_header(token)
+    if unverified_header.get("alg") in (None, "none"):
+        raise jwt.exceptions.DecodeError("Refusing to decode an unsecured JWT (alg=none)")
+    return jwt.decode(token, options={"verify_signature": False})
+
+
 def normalize_email(email: Optional[str]) -> Optional[str]:
     """
     Normalize email address to lowercase for consistent storage and comparison.
@@ -753,7 +769,7 @@ def process_sso_jwt_access_token(
         import jwt
 
         try:
-            access_token_payload = jwt.decode(access_token_str, options={"verify_signature": False})
+            access_token_payload = _decode_sso_jwt_unverified(access_token_str)
         except jwt.exceptions.DecodeError:
             verbose_proxy_logger.debug(
                 "Access token is not a valid JWT (possibly an opaque token), skipping JWT-based extraction"
@@ -3683,7 +3699,7 @@ class SSOAuthenticationHandler:
         # a blank or non-string id_token field from a misbehaving provider.
         if userinfo is None and isinstance(id_token, str) and id_token:
             try:
-                userinfo = jwt.decode(id_token, options={"verify_signature": False})
+                userinfo = _decode_sso_jwt_unverified(id_token)
                 if not userinfo:
                     # jwt.decode returned an empty dict (payload-free JWT or provider bug).
                     # Treat this the same as a missing userinfo — the session would have no
@@ -3863,11 +3879,9 @@ class MicrosoftSSOHandler:
             return []
 
         try:
-            import jwt
-
             # Decode the JWT without signature verification
             # (signature is already verified by fastapi_sso)
-            decoded_token = jwt.decode(id_token, options={"verify_signature": False})
+            decoded_token = _decode_sso_jwt_unverified(id_token)
 
             # Extract app_roles claim from the token
             ## check for both 'roles' and 'app_roles' claims

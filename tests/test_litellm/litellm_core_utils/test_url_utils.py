@@ -467,6 +467,25 @@ class TestProviderUrlDestinationAllowlist:
         )
 
 
+class TestValidateCredentialDestination:
+    def test_no_allowlist_configured_is_a_no_op(self, monkeypatch):
+        monkeypatch.setattr(litellm, "provider_url_destination_allowed_hosts", [])
+        url_utils.validate_credential_destination("https://anything.example/v1/x")
+
+    def test_allowed_host_passes(self, monkeypatch):
+        monkeypatch.setattr(
+            litellm, "provider_url_destination_allowed_hosts", ["trusted.example"]
+        )
+        url_utils.validate_credential_destination("https://trusted.example/v1/x")
+
+    def test_disallowed_host_raises_ssrf_error(self, monkeypatch):
+        monkeypatch.setattr(
+            litellm, "provider_url_destination_allowed_hosts", ["trusted.example"]
+        )
+        with pytest.raises(SSRFError):
+            url_utils.validate_credential_destination("https://evil.example/v1/x")
+
+
 # ── assert_same_origin ────────────────────────────────────────────────────────
 
 

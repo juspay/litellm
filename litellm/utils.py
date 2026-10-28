@@ -63,6 +63,7 @@ from litellm._uuid import uuid
 from litellm.litellm_core_utils.fallback_generalizations import (
     match_capability_generalizations,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.constants import (
     DEFAULT_CHAT_COMPLETION_PARAM_VALUES,
     DEFAULT_EMBEDDING_PARAM_VALUES,
@@ -957,7 +958,9 @@ def function_setup(
 
                 except Exception as e:
                     # Log the error but don't fail the request
-                    verbose_logger.warning(f"Error removing thought signatures from tool call IDs: {truncate_error_str(e)}")
+                    verbose_logger.warning(
+                        f"Error removing thought signatures from tool call IDs: {truncate_error_str(e)}"
+                    )
         elif call_type == CallTypes.embedding.value or call_type == CallTypes.aembedding.value:
             messages = args[1] if len(args) > 1 else kwargs.get("input", None)
         elif call_type == CallTypes.image_generation.value or call_type == CallTypes.aimage_generation.value:
@@ -1701,6 +1704,7 @@ def client(original_function):
                     for idx, chunk in enumerate(result):
                         chunks.append(chunk)
                     from litellm.litellm_core_utils.asyncify import asyncify
+
                     return await asyncify(litellm.stream_chunk_builder)(chunks, messages=kwargs.get("messages", None))
                 else:
                     _update_response_metadata(
@@ -2074,7 +2078,9 @@ def create_pretrained_tokenizer(identifier: str, revision="main", auth_token: Op
             auth_token=auth_token,  # type: ignore
         )
     except Exception as e:
-        verbose_logger.error(f"Error creating pretrained tokenizer: {truncate_error_str(e)}. Defaulting to version without 'auth_token'.")
+        verbose_logger.error(
+            f"Error creating pretrained tokenizer: {truncate_error_str(e)}. Defaulting to version without 'auth_token'."
+        )
         tokenizer = Tokenizer.from_pretrained(identifier, revision=revision)
     return {"type": "huggingface_tokenizer", "tokenizer": tokenizer}
 

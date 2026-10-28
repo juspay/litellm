@@ -37,6 +37,7 @@ resource "google_sql_database_instance" "writer" {
     ip_configuration {
       ipv4_enabled    = false
       private_network = google_compute_network.this.id
+      require_ssl     = true
     }
 
     insights_config {
@@ -77,6 +78,7 @@ resource "google_sql_database_instance" "reader" {
     ip_configuration {
       ipv4_enabled    = false
       private_network = google_compute_network.this.id
+      require_ssl     = true
     }
   }
 

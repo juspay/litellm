@@ -27,13 +27,23 @@ RUN npm run build
 FROM nginx:${NGINX_VERSION} AS runtime
 
 # Drop the upstream default :80 server; we own the config.
-RUN rm -f /etc/nginx/conf.d/default.conf
+RUN rm -f /etc/nginx/conf.d/default.conf \
+    # nginx needs to write its pid file and response-body temp dirs even
+    # when running as the unprivileged `nginx` user (uid 101); chown them
+    # once at build time instead of relying on the orchestrator to mount
+    # writable volumes over them.
+    && mkdir -p /run /var/cache/nginx \
+    && chown 101:101 /run /var/cache/nginx
 
 # Static export → web root.
 COPY --from=builder /app/out /usr/share/nginx/html
 
 # Routing rules — see ui/nginx.conf for the full description.
 COPY ui/nginx.conf /etc/nginx/nginx.conf
+
+# Everything below runs as the unprivileged `nginx` user baked into the
+# base image (uid 101, no shell), never as root.
+USER 101:101
 
 EXPOSE 3000/tcp
 

@@ -63,7 +63,9 @@ RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_LINK_MODE=copy \
-    PATH="/app/.venv/bin:${PATH}"
+    PATH="/app/.venv/bin:${PATH}" \
+    PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries \
+    XDG_CACHE_HOME=/app/.cache
 
 # Copy dependency metadata first for layer caching
 COPY pyproject.toml uv.lock ./
@@ -125,7 +127,14 @@ RUN apk add --no-cache \
     libsndfile
 
 WORKDIR /app
-ENV PATH="/app/.venv/bin:${PATH}"
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PRISMA_BINARY_CACHE_DIR=/app/.cache/prisma-python/binaries \
+    HOME=/app \
+    XDG_CACHE_HOME=/app/.cache \
+    PRISMA_SKIP_POSTINSTALL_GENERATE=1 \
+    PRISMA_HIDE_UPDATE_MESSAGE=1 \
+    PRISMA_ENGINES_CHECKSUM_IGNORE_MISSING=1 \
+    PRISMA_OFFLINE_MODE=true
 
 # Copy only what runtime needs. The application is installed inside the venv;
 # the rest of the builder's /app is source and build metadata that must not
@@ -139,13 +148,13 @@ COPY --from=builder /app/litellm/proxy/prisma_migration.py /app/litellm/proxy/pr
 # working directory on sys.path; litellm/proxy/hooks resolves
 # enterprise.enterprise_hooks from it)
 COPY --from=builder /app/enterprise /app/enterprise
-# Prisma binaries live in $HOME/.cache (default prisma-python location),
-# which is /root/.cache here. Copy only the Prisma subdirs — copying the
-# whole /root/.cache drags in the uv build cache (~660 MB, includes a
-# setuptools wheel that surfaces as a CVE finding even though it's not
-# on the runtime sys.path).
-COPY --from=builder /root/.cache/prisma /root/.cache/prisma
-COPY --from=builder /root/.cache/prisma-python /root/.cache/prisma-python
+# Prisma caches live under /app/.cache (XDG_CACHE_HOME /
+# PRISMA_BINARY_CACHE_DIR, set in the builder too) so the runtime user,
+# which has no writable $HOME, can still read them. Copy only the Prisma
+# subdir — copying the whole /app/.cache drags in the uv build cache
+# (~660 MB, includes a setuptools wheel that surfaces as a CVE finding
+# even though it's not on the runtime sys.path).
+COPY --from=builder /app/.cache/prisma-python /app/.cache/prisma-python
 
 # eMudra / emSign G3: re-run now that the venv is present, so vendored bundles
 # (botocore/cacert.pem still ships AAA Certificate Services) get stripped too.
@@ -155,6 +164,20 @@ RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
 RUN find /app/.venv -type f -path "*/tornado/test/*" -delete && \
     find /app/.venv -type d -path "*/tornado/test" -delete
+
+# Runtime must never be root (echo-scan Issues #15/#16). nobody (uid 65534)
+# has no writable $HOME, so give it the paths it must write: the prisma client
+# dir (runtime `prisma generate` in entrypoint flows) and $HOME (/app) for
+# libraries that persist state under ~/.config (e.g. xAI OAuth tokens).
+# LITELLM_NON_ROOT is intentionally unset: this image serves the packaged UI
+# from the venv, and the flag would point it at /var/lib/litellm/ui, which
+# this image does not stage.
+RUN mkdir -p /nonexistent && \
+    chmod -R a+rX /app && \
+    PRISMA_PATH=$(python -c "import os, prisma; print(os.path.dirname(prisma.__file__))") && \
+    chmod -R a+rwX "$PRISMA_PATH" && \
+    chmod -R a+rwX /app/.cache
+USER 65534
 
 EXPOSE 4000/tcp
 

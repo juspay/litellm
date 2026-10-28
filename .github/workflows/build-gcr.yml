@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Get short commit SHA
         id: commit
@@ -46,21 +46,21 @@ jobs:
           echo "Image tag: ${IMAGE_TAG}"
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2.1.13
         with:
           credentials_json: ${{ secrets[matrix.secret_key] }}
 
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a  # v2.1.4
 
       - name: Configure Docker for GCR
         run: gcloud auth configure-docker gcr.io
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0
 
       - name: Build and push image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0  # v5.3.0
         with:
           context: .
           file: ./docker/Dockerfile.non_root
@@ -73,13 +73,16 @@ jobs:
             PROXY_EXTRAS_SOURCE=local
 
       - name: Build Summary
+        env:
+          BUILD_ENVIRONMENT: ${{ matrix.environment }}
+          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
         run: |
-          echo "## Build Summary (${{ matrix.environment }})" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Summary (${BUILD_ENVIRONMENT})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | \`${{ matrix.environment }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commit SHA | \`${{ steps.commit.outputs.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${BUILD_ENVIRONMENT}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit SHA | \`${COMMIT_SHA}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Number | \`${{ github.run_number }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

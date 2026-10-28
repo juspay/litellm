@@ -110,3 +110,26 @@ class TestAzureAIAnthropicCountTokensConfig:
             endpoint
             == "https://my-resource.services.ai.azure.com/anthropic/v1/messages/count_tokens"
         )
+
+    def test_get_count_tokens_endpoint_strips_query_and_fragment(self):
+        """A query string or fragment in api_base must not leak into the endpoint."""
+        config = AzureAIAnthropicCountTokensConfig()
+
+        api_base = "https://my-resource.services.ai.azure.com/anthropic?api-version=2024-10-01#frag"
+        endpoint = config.get_count_tokens_endpoint(api_base)
+
+        assert (
+            endpoint
+            == "https://my-resource.services.ai.azure.com/anthropic/v1/messages/count_tokens"
+        )
+
+    def test_get_count_tokens_endpoint_rejects_non_http_scheme(self):
+        """file:// or javascript: api_base values must be rejected, not appended to."""
+        from litellm.llms.anthropic.common_utils import AnthropicError
+
+        import pytest
+
+        config = AzureAIAnthropicCountTokensConfig()
+
+        with pytest.raises(AnthropicError):
+            config.get_count_tokens_endpoint("file:///etc/passwd")

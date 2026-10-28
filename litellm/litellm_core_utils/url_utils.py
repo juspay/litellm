@@ -148,6 +148,15 @@ def _parse_url_destination_allowlist_entry(
     return _normalize_host(parsed.hostname), scheme, port
 
 
+def provider_url_destination_candidates(value: str) -> Tuple[str, ...]:
+    return tuple(
+        candidate
+        for part in value.split(",")
+        for candidate in (part.strip(), part.strip().split("/", 1)[1] if "/" in part.strip() else "")
+        if candidate
+    )
+
+
 def is_url_destination_allowed_by_host(url: str, allowed_hosts: List[str]) -> bool:
     """Return True when a credential-bearing provider URL is admin-allowlisted.
 
@@ -185,6 +194,27 @@ def is_url_destination_allowed_by_host(url: str, allowed_hosts: List[str]) -> bo
             continue
         return True
     return False
+
+
+def validate_credential_destination(url: str) -> None:
+    """Guard a credential-bearing outbound request against unvetted hosts.
+
+    When ``litellm.provider_url_destination_allowed_hosts`` is configured,
+    any endpoint that will receive provider credentials (API keys, Azure
+    tokens) must point at an allowlisted host. With no allowlist configured,
+    this is a no-op so existing deployments keep working; the deployment's
+    ``api_base`` is admin-controlled configuration either way.
+    """
+    allowed_hosts = getattr(litellm, "provider_url_destination_allowed_hosts", []) or []
+    if not allowed_hosts:
+        return
+    if is_url_destination_allowed_by_host(url, allowed_hosts):
+        return
+    raise SSRFError(
+        f"Rejected Request: credential destination '{url}' is not in "
+        "provider_url_destination_allowed_hosts. Add the destination host to "
+        "`provider_url_destination_allowed_hosts` in litellm_settings."
+    )
 
 
 def _format_host_header(hostname: str, port: int, default_port: int) -> str:

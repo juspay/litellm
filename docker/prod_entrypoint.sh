@@ -13,8 +13,12 @@
 # to 0 at process birth, so a soft-only `ulimit -c` silently fails (can't exceed
 # hard=0) and no core is ever written. Root can raise the hard limit first, then
 # the soft. Without the -H raise, every prior SIGSEGV produced no core.
-ulimit -H -c 6291456
-ulimit -c 6291456
+# The image now runs as an unprivileged user, which cannot raise the hard
+# limit; the raises below still work when the orchestrator grants RLIMIT_CORE
+# via securityContext, and fail soft (no core dumps, but startup proceeds)
+# otherwise.
+ulimit -H -c 6291456 2>/dev/null || true
+ulimit -c 6291456 2>/dev/null || true
 
 if [ "$USE_DDTRACE" = "true" ]; then
     export DD_TRACE_OPENAI_ENABLED="False"

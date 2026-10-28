@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -45,6 +46,9 @@ def detect_keywords(text: str, keywords: list[str]) -> list[str]:
 
 def send_webhook(webhook_url: str, payload: dict) -> None:
     if not webhook_url:
+        return
+    if urllib.parse.urlparse(webhook_url).scheme not in ("http", "https"):
+        print(f"Webhook URL scheme rejected: {webhook_url}", file=sys.stderr)
         return
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

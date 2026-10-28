@@ -3049,15 +3049,16 @@ class TestGetAppRolesFromIdToken:
         # Create a mock JWT token
         mock_token = "mock.jwt.token"
 
-        with patch("jwt.decode", return_value=token_payload) as mock_jwt_decode:
+        with patch(
+            "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+            return_value=token_payload,
+        ) as mock_jwt_decode:
             # Act
             result = MicrosoftSSOHandler.get_app_roles_from_id_token(mock_token)
 
             # Assert
             assert result == ["Admin", "User", "Developer"]
-            mock_jwt_decode.assert_called_once_with(
-                mock_token, options={"verify_signature": False}
-            )
+            mock_jwt_decode.assert_called_once_with(mock_token)
 
     def test_app_roles_picked_when_both_exist(self):
         """Test that 'app_roles' takes precedence when both 'app_roles' and 'roles' exist"""
@@ -3072,7 +3073,10 @@ class TestGetAppRolesFromIdToken:
 
         mock_token = "mock.jwt.token"
 
-        with patch("jwt.decode", return_value=token_payload):
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+                return_value=token_payload,
+            ):
             # Act
             result = MicrosoftSSOHandler.get_app_roles_from_id_token(mock_token)
 
@@ -3092,7 +3096,10 @@ class TestGetAppRolesFromIdToken:
 
         mock_token = "mock.jwt.token"
 
-        with patch("jwt.decode", return_value=token_payload):
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+                return_value=token_payload,
+            ):
             # Act
             result = MicrosoftSSOHandler.get_app_roles_from_id_token(mock_token)
 
@@ -3107,7 +3114,10 @@ class TestGetAppRolesFromIdToken:
 
         mock_token = "mock.jwt.token"
 
-        with patch("jwt.decode", return_value=token_payload):
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+                return_value=token_payload,
+            ):
             # Act
             result = MicrosoftSSOHandler.get_app_roles_from_id_token(mock_token)
 
@@ -3134,7 +3144,10 @@ class TestGetAppRolesFromIdToken:
 
         mock_token = "mock.jwt.token"
 
-        with patch("jwt.decode", return_value=token_payload):
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+                return_value=token_payload,
+            ):
             # Act
             result = MicrosoftSSOHandler.get_app_roles_from_id_token(mock_token)
 
@@ -3146,7 +3159,10 @@ class TestGetAppRolesFromIdToken:
 
         mock_token = "invalid.jwt.token"
 
-        with patch("jwt.decode", side_effect=Exception("Invalid token")):
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+                side_effect=Exception("Invalid token"),
+            ):
             # Act
             result = MicrosoftSSOHandler.get_app_roles_from_id_token(mock_token)
 
@@ -3199,7 +3215,9 @@ class TestProcessSSOJWTAccessToken:
             team_ids=existing_team_ids,
         )
 
-        with patch("jwt.decode") as mock_jwt_decode:
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+            ) as mock_jwt_decode:
             # Act
             process_sso_jwt_access_token(
                 access_token_str=sample_jwt_token,
@@ -3228,7 +3246,10 @@ class TestProcessSSOJWTAccessToken:
         # Create a dictionary result without team_ids
         result = {"id": "test_user", "email": "test@example.com", "name": "Test User"}
 
-        with patch("jwt.decode", return_value=sample_jwt_payload) as mock_jwt_decode:
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+                return_value=sample_jwt_payload,
+            ) as mock_jwt_decode:
             # Act
             process_sso_jwt_access_token(
                 access_token_str=sample_jwt_token,
@@ -3237,9 +3258,7 @@ class TestProcessSSOJWTAccessToken:
             )
 
             # Assert
-            mock_jwt_decode.assert_called_once_with(
-                sample_jwt_token, options={"verify_signature": False}
-            )
+            mock_jwt_decode.assert_called_once_with(sample_jwt_token)
             mock_jwt_handler.get_team_ids_from_jwt.assert_called_once_with(
                 sample_jwt_payload
             )
@@ -3265,7 +3284,9 @@ class TestProcessSSOJWTAccessToken:
             "team_ids": existing_team_ids,
         }
 
-        with patch("jwt.decode") as mock_jwt_decode:
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+            ) as mock_jwt_decode:
             # Act
             process_sso_jwt_access_token(
                 access_token_str=sample_jwt_token,
@@ -3292,7 +3313,9 @@ class TestProcessSSOJWTAccessToken:
         result = CustomOpenID(id="test_user", email="test@example.com", team_ids=[])
 
         # Test with None access token
-        with patch("jwt.decode") as mock_jwt_decode:
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+            ) as mock_jwt_decode:
             process_sso_jwt_access_token(
                 access_token_str=None, sso_jwt_handler=mock_jwt_handler, result=result
             )
@@ -3303,7 +3326,9 @@ class TestProcessSSOJWTAccessToken:
             assert result.team_ids == []
 
         # Test with empty string access token
-        with patch("jwt.decode") as mock_jwt_decode:
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+            ) as mock_jwt_decode:
             process_sso_jwt_access_token(
                 access_token_str="", sso_jwt_handler=mock_jwt_handler, result=result
             )
@@ -3321,7 +3346,9 @@ class TestProcessSSOJWTAccessToken:
             process_sso_jwt_access_token,
         )
 
-        with patch("jwt.decode") as mock_jwt_decode:
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+            ) as mock_jwt_decode:
             # Act
             process_sso_jwt_access_token(
                 access_token_str=sample_jwt_token,
@@ -3346,7 +3373,8 @@ class TestProcessSSOJWTAccessToken:
         result = CustomOpenID(id="test_user", email="test@example.com", team_ids=[])
 
         with patch(
-            "jwt.decode", side_effect=pyjwt.exceptions.InvalidKeyError("Invalid key")
+            "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+            side_effect=pyjwt.exceptions.InvalidKeyError("Invalid key"),
         ) as mock_jwt_decode:
             with pytest.raises(pyjwt.exceptions.InvalidKeyError, match="Invalid key"):
                 process_sso_jwt_access_token(
@@ -3371,7 +3399,10 @@ class TestProcessSSOJWTAccessToken:
 
         result = CustomOpenID(id="test_user", email="test@example.com", team_ids=[])
 
-        with patch("jwt.decode", return_value=sample_jwt_payload) as mock_jwt_decode:
+        with patch(
+                "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
+                return_value=sample_jwt_payload,
+            ) as mock_jwt_decode:
             # Act
             process_sso_jwt_access_token(
                 access_token_str=sample_jwt_token,
@@ -7131,3 +7162,50 @@ async def test_legacy_login_page_hides_credentials_hint_via_general_settings():
     assert response.status_code == 200
     assert "Default Credentials" not in body
     assert "MASTER_KEY" not in body
+
+
+def _make_jwt(alg: str, payload: dict) -> str:
+    import base64
+    import json
+
+    def b64url(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+    header = b64url(json.dumps({"alg": alg, "typ": "JWT"}).encode())
+    claims = b64url(json.dumps(payload).encode())
+    return f"{header}.{claims}."
+
+
+def test_decode_sso_jwt_unverified_accepts_signed_alg():
+    from litellm.proxy.management_endpoints.ui_sso import _decode_sso_jwt_unverified
+
+    token = _make_jwt("RS256", {"sub": "user-1", "email": "user@example.com"})
+    claims = _decode_sso_jwt_unverified(token)
+
+    assert claims["sub"] == "user-1"
+
+
+def test_decode_sso_jwt_unverified_rejects_alg_none():
+    import jwt as pyjwt
+
+    from litellm.proxy.management_endpoints.ui_sso import _decode_sso_jwt_unverified
+
+    token = _make_jwt("none", {"sub": "attacker"})
+    with pytest.raises(pyjwt.exceptions.DecodeError):
+        _decode_sso_jwt_unverified(token)
+
+
+def test_decode_sso_jwt_unverified_rejects_missing_alg():
+    import base64
+    import json
+
+    import jwt as pyjwt
+
+    from litellm.proxy.management_endpoints.ui_sso import _decode_sso_jwt_unverified
+
+    header = base64.urlsafe_b64encode(json.dumps({"typ": "JWT"}).encode()).rstrip(b"=").decode()
+    claims = base64.urlsafe_b64encode(json.dumps({"sub": "attacker"}).encode()).rstrip(b"=").decode()
+    token = f"{header}.{claims}."
+
+    with pytest.raises(pyjwt.exceptions.DecodeError):
+        _decode_sso_jwt_unverified(token)
