@@ -1965,9 +1965,7 @@ class Logging(LiteLLMLoggingBaseClass):
         # SSE). Offload it so a large passthrough body cannot stall the loop.
         from litellm.litellm_core_utils.asyncify import asyncify
 
-        complete_streaming_response = await asyncify(
-            self._flush_passthrough_collected_chunks_helper
-        )(
+        complete_streaming_response = await asyncify(self._flush_passthrough_collected_chunks_helper)(
             raw_bytes=raw_bytes,
             provider_config=provider_config,
         )
@@ -2424,9 +2422,7 @@ class Logging(LiteLLMLoggingBaseClass):
             )
         )
 
-    async def _async_success_handler_impl(  # noqa: PLR0915
-        self, result=None, start_time=None, end_time=None, cache_hit=None, **kwargs
-    ):
+    async def _async_success_handler_impl(self, result=None, start_time=None, end_time=None, cache_hit=None, **kwargs):
         """
         Implementing async callbacks, to handle asyncio event loop issues when custom integrations need to use async functions.
 

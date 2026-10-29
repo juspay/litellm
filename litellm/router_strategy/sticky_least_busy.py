@@ -19,7 +19,6 @@ How this works:
 
 import asyncio
 import hashlib
-import json
 import random
 from bisect import bisect_right
 from typing import Callable, Dict, List, Optional, Tuple

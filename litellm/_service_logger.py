@@ -291,7 +291,7 @@ class ServiceLogging(CustomLogger):
             if error:
                 log_entry["error"] = error
 
-            print(json.dumps(log_entry, default=str), file=sys.stdout, flush=True)
+            print(json.dumps(log_entry, default=str), file=sys.stdout, flush=True)  # noqa: T201
         except Exception as e:
             verbose_logger.debug(f"Error logging service event to stdout: {e}")
 
