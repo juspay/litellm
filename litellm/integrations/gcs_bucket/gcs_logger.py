@@ -3,6 +3,7 @@ Production Logger with GCS Support for LiteLLM Proxy Server
 Logs to separate GCS buckets for success/error events with custom folder structures
 """
 
+import asyncio
 import json
 import os
 import time
@@ -16,6 +17,7 @@ import anyio.to_process
 import litellm
 from litellm._logging import verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
+from litellm.integrations.gcs_bucket.alert_system import AlertSystem
 from litellm.integrations.gcs_bucket.gcs_bucket_base import GCSBucketBase
 from litellm.integrations.gcs_bucket.redaction import (
     REDACT_ENABLED,
@@ -26,6 +28,17 @@ from litellm.integrations.gcs_bucket.redaction import (
 _GCS_PREPARATION_LIMITER = anyio.CapacityLimiter(1)
 _GCS_REDACTION_PROCESS_LIMITER = anyio.CapacityLimiter(1)
 _GCS_SANITIZATION_THREAD_LIMITER = anyio.CapacityLimiter(1)
+
+_ALERT_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _consume_alert_task(task: asyncio.Task[None]) -> None:
+    _ALERT_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exception = task.exception()
+    if exception is not None:
+        verbose_logger.exception(f"alert system task failed: {exception}")
 
 
 def _sanitize_for_json(obj, seen=None):
@@ -101,7 +114,7 @@ async def _prepare_gcs_payload_async(value, log_type):
 class ProductionGCSLogger(CustomLogger):
     """Production logger with async GCS bucket support using custom folder structures"""
 
-    def __init__(self):
+    def __init__(self, alert_system: AlertSystem | None = None):
         super().__init__()
         self.success_bucket_name = os.getenv("GCS_SUCCESS_BUCKET_NAME")
         self.error_bucket_name = os.getenv("GCS_ERROR_BUCKET_NAME")
@@ -110,10 +123,25 @@ class ProductionGCSLogger(CustomLogger):
         # Initialize GCS base for async operations
         self.gcs_base = GCSBucketBase(bucket_name=self.success_bucket_name)
 
+        self.alert_system = alert_system or AlertSystem.from_env()
+
         if not self.success_bucket_name or not self.error_bucket_name:
             verbose_logger.warning("⚠️  GCS bucket names not set. GCS logging disabled.")
         else:
             verbose_logger.info(f"✅ GCS initialized: {self.success_bucket_name}, {self.error_bucket_name}")
+
+    def _fire_alert_scan(self, kwargs, response_obj) -> None:
+        if not self.alert_system.enabled:
+            return
+        try:
+            task = asyncio.create_task(
+                self.alert_system.process_success_event(kwargs, response_obj),
+                name="alert-scan",
+            )
+            _ALERT_TASKS.add(task)
+            task.add_done_callback(_consume_alert_task)
+        except Exception as e:  # noqa: BLE001  # scheduling the alert scan must never break logging
+            verbose_logger.exception(f"❌ alert system: could not schedule scan task: {e}")
 
     async def _upload_to_gcs_async(self, data: dict, bucket_name: str, log_type: str):
         """Upload log data to GCS bucket using async I/O"""
@@ -212,6 +240,8 @@ class ProductionGCSLogger(CustomLogger):
         # Check if logging should be skipped via header
         if self._should_skip_logging(kwargs):
             return
+
+        self._fire_alert_scan(kwargs, response_obj)
 
         try:
             correlation_id = getattr(response_obj, "id", None) or str(uuid.uuid4())
