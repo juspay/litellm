@@ -379,3 +379,26 @@ def test_disable_spend_updates_error_when_general_settings_unavailable(
     monkeypatch.delattr(proxy_server_mod, "general_settings", raising=False)
     with pytest.raises(ImportError):
         ProxyUpdateSpend.disable_spend_updates()
+
+
+@pytest.mark.asyncio
+async def test_check_view_exists_binds_schema_as_parameter(mock_prisma_client: Any) -> None:
+    """The pg_schema must reach query_raw as a bound parameter, never via
+    f-string interpolation into the pg_views query."""
+    captured: Dict[str, Any] = {}
+
+    async def _capture_query(sql: str, *args: Any) -> List[Dict[str, Any]]:
+        captured["sql"] = sql
+        captured["args"] = args
+        return [{"view_count": 8, "view_names": ["LiteLLM_VerificationTokenView"]}]
+
+    mock_prisma_client.db.query_raw = _capture_query
+
+    from litellm.proxy.utils import PrismaClient
+
+    await PrismaClient.check_view_exists(mock_prisma_client)
+
+    sql = captured["sql"]
+    assert "schemaname = $1" in sql
+    assert "$1" in sql
+    assert captured["args"] == ("public",)

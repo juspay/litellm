@@ -87,6 +87,7 @@ from litellm.proxy.common_utils.admin_ui_utils import (
     admin_ui_disabled,
     show_missing_vars_in_env,
 )
+from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
 from litellm.proxy.common_utils.html_forms.jwt_display_template import (
     jwt_display_template,
 )
@@ -593,7 +594,7 @@ async def cli_sso_start(request: Request):
 
     verification_uri_complete: str | None = (
         (
-            get_custom_url(request_base_url=str(request.base_url), route="sso/key/generate")
+            get_custom_url(request_base_url=str(request.base_url), route="sso/key/generate", request=request)
             + "?"
             + urlencode(
                 {
@@ -665,6 +666,100 @@ def _decode_sso_jwt_unverified(token: str) -> dict:
     if unverified_header.get("alg") in (None, "none"):
         raise jwt.exceptions.DecodeError("Refusing to decode an unsecured JWT (alg=none)")
     return jwt.decode(token, options={"verify_signature": False})
+
+
+async def _decode_sso_id_token_verified(id_token: str, issuer: str | None, audience: str | None) -> dict:
+    """Verify an SSO id_token against the provider's JWKS and claim constraints.
+
+    Used for identity-bearing id_tokens (the userinfo fallback path and any
+    other place the token's claims alone resolve or auto-provision the
+    logged-in user). Verification requires GENERIC_JWKS_ENDPOINT (a JWKS URL
+    or an OIDC discovery URL containing jwks_uri); without it this raises so
+    callers fail closed rather than trusting unverified claims.
+
+    Checks signature (RS256/ES256/HS256 via the matching JWKS key), exp, and
+    nbf; iss and aud are checked when the corresponding expected value is
+    supplied.
+    """
+    jwks_url = os.getenv("GENERIC_JWKS_ENDPOINT")
+    if not jwks_url:
+        raise ProxyException(
+            message=(
+                "id_token identity requires signature verification; set GENERIC_JWKS_ENDPOINT "
+                "(JWKS URL or OIDC discovery URL) so the token can be validated against the "
+                "provider's keys"
+            ),
+            type=ProxyErrorTypes.auth_error,
+            param="id_token_verification",
+            code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    client = get_async_httpx_client(llm_provider=httpxSpecialProvider.SSO_HANDLER)
+    response = await client.get(jwks_url)
+    if response.status_code != 200:
+        raise ProxyException(
+            message=f"JWKS endpoint {jwks_url} returned status {response.status_code}",
+            type=ProxyErrorTypes.auth_error,
+            param="id_token_verification",
+            code=status.HTTP_401_UNAUTHORIZED,
+        )
+    try:
+        jwks = response.json()
+    except Exception as e:
+        raise ProxyException(
+            message=f"JWKS endpoint {jwks_url} returned invalid JSON: {e}",
+            type=ProxyErrorTypes.auth_error,
+            param="id_token_verification",
+            code=status.HTTP_401_UNAUTHORIZED,
+        ) from e
+    if ".well-known/openid-configuration" in jwks_url and isinstance(jwks, dict):
+        inner_jwks_uri = jwks.get("jwks_uri")
+        if not isinstance(inner_jwks_uri, str) or not inner_jwks_uri:
+            raise ProxyException(
+                message=f"Discovery document {jwks_url} has no jwks_uri",
+                type=ProxyErrorTypes.auth_error,
+                param="id_token_verification",
+                code=status.HTTP_401_UNAUTHORIZED,
+            )
+        inner = await client.get(inner_jwks_uri)
+        if inner.status_code != 200:
+            raise ProxyException(
+                message=f"JWKS endpoint {inner_jwks_uri} returned status {inner.status_code}",
+                type=ProxyErrorTypes.auth_error,
+                param="id_token_verification",
+                code=status.HTTP_401_UNAUTHORIZED,
+            )
+        jwks = inner.json()
+
+    header = jwt.get_unverified_header(id_token)
+    alg = header.get("alg")
+    if alg in (None, "none"):
+        raise jwt.exceptions.DecodeError("Refusing to decode an unsecured JWT (alg=none)")
+
+    from jwt import PyJWK
+
+    keys = jwks.get("keys", [jwks]) if isinstance(jwks, dict) else jwks
+    signing_key: Any | None = None
+    for key in keys:
+        if key.get("kid") == header.get("kid") or (header.get("kid") is None and keys.index(key) == 0):
+            signing_key = PyJWK.from_dict(key).key
+            break
+    if signing_key is None:
+        raise jwt.exceptions.DecodeError(f"No JWKS key matching kid={header.get('kid')} at {jwks_url}")
+
+    decode_options: dict = {"verify_signature": True, "verify_exp": True, "verify_nbf": True}
+    if issuer is not None:
+        decode_options["verify_iss"] = True
+    if audience is not None:
+        decode_options["verify_aud"] = True
+    return jwt.decode(
+        id_token,
+        key=signing_key,
+        algorithms=[alg],
+        issuer=issuer,
+        audience=audience,
+        options=decode_options,
+    )
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
@@ -1979,6 +2074,7 @@ async def _complete_cli_sso_callback_session(
     verify_url = get_custom_url(
         request_base_url=str(request.base_url),
         route=f"sso/cli/complete/{key}",
+        request=request,
     )
     return HTMLResponse(
         content=_render_cli_sso_verification_page(
@@ -2756,7 +2852,7 @@ class SSOAuthenticationHandler:
         """
         from litellm.proxy.utils import get_custom_url
 
-        redirect_url = get_custom_url(request_base_url=str(request.base_url))
+        redirect_url = get_custom_url(request_base_url=str(request.base_url), request=request)
         if redirect_url.endswith("/"):
             redirect_url += sso_callback_route
         else:
@@ -3165,7 +3261,7 @@ class SSOAuthenticationHandler:
                 )
 
         disabled_non_admin_personal_key_creation = get_disabled_non_admin_personal_key_creation()
-        litellm_dashboard_ui = get_custom_url(request_base_url=str(request.base_url), route="ui/")
+        litellm_dashboard_ui = get_custom_url(request_base_url=str(request.base_url), route="ui/", request=request)
 
         if get_secret_bool("EXPERIMENTAL_UI_LOGIN"):
             _user_info: Optional[LiteLLM_UserTable] = None
@@ -3225,7 +3321,7 @@ class SSOAuthenticationHandler:
             litellm_dashboard_ui += "?login=success"
         verbose_proxy_logger.info(f"Redirecting to {litellm_dashboard_ui}")
         redirect_response = RedirectResponse(url=litellm_dashboard_ui, status_code=303)
-        redirect_response.set_cookie(key="token", value=jwt_token)
+        set_ui_session_cookie(redirect_response, jwt_token, request=request)
         return redirect_response
 
     @staticmethod
@@ -3697,15 +3793,24 @@ class SSOAuthenticationHandler:
         # they contain no identity claims — id_token fallback is attempted in that case too.
         # Explicitly check for a non-empty string to avoid attempting JWT decode on
         # a blank or non-string id_token field from a misbehaving provider.
+        # The id_token's claims alone resolve the logged-in user, so the
+        # fallback verifies the signature against the provider's JWKS
+        # (GENERIC_JWKS_ENDPOINT) and fails closed when it cannot.
         if userinfo is None and isinstance(id_token, str) and id_token:
             try:
-                userinfo = _decode_sso_jwt_unverified(id_token)
+                userinfo = await _decode_sso_id_token_verified(
+                    id_token,
+                    issuer=os.getenv("GENERIC_ISSUER") or None,
+                    audience=os.getenv("GENERIC_CLIENT_ID") or None,
+                )
                 if not userinfo:
                     # jwt.decode returned an empty dict (payload-free JWT or provider bug).
                     # Treat this the same as a missing userinfo — the session would have no
                     # identity claims, which is equivalent to a broken session.
                     verbose_proxy_logger.warning("id_token decoded to an empty payload — treating as failure.")
                     userinfo = None
+            except ProxyException:
+                raise
             except Exception as decode_err:
                 verbose_proxy_logger.error("Failed to decode id_token: %s", decode_err)
                 raise ProxyException(
@@ -3809,8 +3914,8 @@ class MicrosoftSSOHandler:
             access_token=microsoft_sso.access_token
         )
 
-        # Extract app roles from the id_token JWT
-        app_roles = MicrosoftSSOHandler.get_app_roles_from_id_token(id_token=microsoft_sso.id_token)
+        # Extract app roles from the id_token JWT (verified against the tenant JWKS)
+        app_roles = await MicrosoftSSOHandler.get_app_roles_from_id_token(id_token=microsoft_sso.id_token)
         verbose_proxy_logger.debug(f"Extracted app roles from id_token: {app_roles}")
 
         # Combine groups and app roles
@@ -3861,12 +3966,16 @@ class MicrosoftSSOHandler:
         return openid_response
 
     @staticmethod
-    def get_app_roles_from_id_token(id_token: Optional[str]) -> List[str]:
+    @staticmethod
+    async def get_app_roles_from_id_token(id_token: str | None) -> List[str]:
         """
         Extract app roles from the Microsoft Entra ID (Azure AD) id_token JWT.
 
         App roles are assigned in the Azure AD Enterprise Application and appear
-        in the 'app_roles' claim of the id_token.
+        in the 'app_roles' claim of the id_token. App roles are
+        privilege-bearing (they can map to proxy_admin), so the token is
+        verified against the tenant's JWKS; on any verification failure no
+        roles are extracted rather than trusting unverified claims.
 
         Args:
             id_token (Optional[str]): The JWT id_token from Microsoft SSO
@@ -3878,10 +3987,19 @@ class MicrosoftSSOHandler:
             verbose_proxy_logger.debug("No id_token provided for app role extraction")
             return []
 
+        microsoft_tenant = os.getenv("MICROSOFT_TENANT")
+        if not microsoft_tenant:
+            verbose_proxy_logger.error(
+                "MICROSOFT_TENANT is not set; cannot verify id_token for app roles. No roles extracted."
+            )
+            return []
+
         try:
-            # Decode the JWT without signature verification
-            # (signature is already verified by fastapi_sso)
-            decoded_token = _decode_sso_jwt_unverified(id_token)
+            decoded_token = await _decode_sso_id_token_verified(
+                id_token,
+                issuer=f"https://login.microsoftonline.com/{microsoft_tenant}/v2.0",
+                audience=os.getenv("MICROSOFT_CLIENT_ID"),
+            )
 
             # Extract app_roles claim from the token
             ## check for both 'roles' and 'app_roles' claims

@@ -230,3 +230,61 @@ def test_configured_custom_key_header_is_stripped() -> None:
         assert "x-my-tenant-key" in _request_strip_headers()
     finally:
         proxy_server.general_settings = original
+
+
+def test_plugin_proxy_target_url_resolves_dot_segments() -> None:
+    """'..' in the captured path must not climb out of the plugin's base URL."""
+    from litellm.proxy.plugin_routes import _build_plugin_proxy_target_url
+
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "../../admin", "") == (
+        "http://plugin:3300/admin"
+    )
+    assert _build_plugin_proxy_target_url("http://plugin:3300/", "a/../../b", "") == (
+        "http://plugin:3300/b"
+    )
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "ui/assets/", "") == (
+        "http://plugin:3300/ui/assets/"
+    )
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "", "x=1&y=2") == (
+        "http://plugin:3300/?x=1&y=2"
+    )
+    # Pure traversal collapses to the plugin root, never above it
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "../../../..", "") == (
+        "http://plugin:3300/"
+    )
+
+
+def test_plugin_fernet_fails_closed_without_salt_key(monkeypatch) -> None:
+    """With LITELLM_SALT_KEY unset, both issuance and verification must fail
+    rather than deriving a publicly-computable HMAC(b'', plugin_name) key."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import _plugin_fernet, issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+
+    with _pytest.raises(ValueError):
+        _plugin_fernet("chat-ui")
+    with _pytest.raises(ValueError):
+        issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+
+
+def test_plugin_session_claim_round_trip_with_salt(monkeypatch) -> None:
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    decoded = verify_plugin_session_claim("chat-ui", claim)
+    assert decoded["user_id"] == "user-1"
+    assert decoded["plugin"] == "chat-ui"
+
+
+def test_plugin_claim_cannot_cross_plugins(monkeypatch) -> None:
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    with _pytest.raises(ValueError):
+        verify_plugin_session_claim("other-plugin", claim)

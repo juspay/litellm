@@ -6,6 +6,7 @@ and provide safe, sandboxed functionality for common guardrail operations.
 """
 
 import json
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 from urllib.parse import urlparse
@@ -357,6 +358,28 @@ _HTTP_DEFAULT_TIMEOUT = 30.0
 # Maximum allowed timeout (in seconds)
 _HTTP_MAX_TIMEOUT = 60.0
 
+# Optional egress allowlist for guardrail HTTP primitives. When
+# CUSTOM_CODE_HTTP_ALLOWED_HOSTS is set (comma-separated hostnames, e.g.
+# "moderation.internal,api.example.com"), http_request/http_get/http_post
+# refuse any URL whose host is not listed. Empty/unset = unrestricted,
+# preserving existing deployments' behavior.
+_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV = "CUSTOM_CODE_HTTP_ALLOWED_HOSTS"
+
+
+def _http_host_is_allowed(url: str) -> bool:
+    """True when CUSTOM_CODE_HTTP_ALLOWED_HOSTS is unset (unrestricted) or the
+    URL's host is listed in it. Exact host match only — no wildcards."""
+    raw = os.getenv(_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV, "")
+    if not raw:
+        return True
+    allowed = {host.strip().lower() for host in raw.split(",") if host.strip()}
+    if not allowed:
+        return True
+    host = get_url_domain(url)
+    if host is None:
+        return False
+    return host.lower() in allowed
+
 
 def _http_error_response(error: str) -> Dict[str, Any]:
     """Create a standardized error response for HTTP requests."""
@@ -449,6 +472,13 @@ async def http_request(
     # Validate URL
     if not is_valid_url(url):
         return _http_error_response(f"Invalid URL: {url}")
+
+    # Enforce the optional egress allowlist before any connection is opened
+    if not _http_host_is_allowed(url):
+        host = get_url_domain(url) or url
+        return _http_error_response(
+            f"Host '{host}' is not in the guardrail HTTP allowlist ({_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV})"
+        )
 
     # Validate and normalize method
     method = method.upper()

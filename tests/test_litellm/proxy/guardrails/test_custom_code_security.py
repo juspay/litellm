@@ -228,3 +228,73 @@ def test_augmented_assignment_works():
 def test_missing_apply_guardrail_raises():
     with pytest.raises(CustomCodeCompilationError, match="apply_guardrail"):
         _compile("x = 1\n")
+
+
+def test_http_allowlist_blocks_unlisted_host(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal")
+    result = primitives._http_host_is_allowed("https://evil.example.com/exfil")
+    assert result is False
+
+
+def test_http_allowlist_permits_listed_host(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal, api.example.com")
+    assert primitives._http_host_is_allowed("https://api.example.com/check") is True
+    assert primitives._http_host_is_allowed("https://moderation.internal/scan") is True
+
+
+def test_http_allowlist_exact_match_only(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "api.example.com")
+    assert primitives._http_host_is_allowed("https://api.example.com.evil.com/check") is False
+    assert primitives._http_host_is_allowed("https://sub.api.example.com/check") is False
+
+
+def test_http_allowlist_unset_means_unrestricted(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+    assert primitives._http_host_is_allowed("https://anything.example.com/x") is True
+
+
+@pytest.mark.asyncio
+async def test_http_request_blocked_by_allowlist_never_connects(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal")
+
+    async def _must_not_connect(*args, **kwargs):
+        raise AssertionError("allowlist must block before opening a connection")
+
+    monkeypatch.setattr(primitives, "get_async_httpx_client", _must_not_connect)
+    result = await primitives.http_request("https://evil.example.com/exfil")
+    assert result["success"] is False
+    assert "allowlist" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_apply_guardrail_enforces_execution_timeout(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code.custom_code_guardrail import (
+        CustomCodeExecutionTimeoutError,
+    )
+
+    import asyncio as _asyncio
+
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    async def _hang(*args, **kwargs):
+        await _asyncio.sleep(60)
+
+    monkeypatch.setattr(primitives, "_execute_http_request", _hang)
+    slow_code = (
+        "async def apply_guardrail(inputs, request_data, input_type):\n"
+        "    await http_request('https://api.example.com/check')\n"
+        "    return {'action': 'allow'}\n"
+    )
+    guardrail = _compile(slow_code)
+    with pytest.raises(CustomCodeExecutionTimeoutError):
+        await guardrail.apply_guardrail({}, {}, "pre_call")

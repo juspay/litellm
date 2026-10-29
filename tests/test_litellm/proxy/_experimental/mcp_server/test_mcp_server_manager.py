@@ -5913,3 +5913,87 @@ class TestOBOEndpointDiscovery:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestValidateMcpStdioCommandStr:
+    def test_allowlisted_bare_name_passes(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("python") == "python"
+
+    def test_relative_path_rejected_even_when_basename_allowlisted(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("./python") is None
+        assert validate_mcp_stdio_command_str("bin/node") is None
+
+    def test_unknown_command_rejected(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("curl") is None
+
+    def test_empty_command_rejected(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("") is None
+
+
+class TestValidateMcpStdioCommandAtRuntime:
+    def test_non_allowlisted_command_raises_403(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+            _validate_mcp_stdio_command_at_runtime,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_mcp_stdio_command_at_runtime("curl")
+        assert exc_info.value.status_code == 403
+
+    def test_relative_path_raises_403(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+            _validate_mcp_stdio_command_at_runtime,
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_mcp_stdio_command_at_runtime("./python")
+        assert exc_info.value.status_code == 403
+
+    def test_world_writable_directory_rejected(self, tmp_path) -> None:
+        import stat
+
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+            _validate_mcp_stdio_command_at_runtime,
+        )
+
+        binary = tmp_path / "python"
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        world_writable_dir = tmp_path / "world"
+        world_writable_dir.mkdir()
+        world_writable_dir.chmod(0o777)
+        binary_in_world = world_writable_dir / "python"
+        binary_in_world.write_text("#!/bin/sh\nexit 0\n")
+        binary_in_world.chmod(0o755)
+
+        with patch("shutil.which", return_value=str(binary_in_world)):
+            with pytest.raises(HTTPException) as exc_info:
+                _validate_mcp_stdio_command_at_runtime("python")
+        assert "world-writable" in str(exc_info.value.detail)
+        assert world_writable_dir.stat().st_mode & stat.S_IWOTH
+
+    def test_allowlisted_command_in_protected_dir_passes(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+            _validate_mcp_stdio_command_at_runtime,
+        )
+
+        real_python = __import__("shutil").which("python3") or __import__("sys").executable
+        with patch("shutil.which", return_value=real_python):
+            _validate_mcp_stdio_command_at_runtime("python")
+
+    def test_unresolvable_command_raises_403(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
+            _validate_mcp_stdio_command_at_runtime,
+        )
+
+        with patch("shutil.which", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                _validate_mcp_stdio_command_at_runtime("python")
+        assert "could not be resolved" in str(exc_info.value.detail)

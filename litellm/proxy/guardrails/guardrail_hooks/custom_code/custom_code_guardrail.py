@@ -64,12 +64,21 @@ class CustomCodeGuardrailError(Exception):
         self.details = details or {}
 
 
+# Execution deadline shared by the live guardrail path and the admin /test
+# endpoint so a pathological apply_guardrail cannot pin a worker either way.
+_EXECUTION_TIMEOUT_SECONDS = 5
+
+
 class CustomCodeCompilationError(CustomCodeGuardrailError):
     """Raised when custom code fails to compile."""
 
 
 class CustomCodeExecutionError(CustomCodeGuardrailError):
     """Raised when custom code fails during execution."""
+
+
+class CustomCodeExecutionTimeoutError(CustomCodeExecutionError):
+    """Raised when custom code exceeds the execution deadline."""
 
 
 class CustomCodeGuardrailConfigModel(GuardrailConfigModel):
@@ -83,10 +92,18 @@ class CustomCodeGuardrail(CustomGuardrail):
     """
     Guardrail that executes user-defined Python-like code.
 
-    The code runs in a sandboxed environment that provides:
-    - Access to LiteLLM primitives (regex_match, json_parse, etc.)
-    - No file I/O or network access
-    - No imports allowed
+    The code runs in a RestrictedPython sandbox. The boundary is:
+    - Blocked: imports, exec/eval, dunder attribute access, file I/O,
+      subprocess. RestrictedPython's AST transformer rejects these at
+      compile time.
+    - Allowed: the injected primitive set (regex, JSON, text utilities,
+      code detection) plus http_request/http_get/http_post, which reach the
+      litellm pooled httpx client. Admin-supplied guardrail code can
+      therefore issue outbound HTTP requests; operators who need to
+      constrain that can set CUSTOM_CODE_HTTP_ALLOWED_HOSTS (comma-
+      separated host allowlist) — the primitives refuse unlisted hosts.
+    - Execution is bounded by a 5-second deadline on both the live
+      guardrail path and the /test endpoint.
 
     Users write an `apply_guardrail(inputs, request_data, input_type)` function
     that returns one of:
@@ -230,12 +247,18 @@ class CustomCodeGuardrail(CustomGuardrail):
             # Prepare request_data with safe subset of information
             safe_request_data = self._prepare_safe_request_data(request_data)
 
-            # Execute the custom function - handle both sync and async functions
+            # Execute the custom function - handle both sync and async functions,
+            # bounded by the same deadline the /test endpoint enforces so a
+            # pathological guardrail cannot pin a live worker. Async functions
+            # that block forever inside a primitive's HTTP call are cancelled
+            # by wait_for; sync CPU-bound loops inside an async function are
+            # not interruptible in Python, but every awaited primitive
+            # (http_request et al.) carries its own httpx timeout too.
             result = self._compiled_function(inputs, safe_request_data, input_type)
 
             # If the function is async (returns a coroutine), await it
             if asyncio.iscoroutine(result):
-                result = await result
+                result = await asyncio.wait_for(result, timeout=_EXECUTION_TIMEOUT_SECONDS)
 
             # Process the result
             return self._process_result(
@@ -245,11 +268,24 @@ class CustomCodeGuardrail(CustomGuardrail):
                 input_type=input_type,
             )
 
+        except asyncio.TimeoutError as e:
+            verbose_proxy_logger.error(
+                f"Custom code guardrail '{self.guardrail_name}' exceeded {_EXECUTION_TIMEOUT_SECONDS}s execution timeout"
+            )
+            raise CustomCodeExecutionTimeoutError(
+                f"Custom code guardrail execution exceeded {_EXECUTION_TIMEOUT_SECONDS} seconds",
+                details={
+                    "guardrail_name": self.guardrail_name,
+                    "input_type": input_type,
+                },
+            ) from e
         except HTTPException:
             # Re-raise HTTP exceptions (from block action)
             raise
         except ModifyResponseException:
             # Pre-call block uses passthrough; must not wrap as execution error (500)
+            raise
+        except CustomCodeExecutionTimeoutError:
             raise
         except Exception as e:
             verbose_proxy_logger.error(f"Custom code guardrail '{self.guardrail_name}' execution error: {e}")

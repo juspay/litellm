@@ -4331,3 +4331,43 @@ async def test_reset_mpr_counter_no_redis_available(monkeypatch):
     assert result["redis_available"] is False
     assert result["deleted_keys"] == []
 
+
+
+class TestSortByOrderExprAllowlist:
+    """ORDER BY expressions must come only from the allowlist map that also
+    validates sort_by at request time — no raw interpolation of user input."""
+
+    def test_every_valid_sort_field_has_a_pinned_expr(self) -> None:
+        from litellm.proxy.spend_tracking.spend_management_endpoints import (
+            _SORT_COLUMN_TO_ORDER_BY_EXPR,
+        )
+
+        assert set(_SORT_COLUMN_TO_ORDER_BY_EXPR.keys()) == {
+            "spend",
+            "total_tokens",
+            "startTime",
+            "endTime",
+            "request_duration_ms",
+            "model",
+            "ttft_ms",
+        }
+        for expr in _SORT_COLUMN_TO_ORDER_BY_EXPR.values():
+            assert ";" not in expr
+            assert "--" not in expr
+
+    def test_injection_payload_is_rejected_before_order_by(self) -> None:
+        from litellm.proxy.spend_tracking.spend_management_endpoints import (
+            _SORT_COLUMN_TO_ORDER_BY_EXPR,
+        )
+
+        payload = "spend; DROP TABLE LiteLLM_SpendLogs; --"
+        assert payload not in _SORT_COLUMN_TO_ORDER_BY_EXPR
+
+    def test_quoted_columns_are_quoted_in_expr(self) -> None:
+        from litellm.proxy.spend_tracking.spend_management_endpoints import (
+            _SORT_COLUMN_TO_ORDER_BY_EXPR,
+        )
+
+        assert _SORT_COLUMN_TO_ORDER_BY_EXPR["startTime"] == '"startTime"'
+        assert _SORT_COLUMN_TO_ORDER_BY_EXPR["endTime"] == '"endTime"'
+        assert "EXTRACT(EPOCH FROM" in _SORT_COLUMN_TO_ORDER_BY_EXPR["ttft_ms"]

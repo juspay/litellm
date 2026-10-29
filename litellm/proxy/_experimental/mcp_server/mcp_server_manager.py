@@ -42,6 +42,7 @@ from litellm.constants import (
     MCP_NPM_CACHE_DIR,
     MCP_STDIO_ALLOWED_COMMANDS,
     MCP_TOOL_LISTING_TIMEOUT,
+    validate_mcp_stdio_command_str,
 )
 from litellm.exceptions import BlockedPiiEntityError, GuardrailRaisedException
 from litellm.experimental_mcp_client.client import MCPClient, MCPSigV4Auth
@@ -166,6 +167,40 @@ _AZURE_ENTRA_HOSTS = {
 _user_env_vars_cache: dict[tuple[str, str], tuple[dict[str, str], float]] = {}
 _USER_ENV_VARS_CACHE_TTL = 60  # seconds
 _USER_ENV_VARS_CACHE_MAX_SIZE = 4096  # cap to prevent unbounded growth
+
+
+def _validate_mcp_stdio_command_at_runtime(command: str) -> None:
+    """Runtime defense-in-depth for MCP stdio commands.
+
+    Runs on the machine that actually spawns the process, so unlike the
+    pydantic validators it can resolve the command via PATH and inspect the
+    binary. Raises HTTPException 403 when the command is not allowlisted,
+    cannot be resolved, or resolves to a binary in a world-writable
+    directory (e.g. /tmp) — a swapped binary there would otherwise execute
+    with the proxy's environment.
+    """
+    if validate_mcp_stdio_command_str(command) is None:
+        raise HTTPException(
+            status_code=403,
+            detail=f"MCP stdio command '{command}' is not in the allowlist ({sorted(MCP_STDIO_ALLOWED_COMMANDS)}). "
+            f"Add it to LITELLM_MCP_STDIO_EXTRA_COMMANDS to allow this command.",
+        )
+    import shutil
+    import stat
+
+    resolved = shutil.which(command) or (command if os.path.isabs(command) and os.path.isfile(command) else None)
+    if resolved is None:
+        raise HTTPException(
+            status_code=403,
+            detail=f"MCP stdio command '{command}' could not be resolved on this host.",
+        )
+    parent_mode = os.stat(os.path.dirname(resolved)).st_mode
+    if parent_mode & stat.S_IWOTH:
+        raise HTTPException(
+            status_code=403,
+            detail=f"MCP stdio command '{command}' resolves to '{resolved}' in a world-writable directory; "
+            f"move the binary to a protected location or pin an allowlisted path.",
+        )
 
 
 def invalidate_user_env_vars_cache(user_id: str, server_id: str) -> None:
@@ -2101,24 +2136,12 @@ class MCPServerManager:
                 resolved_env["NPM_CONFIG_CACHE"] = MCP_NPM_CACHE_DIR
             # Defense-in-depth: block commands not in the allowlist.
             # The Pydantic validator blocks new servers; this catches legacy
-            # config/DB records predating the allowlist.
+            # config/DB records predating the allowlist. This runtime check
+            # additionally resolves the command via PATH and rejects binaries
+            # sitting in world-writable directories, so a swapped binary in
+            # /tmp cannot execute with the proxy's environment.
             if server.command:
-                base_command = os.path.basename(server.command)
-                # Strip .exe/.cmd/.bat/.com suffix for Windows compatibility
-                base_command_no_ext = base_command.lower()
-                for ext in [".exe", ".cmd", ".bat", ".com"]:
-                    if base_command.lower().endswith(ext):
-                        base_command_no_ext = base_command[: -len(ext)].lower()
-                        break
-                if (
-                    base_command.lower() not in MCP_STDIO_ALLOWED_COMMANDS
-                    and base_command_no_ext not in MCP_STDIO_ALLOWED_COMMANDS
-                ):
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"MCP stdio command '{server.command}' is not in the allowlist ({sorted(MCP_STDIO_ALLOWED_COMMANDS)}). "
-                        f"Add it to LITELLM_MCP_STDIO_EXTRA_COMMANDS to allow this command.",
-                    )
+                _validate_mcp_stdio_command_at_runtime(server.command)
 
             stdio_config: Optional[MCPStdioConfig] = None
             if server.command and server.args is not None:

@@ -25,6 +25,7 @@ import hashlib
 import hmac as _hmac
 import json
 import os
+import posixpath
 import time
 from collections.abc import Mapping
 
@@ -129,9 +130,15 @@ def _plugin_fernet(plugin_name: str) -> Fernet:
     Key material: HMAC-SHA256(LITELLM_SALT_KEY, plugin_name).
     A plugin possessing its own key cannot derive the master salt or
     forge claims intended for a different plugin.
+
+    Raises ValueError when LITELLM_SALT_KEY is unset: falling back to an
+    empty HMAC key would make the derived key publicly computable from the
+    plugin name, so both issuance and verification fail closed instead.
     """
-    salt = os.getenv("LITELLM_SALT_KEY", "").encode()
-    derived = _hmac.new(salt, plugin_name.encode(), hashlib.sha256).digest()
+    salt = os.getenv("LITELLM_SALT_KEY")
+    if not salt:
+        raise ValueError("LITELLM_SALT_KEY is not configured; plugin session claims are unavailable")
+    derived = _hmac.new(salt.encode(), plugin_name.encode(), hashlib.sha256).digest()
     return Fernet(base64.urlsafe_b64encode(derived))
 
 
@@ -192,6 +199,28 @@ def register_plugins_from_config(general_settings: dict[str, object]) -> None:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+def _build_plugin_proxy_target_url(plugin_url: str, path: str, query: str) -> str:
+    """Build the upstream target URL for a plugin-proxy request.
+
+    Resolves ``..`` segments in the captured path so a request like
+    ``/plugin-proxy/<name>/../../admin`` cannot climb out of the plugin's
+    configured base URL. The effective target stays pinned to the
+    operator-configured prefix regardless of how the plugin's own server
+    normalizes dot segments. A trailing slash on the original path is
+    preserved since some upstreams treat ``/foo`` and ``/foo/`` as
+    different resources.
+    """
+    safe_path = posixpath.normpath("/" + path).lstrip("/")
+    if safe_path == ".":
+        safe_path = ""
+    if path.endswith("/") and safe_path and not safe_path.endswith("/"):
+        safe_path += "/"
+    target_url = f"{plugin_url.rstrip('/')}/{safe_path}"
+    if query:
+        target_url = f"{target_url}?{query}"
+    return target_url
+
+
 @router.get("/api/plugins", tags=["plugins"])
 async def list_plugins(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
@@ -276,10 +305,12 @@ async def plugin_proxy(
             status_code=404,
         )
 
-    target_url = f"{plugin.url.rstrip('/')}/{path}"
-    query = request.url.query
-    if query:
-        target_url = f"{target_url}?{query}"
+    # Resolve '..' segments in the captured path so a request like
+    # /plugin-proxy/<name>/../../admin cannot climb out of the plugin's
+    # configured base URL — the effective target stays pinned to the
+    # operator-configured prefix regardless of how the plugin's own server
+    # normalizes dot segments.
+    target_url = _build_plugin_proxy_target_url(plugin_url=plugin.url, path=path, query=request.url.query)
 
     body = await request.body()
 

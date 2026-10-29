@@ -3120,11 +3120,12 @@ class PrismaClient:
             required_view = "LiteLLM_VerificationTokenView"
             expected_views_str = ", ".join(f"'{view}'" for view in expected_views)
             pg_schema = os.getenv("DATABASE_SCHEMA", "public")
-            ret = await self.db.query_raw(f"""
+            ret = await self.db.query_raw(
+                f"""
                 WITH existing_views AS (
                     SELECT viewname
                     FROM pg_views
-                    WHERE schemaname = '{pg_schema}' AND viewname IN (
+                    WHERE schemaname = $1 AND viewname IN (
                         {expected_views_str}
                     )
                 )
@@ -3132,7 +3133,9 @@ class PrismaClient:
                     (SELECT COUNT(*) FROM existing_views) AS view_count,
                     ARRAY_AGG(viewname) AS view_names
                 FROM existing_views
-                """)
+                """,
+                pg_schema,
+            )
             expected_total_views = len(expected_views)
             if ret[0]["view_count"] == expected_total_views:
                 verbose_proxy_logger.info("All necessary views exist!")
@@ -6005,11 +6008,65 @@ def join_paths(base_path: str, route: str) -> str:
     return final_path
 
 
-def get_custom_url(request_base_url: str, route: Optional[str] = None) -> str:
+def _request_host_is_trusted_for_redirect(request: Any) -> bool:
+    """True when the request's Host header may be used to build an absolute
+    login/SSO redirect URL: the caller is on a loopback/internal network, a
+    configured trusted proxy, or the Host is in ALLOWED_REDIRECT_HOSTS."""
+    try:
+        from litellm.proxy.auth.ip_address_utils import IPAddressUtils
+
+        client_ip: str | None = None
+        client = getattr(request, "client", None)
+        if client is not None:
+            client_ip = getattr(client, "host", None)
+        if IPAddressUtils.is_internal_ip(client_ip):
+            return True
+
+        if IPAddressUtils.is_request_from_trusted_proxy(request):
+            return True
+    except (ImportError, AttributeError):
+        return False
+
+    allowed_hosts = os.getenv("ALLOWED_REDIRECT_HOSTS", "")
+    if allowed_hosts:
+        from urllib.parse import urlparse
+
+        host = urlparse(str(getattr(request, "base_url", ""))).hostname or ""
+        allowed = {h.strip().lower() for h in allowed_hosts.split(",") if h.strip()}
+        return host.lower() in allowed
+    return False
+
+
+def get_custom_url_relative(route: str | None = None) -> str:
+    """Origin-relative base URL for login/SSO redirects when the Host header
+    cannot be trusted: the browser resolves it against the origin it is
+    already talking to, so no client-controlled host ever enters the URL."""
+    server_root_path = get_server_root_path()
+    base_path = server_root_path if server_root_path else ""
+    if route is not None:
+        return join_paths(base_path or "/", route)
+    return base_path or "/"
+
+
+def get_custom_url(request_base_url: str, route: str | None = None, request: Any | None = None) -> str:
     # Use environment variable value, otherwise use URL from request
     server_base_url = get_proxy_base_url()
     if server_base_url is not None:
         base_url = server_base_url
+    elif request is not None and not _request_host_is_trusted_for_redirect(request):
+        # The Host header is client-controlled. Building a login/SSO redirect
+        # from an arbitrary host lets an attacker who reaches the proxy with
+        # "Host: evil.example" receive the post-login redirect (and the IdP
+        # redirect_uri) at a host they control. Without PROXY_BASE_URL we only
+        # trust the Host on requests from loopback/internal networks, trusted
+        # proxies (whose X-Forwarded-* headers apply), or the explicit
+        # ALLOWED_REDIRECT_HOSTS allowlist; otherwise fall back to a relative
+        # path so the browser stays on the origin it actually used.
+        verbose_proxy_logger.warning(
+            "get_custom_url: untrusted Host header on login/SSO redirect; using relative URL. "
+            "Set PROXY_BASE_URL or ALLOWED_REDIRECT_HOSTS to pin the public origin."
+        )
+        return get_custom_url_relative(route)
     else:
         base_url = request_base_url
 

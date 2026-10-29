@@ -1,6 +1,5 @@
 import enum
 import json
-import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union
 
@@ -16,7 +15,7 @@ from pydantic import (
 from typing_extensions import Required, TypedDict
 
 from litellm._uuid import uuid
-from litellm.constants import MCP_STDIO_ALLOWED_COMMANDS
+from litellm.constants import MCP_STDIO_ALLOWED_COMMANDS, validate_mcp_stdio_command_str
 from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
     validate_no_callback_env_reference,
 )
@@ -1298,12 +1297,16 @@ class NewMCPServerRequest(LiteLLMPydanticObjectBase):
                     raise ValueError("command is required for stdio transport")
                 if not values.get("args"):
                     raise ValueError("args is required for stdio transport")
-                # Validate command against allowlist to prevent arbitrary execution
-                base_command = os.path.basename(values["command"])
-                if base_command not in MCP_STDIO_ALLOWED_COMMANDS:
+                # Validate command against allowlist to prevent arbitrary execution.
+                # Relative paths are rejected: they resolve against the proxy's
+                # CWD, so a swapped binary in a writable directory would run
+                # with the proxy's environment.
+                if validate_mcp_stdio_command_str(values["command"]) is None:
                     raise ValueError(
                         f"Command '{values['command']}' is not in the allowed commands list "
-                        f"for stdio transport. Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
+                        f"for stdio transport (a bare command name or an absolute path to an "
+                        f"allowed binary; relative paths are rejected). "
+                        f"Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
                     )
             elif transport in [MCPTransport.http, MCPTransport.sse]:
                 if not values.get("url") and not values.get("spec_path"):
@@ -1370,12 +1373,16 @@ class UpdateMCPServerRequest(LiteLLMPydanticObjectBase):
                     raise ValueError("command is required for stdio transport")
                 if not values.get("args"):
                     raise ValueError("args is required for stdio transport")
-                # Validate command against allowlist to prevent arbitrary execution
-                base_command = os.path.basename(values["command"])
-                if base_command not in MCP_STDIO_ALLOWED_COMMANDS:
+                # Validate command against allowlist to prevent arbitrary execution.
+                # Relative paths are rejected: they resolve against the proxy's
+                # CWD, so a swapped binary in a writable directory would run
+                # with the proxy's environment.
+                if validate_mcp_stdio_command_str(values["command"]) is None:
                     raise ValueError(
                         f"Command '{values['command']}' is not in the allowed commands list "
-                        f"for stdio transport. Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
+                        f"for stdio transport (a bare command name or an absolute path to an "
+                        f"allowed binary; relative paths are rejected). "
+                        f"Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
                     )
             elif transport in [MCPTransport.http, MCPTransport.sse]:
                 if not values.get("url") and not values.get("spec_path"):

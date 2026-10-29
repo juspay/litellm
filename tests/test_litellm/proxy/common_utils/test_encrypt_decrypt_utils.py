@@ -13,6 +13,7 @@ import pytest
 from litellm.proxy import proxy_server
 from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     _V2_GCM_PREFIX,
+    _V3_HKDF_PREFIX,
     decrypt_bearer_token,
     decrypt_value_helper,
     encrypt_bearer_token,
@@ -35,12 +36,12 @@ def _salt_key(monkeypatch):
 
 
 def test_aes_gcm_round_trip(monkeypatch):
-    """A value written under AES-256-GCM is tagged v2:gcm: and decrypts back."""
+    """A value written under AES-256-GCM is tagged v3:hkdf: and decrypts back."""
     _use_aes(monkeypatch)
 
     ct = encrypt_value_helper("super-secret")
 
-    assert ct.startswith(_V2_GCM_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == "super-secret"
 
 
@@ -48,7 +49,7 @@ def test_default_is_legacy_algorithm(monkeypatch):
     """With no config, writes stay on the legacy algorithm (no v2: marker)."""
     ct = encrypt_value_helper("legacy-secret")
 
-    assert not ct.startswith(_V2_GCM_PREFIX)
+    assert not ct.startswith(_V2_GCM_PREFIX) and not ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == "legacy-secret"
 
 
@@ -59,12 +60,12 @@ def test_legacy_nacl_value_still_decrypts_after_flag_flip(monkeypatch):
     flipping the flag forward never strands previously-written data.
     """
     legacy = encrypt_value_helper("legacy-secret")  # default = xsalsa20
-    assert not legacy.startswith(_V2_GCM_PREFIX)
+    assert not legacy.startswith(_V2_GCM_PREFIX) and not legacy.startswith(_V3_HKDF_PREFIX)
 
     _use_aes(monkeypatch)
     # New writes are now AES, but the old value must still come back.
     assert decrypt_value_helper(legacy, key="t") == "legacy-secret"
-    assert encrypt_value_helper("fresh").startswith(_V2_GCM_PREFIX)
+    assert encrypt_value_helper("fresh").startswith(_V3_HKDF_PREFIX)
 
 
 def test_v2_prefix_is_idempotent_marker(monkeypatch):
@@ -76,11 +77,11 @@ def test_v2_prefix_is_idempotent_marker(monkeypatch):
     _use_aes(monkeypatch)
 
     ct = encrypt_value_helper("secret")
-    assert ct.startswith(_V2_GCM_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
 
     # Round-tripping does not change the plaintext, and the marker is stable.
     again = encrypt_value_helper(decrypt_value_helper(ct, key="t"))
-    assert again.startswith(_V2_GCM_PREFIX)
+    assert again.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(again, key="t") == "secret"
 
 
@@ -106,7 +107,7 @@ def test_empty_string_round_trips_under_aes(monkeypatch):
     _use_aes(monkeypatch)
 
     ct = encrypt_value_helper("")
-    assert ct.startswith(_V2_GCM_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == ""
 
 
@@ -130,7 +131,7 @@ def test_callback_prefix_composes_with_v2(monkeypatch):
 
     assert stored.startswith(_CALLBACK_VAR_ENCRYPTED_PREFIX)
     inner = stored[len(_CALLBACK_VAR_ENCRYPTED_PREFIX) :]
-    assert inner.startswith(_V2_GCM_PREFIX)
+    assert inner.startswith(_V3_HKDF_PREFIX)
     assert _decrypt_or_passthrough("gcs_path_service_account", stored) == "my-sa-secret"
 
 
@@ -139,7 +140,7 @@ def test_unknown_algorithm_falls_back_to_legacy(monkeypatch):
     monkeypatch.setattr(proxy_server, "general_settings", {"encryption_algorithm": "rot13"})
 
     ct = encrypt_value_helper("secret")
-    assert not ct.startswith(_V2_GCM_PREFIX)
+    assert not ct.startswith(_V2_GCM_PREFIX) and not ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == "secret"
 
 
@@ -216,3 +217,55 @@ def test_bearer_token_uses_only_header_safe_characters(length: int):
 
     assert re.fullmatch(r"kind_a_[A-Za-z0-9_-]+", token), token
     assert decrypt_bearer_token(token, prefix="kind_a_") == "x" * length
+
+
+def test_v3_hkdf_and_v2_gcm_values_coexist(monkeypatch):
+    """Mixed-format readback: a v2:gcm: value written before the HKDF switch
+    still decrypts after new writes produce v3:hkdf: values."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _decrypt_aes_gcm
+
+    _use_aes(monkeypatch)
+    v2_value = _encrypt_aes_gcm_with_legacy_kdf("old-secret")
+
+    new_value = encrypt_value_helper("new-secret")
+
+    assert new_value.startswith(_V3_HKDF_PREFIX)
+    assert _decrypt_aes_gcm(v2_value, "sk-salt-aes-1234") == "old-secret"
+    assert decrypt_value_helper(new_value, key="t") == "new-secret"
+
+
+def _encrypt_aes_gcm_with_legacy_kdf(value: str) -> str:
+    """Write a value in the pre-HKDF v2:gcm: wire format for readback tests."""
+    import base64
+
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import (
+        _V2_GCM_PREFIX,
+        _derive_key,
+        _seal_aes_gcm,
+    )
+
+    sealed = _seal_aes_gcm(value=value, key=_derive_key("sk-salt-aes-1234"), aad=None)
+    return _V2_GCM_PREFIX + base64.urlsafe_b64encode(sealed).decode("utf-8")
+
+
+def test_hkdf_derivation_differs_from_single_sha256(monkeypatch):
+    """The HKDF-derived key must not equal the legacy single-pass SHA-256 key,
+    so v3 ciphertext is never decryptable with the v2 KDF (and vice versa)."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _derive_key, _derive_key_hkdf
+
+    assert _derive_key_hkdf("sk-salt-aes-1234") != _derive_key("sk-salt-aes-1234")
+
+
+def test_hkdf_info_binds_derivation_to_purpose(monkeypatch):
+    """Same salt, different HKDF info must derive different keys, so the
+    at-rest key cannot be reused as, e.g., a token-signing key."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _HKDF_INFO, _derive_key_hkdf
+
+    other = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"other-purpose").derive(
+        b"sk-salt-aes-1234"
+    )
+    assert other != _derive_key_hkdf("sk-salt-aes-1234")
+    assert _HKDF_INFO == b"litellm-at-rest-encryption-v1"

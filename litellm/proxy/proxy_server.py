@@ -824,7 +824,9 @@ async def _initialize_shared_aiohttp_session():
         )
         return session
     except Exception as e:
-        verbose_proxy_logger.warning(f"Failed to create shared aiohttp session: {truncate_error_str(e)}. Continuing without session reuse.")
+        verbose_proxy_logger.warning(
+            f"Failed to create shared aiohttp session: {truncate_error_str(e)}. Continuing without session reuse."
+        )
         return None
 
 
@@ -1762,7 +1764,9 @@ try:
             _restructure_ui_html_files(ui_path)
             verbose_proxy_logger.info(f"Restructured UI directory: {ui_path}")
     except PermissionError as e:
-        verbose_proxy_logger.exception(f"Permission error while restructuring UI directory {ui_path}: {truncate_error_str(e)}")
+        verbose_proxy_logger.exception(
+            f"Permission error while restructuring UI directory {ui_path}: {truncate_error_str(e)}"
+        )
     except Exception as e:
         verbose_proxy_logger.exception(f"Error while restructuring UI directory {ui_path}: {truncate_error_str(e)}")
 
@@ -3430,16 +3434,10 @@ async def _poll_redis_pool_metrics():
                         "pool_type": pool_type,
                         "pod_worker": pod_worker,
                     }
-                    prometheus_logger.litellm_redis_pool_active_connections.labels(
-                        **labels
-                    ).set(stat.get("active", 0))
-                    prometheus_logger.litellm_redis_pool_max_connections.labels(
-                        **labels
-                    ).set(stat.get("max", 0))
+                    prometheus_logger.litellm_redis_pool_active_connections.labels(**labels).set(stat.get("active", 0))
+                    prometheus_logger.litellm_redis_pool_max_connections.labels(**labels).set(stat.get("max", 0))
             except Exception as e:
-                verbose_proxy_logger.debug(
-                    "Error reading pool stats for %s: %s", pool_name, e
-                )
+                verbose_proxy_logger.debug("Error reading pool stats for %s: %s", pool_name, e)
     except Exception as e:
         verbose_proxy_logger.debug("Error polling Redis pool metrics: %s", e)
 
@@ -5784,7 +5782,9 @@ class ProxyConfig:
             return new_models
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy_server.py::add_deployment() - Error getting new models from DB - {}".format(truncate_error_str(e))
+                "litellm.proxy_server.py::add_deployment() - Error getting new models from DB - {}".format(
+                    truncate_error_str(e)
+                )
             )
             return None
 
@@ -5956,7 +5956,9 @@ class ProxyConfig:
             self._last_semantic_filter_config = mcp_semantic_filter_config.copy()
 
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error initializing semantic filter settings from DB: {truncate_error_str(e)}")
+            verbose_proxy_logger.exception(
+                f"Error initializing semantic filter settings from DB: {truncate_error_str(e)}"
+            )
 
     async def _init_sso_settings_in_db(self, prisma_client: PrismaClient):
         """
@@ -6232,7 +6234,9 @@ class ProxyConfig:
                 )
 
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error in _check_and_reload_anthropic_beta_headers: {truncate_error_str(e)}")
+            verbose_proxy_logger.exception(
+                f"Error in _check_and_reload_anthropic_beta_headers: {truncate_error_str(e)}"
+            )
 
     def _get_prompt_spec_for_db_prompt(self, db_prompt):
         """
@@ -6358,7 +6362,9 @@ class ProxyConfig:
                     litellm.vector_store_registry.add_vector_store_to_registry(vector_store=vector_store)
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(truncate_error_str(e))
+                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(
+                    truncate_error_str(e)
+                )
             )
 
     async def _init_vector_store_indexes_in_db(self, prisma_client: PrismaClient):
@@ -6382,7 +6388,9 @@ class ProxyConfig:
                     litellm.vector_store_index_registry.upsert_vector_store_index(vector_store_index=vector_store_index)
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(truncate_error_str(e))
+                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(
+                    truncate_error_str(e)
+                )
             )
 
     async def _init_mcp_servers_in_db(self):
@@ -6509,7 +6517,9 @@ class ProxyConfig:
             CredentialAccessor.upsert_credentials(credentials)  # upsert credentials that are in the all-up list
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy_server.py::get_credentials() - Error getting credentials from DB - {}".format(truncate_error_str(e))
+                "litellm.proxy_server.py::get_credentials() - Error getting credentials from DB - {}".format(
+                    truncate_error_str(e)
+                )
             )
             return []
 
@@ -6696,7 +6706,9 @@ async def async_assistants_data_generator(response, user_api_key_dict: UserAPIKe
         yield f"data: {done_message}\n\n"
     except Exception as e:
         verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.async_assistants_data_generator(): Exception occured - {}".format(truncate_error_str(e))
+            "litellm.proxy.proxy_server.async_assistants_data_generator(): Exception occured - {}".format(
+                truncate_error_str(e)
+            )
         )
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
@@ -7159,9 +7171,7 @@ async def async_data_generator(
         except asyncio.CancelledError:
             pass
         except Exception:
-            verbose_proxy_logger.exception(
-                "async_data_generator: failure hook errored during exception cleanup"
-            )
+            verbose_proxy_logger.exception("async_data_generator: failure hook errored during exception cleanup")
         verbose_proxy_logger.debug(
             f"\033[1;31mAn error occurred: {e}\n\n Debug this by setting `--debug`, e.g. `litellm --model gpt-3.5-turbo --debug`"
         )
@@ -7990,7 +8000,9 @@ class ProxyStartupEvent:
                         "Expired UI session key cleanup enabled but prisma_client not available"
                     )
             except Exception as e:
-                verbose_proxy_logger.warning(f"Failed to setup expired UI session key cleanup job: {truncate_error_str(e)}")
+                verbose_proxy_logger.warning(
+                    f"Failed to setup expired UI session key cleanup job: {truncate_error_str(e)}"
+                )
         else:
             verbose_proxy_logger.debug(
                 "Expired UI session key cleanup disabled (set "
@@ -8618,9 +8630,7 @@ async def chat_completion(
         except asyncio.CancelledError:
             pass
         except Exception:
-            verbose_proxy_logger.exception(
-                "chat_completion(): failure hook errored during cancellation cleanup"
-            )
+            verbose_proxy_logger.exception("chat_completion(): failure hook errored during cancellation cleanup")
         # Write the 499 client-disconnect spend log row before unwinding —
         # without this, cancelled non-streaming requests release their MPR
         # slot but never appear in spend_logs.
@@ -8876,7 +8886,9 @@ async def completion(
             original_exception=e,
             request_data=base_llm_response_processor.data,
         )
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.completion(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.completion(): Exception occured - {}".format(truncate_error_str(e))
+        )
         error_msg = f"{str(e)}"
         raise ProxyException(
             message=getattr(e, "message", error_msg),
@@ -9263,7 +9275,9 @@ async def audio_speech(
             original_exception=e,
             request_data=data,
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.audio_speech(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.audio_speech(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         raise e
 
@@ -9693,7 +9707,9 @@ async def get_assistants(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.get_assistants(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.get_assistants(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -9966,7 +9982,9 @@ async def create_threads(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.create_threads(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.create_threads(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10053,7 +10071,9 @@ async def get_thread(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.get_thread(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.get_thread(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10144,7 +10164,9 @@ async def add_messages(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.add_messages(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.add_messages(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10231,7 +10253,9 @@ async def get_messages(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.get_messages(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.get_messages(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10332,7 +10356,9 @@ async def run_thread(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.run_thread(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.run_thread(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -12394,11 +12420,7 @@ def _is_experimental_deployment(model: dict) -> bool:
     from the default /model/info listing.
     """
     tags = (model.get("litellm_params") or {}).get("tags") or []
-    return any(
-        isinstance(tag, str)
-        and (tag == "experimental" or tag.startswith("experimental:"))
-        for tag in tags
-    )
+    return any(isinstance(tag, str) and (tag == "experimental" or tag.startswith("experimental:")) for tag in tags)
 
 
 def _fully_experimental_model_names(llm_router: Optional[Router]) -> Set[str]:
@@ -13169,7 +13191,7 @@ async def fallback_login(request: Request):
     from litellm.proxy.proxy_server import ui_link
 
     # get url from request
-    redirect_url = get_custom_url(str(request.base_url))
+    redirect_url = get_custom_url(str(request.base_url), request=request)
     if redirect_url.endswith("/"):
         redirect_url += "sso/callback"
     else:
@@ -13194,6 +13216,7 @@ async def fallback_login(request: Request):
 async def login(request: Request):
     global premium_user, general_settings, master_key
     from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
     from litellm.proxy.utils import get_custom_url
 
     form = await request.form()
@@ -13225,7 +13248,7 @@ async def login(request: Request):
     )
 
     # Build redirect URL
-    litellm_dashboard_ui = get_custom_url(str(request.base_url))
+    litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
     if litellm_dashboard_ui.endswith("/"):
         litellm_dashboard_ui += "ui/"
     else:
@@ -13234,7 +13257,7 @@ async def login(request: Request):
 
     # Create redirect response with cookie
     redirect_response = RedirectResponse(url=litellm_dashboard_ui, status_code=303)
-    redirect_response.set_cookie(key="token", value=jwt_token)
+    set_ui_session_cookie(redirect_response, jwt_token, request=request)
     return redirect_response
 
 
@@ -13242,6 +13265,7 @@ async def login(request: Request):
 async def login_v2(request: Request):
     global premium_user, general_settings, master_key
     from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
     from litellm.proxy.utils import get_custom_url
 
     try:
@@ -13270,7 +13294,7 @@ async def login_v2(request: Request):
             algorithm="HS256",
         )
 
-        litellm_dashboard_ui = get_custom_url(str(request.base_url))
+        litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
             litellm_dashboard_ui += "ui/"
         else:
@@ -13284,10 +13308,12 @@ async def login_v2(request: Request):
             content={"redirect_url": litellm_dashboard_ui, "token": jwt_token},
             status_code=status.HTTP_200_OK,
         )
-        json_response.set_cookie(key="token", value=jwt_token)
+        set_ui_session_cookie(json_response, jwt_token, request=request)
         return json_response
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.login_v2(): Exception occurred - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.login_v2(): Exception occurred - {}".format(truncate_error_str(e))
+        )
         if isinstance(e, ProxyException):
             raise e
         elif isinstance(e, HTTPException):
@@ -13313,6 +13339,7 @@ async def login_v2(request: Request):
 async def login_v3(request: Request):
     global premium_user, general_settings, master_key
     from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
     from litellm.proxy.utils import get_custom_url
 
     try:
@@ -13349,7 +13376,7 @@ async def login_v3(request: Request):
             algorithm="HS256",
         )
 
-        litellm_dashboard_ui = get_custom_url(str(request.base_url))
+        litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
             litellm_dashboard_ui += "ui/"
         else:
@@ -13370,7 +13397,9 @@ async def login_v3(request: Request):
             status_code=status.HTTP_200_OK,
         )
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.login_v3(): Exception occurred - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.login_v3(): Exception occurred - {}".format(truncate_error_str(e))
+        )
         if isinstance(e, ProxyException):
             raise e
         elif isinstance(e, HTTPException):
@@ -13438,7 +13467,7 @@ async def login_v3_exchange(request: Request):
             },
             status_code=status.HTTP_200_OK,
         )
-        json_response.set_cookie(key="token", value=cached_data["token"])
+        set_ui_session_cookie(json_response, cast(str, cached_data["token"]), request=request)
         return json_response
     except ProxyException:
         raise
@@ -13503,7 +13532,7 @@ async def onboarding(invite_link: str, request: Request):
     if user_obj is None:
         raise HTTPException(status_code=401, detail={"error": "User does not exist in db."})
 
-    litellm_dashboard_ui = get_custom_url(str(request.base_url))
+    litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
     if litellm_dashboard_ui.endswith("/"):
         litellm_dashboard_ui += "ui/onboarding"
     else:
@@ -13764,7 +13793,7 @@ async def claim_onboarding_link(data: InvitationClaim, request: Request):
             detail={"error": "Failed to create onboarding session. Please retry the invitation link."},
         ) from e
 
-    litellm_dashboard_ui = get_custom_url(str(request.base_url))
+    litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
     if litellm_dashboard_ui.endswith("/"):
         litellm_dashboard_ui += "ui/"
     else:
@@ -14287,7 +14316,9 @@ async def update_config(
 
         return {"message": "Config updated successfully"}
     except Exception as e:
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.update_config(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.update_config(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -14972,7 +15003,9 @@ async def delete_callback(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"litellm.proxy.proxy_server.delete_callback(): Exception occurred - {truncate_error_str(e)}")
+        verbose_proxy_logger.error(
+            f"litellm.proxy.proxy_server.delete_callback(): Exception occurred - {truncate_error_str(e)}"
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         raise ProxyException(
             message="Error deleting callback: " + str(e),
@@ -15111,7 +15144,9 @@ async def get_config(
             "available_callbacks": all_available_callbacks,
         }
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.get_config(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.get_config(): Exception occured - {}".format(truncate_error_str(e))
+        )
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),

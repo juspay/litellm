@@ -4,12 +4,17 @@ from typing import Final, Literal, Optional, cast
 
 from litellm._logging import verbose_proxy_logger
 
-# Versioned ciphertext marker for AES-256-GCM values.
-# Format: "v2:gcm:" + base64url(nonce(12) || ciphertext || tag(16)).
+# Versioned ciphertext markers:
+#   v2:gcm:  + base64url(nonce(12) || ciphertext || tag(16)), key = SHA-256(salt)
+#   v3:hkdf: + base64url(nonce(12) || ciphertext || tag(16)), key = HKDF-SHA256(salt)
 # Legacy XSalsa20-Poly1305 (nacl) values carry no marker; the colon in the
-# prefix can never appear in base64url(nacl output), so the prefix check is an
-# unambiguous discriminator between the two formats on read.
+# prefixes can never appear in base64url(nacl output), so the prefix check is an
+# unambiguous discriminator between the formats on read.
 _V2_GCM_PREFIX = "v2:gcm:"
+_V3_HKDF_PREFIX = "v3:hkdf:"
+# HKDF info string binds the derived key to this exact use ("litellm at-rest
+# encryption"), so the same salt can never produce this key for another purpose.
+_HKDF_INFO = b"litellm-at-rest-encryption-v1"
 
 # general_settings key selecting the at-rest encryption algorithm for new writes.
 # Default preserves the legacy algorithm so existing deployments are byte-for-byte
@@ -60,42 +65,66 @@ def _derive_key(signing_key: str) -> bytes:
     a dedicated KDF (HKDF/PBKDF2). It is the *same* derivation the legacy nacl
     path already uses, so the AES path introduces no new weakness and stays
     interoperable with existing key sourcing; AES-256-GCM's per-value 12-byte
-    random nonce gives the unique (key, nonce) pairs GCM requires. Moving both
-    algorithms to HKDF-SHA256 would be more defensible in an audit but is a
-    separate, coordinated change (it must re-derive or re-encrypt existing data).
+    random nonce gives the unique (key, nonce) pairs GCM requires. This
+    derivation only handles ciphertext written under the ``v2:gcm:`` marker (and
+    the legacy nacl format, which shares it); new AES writes use
+    :func:`_derive_key_hkdf` behind the ``v3:hkdf:`` marker.
     """
     import hashlib
 
     return hashlib.sha256(signing_key.encode()).digest()
 
 
-def _seal_aes_gcm(value: str, signing_key: str, aad: bytes | None) -> bytes:
+def _derive_key_hkdf(signing_key: str) -> bytes:
+    """Derive a 32-byte key with HKDF-SHA256, the audited KDF for new writes.
+
+    HKDF's extract step concentrates the entropy of the operator's key material
+    into a pseudorandom key before expansion, so the derived AES key is not a
+    direct function of the master key bytes the way the single unsalted SHA-256
+    pass in :func:`_derive_key` is. Values sealed under this derivation carry
+    the ``v3:hkdf:`` marker so reads pick the matching KDF.
+    """
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=_HKDF_INFO,
+    ).derive(signing_key.encode())
+
+
+def _seal_aes_gcm(value: str, key: bytes, aad: bytes | None) -> bytes:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     nonce = os.urandom(12)
     # AESGCM.encrypt returns ciphertext || tag(16); wire format is nonce || that.
-    return nonce + AESGCM(_derive_key(signing_key)).encrypt(nonce, value.encode("utf-8"), aad)
+    return nonce + AESGCM(key).encrypt(nonce, value.encode("utf-8"), aad)
 
 
-def _open_aes_gcm(sealed: bytes, signing_key: str, aad: bytes | None) -> str:
+def _open_aes_gcm(sealed: bytes, key: bytes, aad: bytes | None) -> str:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
     # An empty plaintext still serializes to nonce(12) || tag(16) = 28 bytes, so a
     # short/empty buffer here is a corrupt value: let AESGCM.decrypt raise and be
     # swallowed by the caller (returns None/original), same as legacy.
-    return AESGCM(_derive_key(signing_key)).decrypt(sealed[:12], sealed[12:], aad).decode("utf-8")
+    return AESGCM(key).decrypt(sealed[:12], sealed[12:], aad).decode("utf-8")
 
 
 def _encrypt_aes_gcm(value: str, signing_key: str) -> str:
-    """Encrypt under AES-256-GCM and return the versioned ``v2:gcm:`` string."""
-    sealed: Final = _seal_aes_gcm(value=value, signing_key=signing_key, aad=None)
-    return _V2_GCM_PREFIX + base64.urlsafe_b64encode(sealed).decode("utf-8")
+    """Encrypt under AES-256-GCM + HKDF and return the versioned ``v3:hkdf:`` string."""
+    sealed: Final = _seal_aes_gcm(value=value, key=_derive_key_hkdf(signing_key), aad=None)
+    return _V3_HKDF_PREFIX + base64.urlsafe_b64encode(sealed).decode("utf-8")
 
 
 def _decrypt_aes_gcm(value: str, signing_key: str) -> str:
-    """Decrypt a versioned ``v2:gcm:`` string produced by :func:`_encrypt_aes_gcm`."""
-    sealed: Final = base64.urlsafe_b64decode(value[len(_V2_GCM_PREFIX) :])
-    return _open_aes_gcm(sealed=sealed, signing_key=signing_key, aad=None)
+    """Decrypt a versioned ``v2:gcm:``/``v3:hkdf:`` string from :func:`_encrypt_aes_gcm`."""
+    if value.startswith(_V3_HKDF_PREFIX):
+        sealed: Final = base64.urlsafe_b64decode(value[len(_V3_HKDF_PREFIX) :])
+        return _open_aes_gcm(sealed=sealed, key=_derive_key_hkdf(signing_key), aad=None)
+    sealed = base64.urlsafe_b64decode(value[len(_V2_GCM_PREFIX) :])
+    return _open_aes_gcm(sealed=sealed, key=_derive_key(signing_key), aad=None)
 
 
 def encrypt_bearer_token(value: str, prefix: str) -> str:
@@ -103,7 +132,7 @@ def encrypt_bearer_token(value: str, prefix: str) -> str:
     salt_key: Final = _get_salt_key()
     if not isinstance(salt_key, str):
         raise ValueError("Set LITELLM_SALT_KEY or a master key to mint bearer tokens")
-    sealed: Final = _seal_aes_gcm(value=value, signing_key=salt_key, aad=prefix.encode("utf-8"))
+    sealed: Final = _seal_aes_gcm(value=value, key=_derive_key_hkdf(salt_key), aad=prefix.encode("utf-8"))
     return prefix + base64.urlsafe_b64encode(sealed).decode("ascii").rstrip("=")
 
 
@@ -115,7 +144,7 @@ def decrypt_bearer_token(token: str, prefix: str) -> str | None:
     encoded: Final = token.removeprefix(prefix)
     try:
         sealed: Final = base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
-        return _open_aes_gcm(sealed=sealed, signing_key=salt_key, aad=prefix.encode("utf-8"))
+        return _open_aes_gcm(sealed=sealed, key=_derive_key_hkdf(salt_key), aad=prefix.encode("utf-8"))
     except Exception:  # noqa: BLE001  # base64 and AES-GCM each raise their own "not a token" type
         return None
 
@@ -157,7 +186,7 @@ def decrypt_value_helper(
         if isinstance(value, str):
             # Versioned AES-256-GCM values are detected before any base64 decode.
             # The prefix is the algorithm tag the legacy nacl format never carried.
-            if value.startswith(_V2_GCM_PREFIX):
+            if value.startswith(_V2_GCM_PREFIX) or value.startswith(_V3_HKDF_PREFIX):
                 return _decrypt_aes_gcm(value=value, signing_key=cast(str, signing_key))
 
             # Try URL-safe base64 decoding first (new format)

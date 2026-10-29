@@ -314,3 +314,58 @@ def test_normalize_route_for_root_path_error_path_when_route_not_under_root(
     _clear_url_env(monkeypatch)
     monkeypatch.setenv("SERVER_ROOT_PATH", "/proxy")
     assert normalize_route_for_root_path("/other/v1/chat") is None
+
+
+def _fake_request(host: str = "evil.example", client_host: str = "203.0.113.9"):
+    from starlette.requests import Request
+
+    return Request(
+        scope={
+            "type": "http",
+            "scheme": "https",
+            "method": "GET",
+            "path": "/sso/callback",
+            "headers": [(b"host", host.encode())],
+            "query_string": b"",
+            "client": (client_host, 51234),
+            "server": ("evil.example", 443),
+        }
+    )
+
+
+def test_get_custom_url_untrusted_host_falls_back_to_relative(monkeypatch):
+    _clear_url_env(monkeypatch)
+    monkeypatch.delenv("ALLOWED_REDIRECT_HOSTS", raising=False)
+    request = _fake_request(host="evil.example", client_host="203.0.113.9")
+    result = get_custom_url("https://evil.example", "/ui/", request=request)
+    assert result == "/ui/"
+
+
+def test_get_custom_url_internal_client_trusts_host(monkeypatch):
+    _clear_url_env(monkeypatch)
+    monkeypatch.delenv("ALLOWED_REDIRECT_HOSTS", raising=False)
+    request = _fake_request(host="internal.corp", client_host="127.0.0.1")
+    result = get_custom_url("https://internal.corp", "/ui/", request=request)
+    assert result == "https://internal.corp/ui/"
+
+
+def test_get_custom_url_allowed_redirect_host_trusted(monkeypatch):
+    _clear_url_env(monkeypatch)
+    monkeypatch.setenv("ALLOWED_REDIRECT_HOSTS", "proxy.internal.example")
+    request = _fake_request(host="proxy.internal.example", client_host="203.0.113.9")
+    result = get_custom_url("https://proxy.internal.example", "/ui/", request=request)
+    assert result == "https://proxy.internal.example/ui/"
+
+
+def test_get_custom_url_allowed_redirect_host_wrong_host_still_relative(monkeypatch):
+    _clear_url_env(monkeypatch)
+    monkeypatch.setenv("ALLOWED_REDIRECT_HOSTS", "proxy.internal.example")
+    request = _fake_request(host="evil.example", client_host="203.0.113.9")
+    result = get_custom_url("https://evil.example", "/ui/", request=request)
+    assert result == "/ui/"
+
+
+def test_get_custom_url_no_request_keeps_old_behavior(monkeypatch):
+    _clear_url_env(monkeypatch)
+    result = get_custom_url("https://request.example.com", "/v1/chat")
+    assert result == "https://request.example.com/v1/chat"

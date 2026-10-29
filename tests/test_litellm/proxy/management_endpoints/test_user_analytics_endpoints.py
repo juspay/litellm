@@ -332,3 +332,43 @@ async def test_user_mau_empty_results(client_and_mocks):
     body = resp.json()
     assert "results" in body
     assert len(body["results"]) == 0
+
+@pytest.mark.asyncio
+async def test_tag_dau_tag_filter_bound_as_parameter(client_and_mocks):
+    """tag_filter must be a bound positional parameter ($N), never
+    interpolated into the SQL string."""
+    client, _, mock_db = client_and_mocks
+    evil_tag = "x' OR '1'='1"
+
+    resp = client.get(f"/tag/dau?start_date=2024-01-14&end_date=2024-01-15&tag_filter={evil_tag}")
+    assert resp.status_code == 200, resp.text
+
+    sql, *params = mock_db.query_raw.await_args.args
+    assert "$3" in sql
+    assert evil_tag not in sql
+    assert params[-1] == f"%{evil_tag}%"
+
+
+@pytest.mark.asyncio
+async def test_tag_wau_tag_filter_bound_as_parameter(client_and_mocks):
+    client, _, mock_db = client_and_mocks
+
+    resp = client.get("/tag/wau?tag_filter=prod")
+    assert resp.status_code == 200, resp.text
+
+    sql, *params = mock_db.query_raw.await_args.args
+    assert "dts.tag ILIKE $3" in sql
+    assert "prod" not in sql
+    assert params[-1] == "%prod%"
+
+
+@pytest.mark.asyncio
+async def test_tag_mau_tag_filter_bound_as_parameter(client_and_mocks):
+    client, _, mock_db = client_and_mocks
+
+    resp = client.get("/tag/mau?tag_filters=prod&tag_filters=dev")
+    assert resp.status_code == 200, resp.text
+
+    sql, *params = mock_db.query_raw.await_args.args
+    assert "dts.tag = $3 OR dts.tag = $4" in sql
+    assert params[-2:] == ["prod", "dev"]

@@ -131,6 +131,41 @@ MCP_STDIO_ALLOWED_COMMANDS: frozenset = frozenset(
     {"npx", "uvx", "python", "python3", "node", "docker", "deno"} | (set(_MCP_STDIO_EXTRA_COMMANDS.split(",")) - {""})
 )
 
+
+def validate_mcp_stdio_command_str(command: str) -> str | None:
+    """String-only validation of an MCP stdio command against the allowlist.
+
+    Returns the normalized allowed command name when the command is permitted,
+    None otherwise. Two checks:
+    1. Basename must be in MCP_STDIO_ALLOWED_COMMANDS (Windows suffixes
+       stripped for compatibility).
+    2. The command must not be a relative path ("./python", "bin/node"): a
+       relative path resolves against the proxy process's CWD, so a swapped
+       binary in a writable directory would execute with the proxy's
+       environment. A bare name ("python") is resolved by the OS through PATH
+       at spawn time; absolute paths are pinned binaries and pass here —
+       the runtime check additionally verifies the resolved binary is not in
+       a world-writable directory.
+
+    This is intentionally import-light (no shutil/os.stat) so pydantic
+    validators in litellm.proxy._types can call it on control planes where
+    the binary is not installed.
+    """
+    if not command:
+        return None
+    base_command = os.path.basename(command)
+    candidates = {base_command.lower()}
+    for ext in (".exe", ".cmd", ".bat", ".com"):
+        if base_command.lower().endswith(ext):
+            candidates.add(base_command[: -len(ext)].lower())
+            break
+    if not any(candidate in MCP_STDIO_ALLOWED_COMMANDS for candidate in candidates):
+        return None
+    if os.path.sep in command and not os.path.isabs(command):  # ./python, bin/node
+        return None
+    return base_command.lower()
+
+
 # MCP OAuth2 Token Exchange (OBO) Defaults
 MCP_TOKEN_EXCHANGE_CACHE_MAX_SIZE = int(os.getenv("MCP_TOKEN_EXCHANGE_CACHE_MAX_SIZE", "500"))
 
@@ -210,21 +245,13 @@ AIOHTTP_TTL_DNS_CACHE = int(os.getenv("AIOHTTP_TTL_DNS_CACHE", 300))
 # mid-request -> the backend's response is blackholed and the request hangs until
 # the read timeout (e.g. 540s). SO_KEEPALIVE probes keep the NAT mapping warm and
 # tear a genuinely-dead socket down in ~IDLE + INTVL*CNT seconds instead.
-AIOHTTP_TCP_KEEPALIVE = os.getenv(
-    "AIOHTTP_TCP_KEEPALIVE", os.getenv("AIOHTTP_SO_KEEPALIVE", "True")
-).lower() in (
+AIOHTTP_TCP_KEEPALIVE = os.getenv("AIOHTTP_TCP_KEEPALIVE", os.getenv("AIOHTTP_SO_KEEPALIVE", "True")).lower() in (
     "true",
     "1",
 )
-AIOHTTP_TCP_KEEPALIVE_IDLE = int(
-    os.getenv("AIOHTTP_TCP_KEEPALIVE_IDLE", os.getenv("AIOHTTP_TCP_KEEPIDLE", 30))
-)
-AIOHTTP_TCP_KEEPALIVE_INTVL = int(
-    os.getenv("AIOHTTP_TCP_KEEPALIVE_INTVL", os.getenv("AIOHTTP_TCP_KEEPINTVL", 10))
-)
-AIOHTTP_TCP_KEEPALIVE_CNT = int(
-    os.getenv("AIOHTTP_TCP_KEEPALIVE_CNT", os.getenv("AIOHTTP_TCP_KEEPCNT", 3))
-)
+AIOHTTP_TCP_KEEPALIVE_IDLE = int(os.getenv("AIOHTTP_TCP_KEEPALIVE_IDLE", os.getenv("AIOHTTP_TCP_KEEPIDLE", 30)))
+AIOHTTP_TCP_KEEPALIVE_INTVL = int(os.getenv("AIOHTTP_TCP_KEEPALIVE_INTVL", os.getenv("AIOHTTP_TCP_KEEPINTVL", 10)))
+AIOHTTP_TCP_KEEPALIVE_CNT = int(os.getenv("AIOHTTP_TCP_KEEPALIVE_CNT", os.getenv("AIOHTTP_TCP_KEEPCNT", 3)))
 # Backward-compatible aliases for the v1.92.0 upstream env names.
 AIOHTTP_SO_KEEPALIVE = AIOHTTP_TCP_KEEPALIVE
 AIOHTTP_TCP_KEEPIDLE = AIOHTTP_TCP_KEEPALIVE_IDLE
