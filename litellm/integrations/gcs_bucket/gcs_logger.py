@@ -5,6 +5,7 @@ Logs to separate GCS buckets for success/error events with custom folder structu
 
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime
@@ -17,6 +18,11 @@ import litellm
 from litellm._logging import verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.gcs_bucket.gcs_bucket_base import GCSBucketBase
+from litellm.integrations.gcs_bucket.log_encryption import (
+    encrypt_log_payload,
+    encrypted_object_name,
+    try_load_encryption_config_from_env,
+)
 from litellm.integrations.gcs_bucket.redaction import (
     REDACT_ENABLED,
     redact_messages,
@@ -48,6 +54,14 @@ def _sanitize_for_json(obj, seen=None):
         except Exception:
             return str(obj)
     return str(obj)
+
+
+def _gcs_filename_user_part(email) -> str:
+    if not email:
+        return "unknown"
+    local_part = str(email).split("@", 1)[0]
+    sanitized = re.sub(r"[^A-Za-z0-9]+", "_", local_part).strip("_")
+    return sanitized or "unknown"
 
 
 def _sanitize_before_building_log(obj):
@@ -110,6 +124,14 @@ class ProductionGCSLogger(CustomLogger):
         # Initialize GCS base for async operations
         self.gcs_base = GCSBucketBase(bucket_name=self.success_bucket_name)
 
+        self.encryption_config, self.encryption_config_error = try_load_encryption_config_from_env()
+        if self.encryption_config is not None:
+            verbose_logger.info("GCS log encryption enabled (client-side hybrid, KMS-wrapped key)")
+        elif self.encryption_config_error is not None:
+            verbose_logger.error(
+                f"GCS log encryption misconfigured; uploads will be skipped: {self.encryption_config_error}"
+            )
+
         if not self.success_bucket_name or not self.error_bucket_name:
             verbose_logger.warning("⚠️  GCS bucket names not set. GCS logging disabled.")
         else:
@@ -121,20 +143,27 @@ class ProductionGCSLogger(CustomLogger):
             return
 
         try:
+            if self.encryption_config_error is not None:
+                verbose_logger.error(
+                    f"GCS log encryption misconfigured; refusing to write plaintext logs: {self.encryption_config_error}"
+                )
+                return
+
             timestamp = datetime.utcnow().strftime("%H-%M-%S")
             date = datetime.utcnow().strftime("%Y-%m-%d")
             correlation_id = data.get("correlation_id", str(uuid.uuid4()))
+            user_part = _gcs_filename_user_part((data.get("user") or {}).get("email"))
 
             if log_type == "success":
-                # Success logs: date={date}/{timestamp}_{correlation_id}.json
+                # Success logs: date={date}/{timestamp}_{user}_{correlation_id}.json
                 # Using hive-style partitioning for BigQuery cost optimization
                 # User/dept/team info is in JSON for querying
-                filename = f"{timestamp}_{correlation_id}.json"
+                filename = f"{timestamp}_{user_part}_{correlation_id}.json"
                 gcs_path = f"success/date={date}/{filename}"
             else:
-                # Error logs: date={date}/{timestamp}_{correlation_id}.json
+                # Error logs: date={date}/{timestamp}_{user}_{correlation_id}.json
                 # Using hive-style partitioning for BigQuery cost optimization
-                filename = f"{timestamp}_{correlation_id}.json"
+                filename = f"{timestamp}_{user_part}_{correlation_id}.json"
                 gcs_path = f"failure/date={date}/{filename}"
 
             if REDACT_ENABLED:
@@ -142,14 +171,20 @@ class ProductionGCSLogger(CustomLogger):
             else:
                 json_data = json.dumps(data, default=str)
 
+            upload_payload = json_data
+            upload_object_name = gcs_path
+            if self.encryption_config is not None:
+                upload_payload = encrypt_log_payload(json_data, self.encryption_config, object_name=gcs_path)
+                upload_object_name = encrypted_object_name(gcs_path)
+
             headers = await self.gcs_base.construct_request_headers(
                 service_account_json=self.service_account_path, vertex_instance=None
             )
             await self.gcs_base._log_json_data_on_gcs(
                 headers=headers,
                 bucket_name=bucket_name,
-                object_name=gcs_path,
-                logging_payload=json_data,
+                object_name=upload_object_name,
+                logging_payload=upload_payload,
             )
 
         except Exception as e:
