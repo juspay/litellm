@@ -13,7 +13,11 @@ from litellm.integrations.gcs_bucket.gcs_logger import (
     _gcs_filename_user_part,
 )
 from litellm.integrations.gcs_bucket.log_encryption import (
+    GCS_LOG_ENCRYPTION_KMS_KEY,
+    GCS_LOG_ENCRYPTION_KMS_KEY_RING,
     GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE,
+    GCS_LOG_ENCRYPTION_KMS_KEY_VERSION,
+    GCS_LOG_ENCRYPTION_KMS_LOCATION,
     GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH,
     KMSKeyReference,
     LogEncryptionConfig,
@@ -123,6 +127,7 @@ class TestLoadConfigFromEnv:
     def test_disabled_when_public_key_path_unset(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv(GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH, raising=False)
         monkeypatch.delenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE, raising=False)
+        monkeypatch.delenv(GCS_LOG_ENCRYPTION_KMS_KEY, raising=False)
         config, error = try_load_encryption_config_from_env()
         assert config is None
         assert error is None
@@ -348,6 +353,132 @@ class TestFetchKMSPublicKey:
         assert KMS_RESOURCE in str(excinfo.value)
 
 
+class TestShortKeyNameResolution:
+    def _fake_fetch(self, monkeypatch: pytest.MonkeyPatch, private_key):
+        fetched_with = []
+
+        def fake_fetch(resource_name: str) -> bytes:
+            fetched_with.append(resource_name)
+            return private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+
+        monkeypatch.setattr(log_encryption, "_fetch_kms_public_key", fake_fetch)
+        return fetched_with
+
+    def _set_short_form_env(self, monkeypatch: pytest.MonkeyPatch, key_name: str):
+        for env_var in (
+            GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH,
+            GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE,
+            GCS_LOG_ENCRYPTION_KMS_LOCATION,
+            GCS_LOG_ENCRYPTION_KMS_KEY_RING,
+            GCS_LOG_ENCRYPTION_KMS_KEY_VERSION,
+        ):
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY, key_name)
+
+    def test_short_key_name_resolves_with_adc_project_and_defaults(self, monkeypatch: pytest.MonkeyPatch, private_key):
+        import google.auth
+
+        monkeypatch.setattr(google.auth, "default", lambda: (object(), "adc-project"))
+        fetched_with = self._fake_fetch(monkeypatch, private_key)
+        self._set_short_form_env(monkeypatch, "gcs-log-encryption")
+
+        loaded, error = try_load_encryption_config_from_env()
+
+        expected = (
+            "projects/adc-project/locations/global/keyRings/gcs-logs/cryptoKeys/gcs-log-encryption/cryptoKeyVersions/1"
+        )
+        assert error is None
+        assert fetched_with == [expected]
+        assert loaded is not None
+        assert loaded.kms_key.project == "adc-project"
+        assert loaded.kms_key.location == "global"
+        assert loaded.kms_key.key_ring == "gcs-logs"
+        assert loaded.kms_key.key == "gcs-log-encryption"
+        assert loaded.kms_key.key_version == "1"
+        assert loaded.public_key.public_numbers() == private_key.public_key().public_numbers()
+
+    def test_short_key_name_honors_location_ring_version_overrides(self, monkeypatch: pytest.MonkeyPatch, private_key):
+        import google.auth
+
+        monkeypatch.setattr(google.auth, "default", lambda: (object(), "adc-project"))
+        fetched_with = self._fake_fetch(monkeypatch, private_key)
+        self._set_short_form_env(monkeypatch, "gcs-log-encryption")
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_LOCATION, "asia-south1")
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_RING, "prod-ring")
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_VERSION, "7")
+
+        loaded, error = try_load_encryption_config_from_env()
+
+        expected = (
+            "projects/adc-project/locations/asia-south1/keyRings/prod-ring"
+            "/cryptoKeys/gcs-log-encryption/cryptoKeyVersions/7"
+        )
+        assert error is None
+        assert fetched_with == [expected]
+        assert loaded is not None
+        assert loaded.kms_key.key_version == "7"
+
+    def test_full_resource_wins_over_short_key_name(self, monkeypatch: pytest.MonkeyPatch, private_key):
+        import google.auth
+
+        def fail_default():
+            raise AssertionError("ADC project lookup must not run when full resource is set")
+
+        monkeypatch.setattr(google.auth, "default", fail_default)
+        fetched_with = self._fake_fetch(monkeypatch, private_key)
+        self._set_short_form_env(monkeypatch, "gcs-log-encryption")
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE, KMS_RESOURCE)
+
+        loaded, error = try_load_encryption_config_from_env()
+
+        assert error is None
+        assert fetched_with == [KMS_RESOURCE]
+        assert loaded is not None
+        assert loaded.kms_key.project == "test-project"
+
+    def test_error_when_adc_has_no_credentials(self, monkeypatch: pytest.MonkeyPatch):
+        import google.auth
+        from google.auth.exceptions import DefaultCredentialsError
+
+        def fail_default():
+            raise DefaultCredentialsError("no workload identity")
+
+        monkeypatch.setattr(google.auth, "default", fail_default)
+        self._set_short_form_env(monkeypatch, "gcs-log-encryption")
+
+        loaded, error = try_load_encryption_config_from_env()
+
+        assert loaded is None
+        assert error is not None
+        assert "no workload identity" in error
+        assert GCS_LOG_ENCRYPTION_KMS_KEY in error
+
+    def test_error_when_adc_reports_no_project(self, monkeypatch: pytest.MonkeyPatch, private_key):
+        import google.auth
+
+        monkeypatch.setattr(google.auth, "default", lambda: (object(), None))
+        self._fake_fetch(monkeypatch, private_key)
+        self._set_short_form_env(monkeypatch, "gcs-log-encryption")
+
+        loaded, error = try_load_encryption_config_from_env()
+
+        assert loaded is None
+        assert error is not None
+        assert "did not report a GCP project" in error
+
+    def test_short_key_name_rejects_resource_paths(self, monkeypatch: pytest.MonkeyPatch):
+        self._set_short_form_env(monkeypatch, "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1")
+
+        loaded, error = try_load_encryption_config_from_env()
+
+        assert loaded is None
+        assert error is not None
+        assert "bare KMS key name" in error
+
+
 class TestEncryptLogPayload:
     def test_envelope_matches_documented_format(self, config: LogEncryptionConfig):
         envelope = json.loads(encrypt_log_payload('{"x": 1}', config, object_name="a/b.json"))
@@ -454,6 +585,7 @@ class TestGcsLoggerEncryptionWiring:
     async def test_upload_stays_plaintext_when_encryption_disabled(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.delenv(GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH, raising=False)
         monkeypatch.delenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE, raising=False)
+        monkeypatch.delenv(GCS_LOG_ENCRYPTION_KMS_KEY, raising=False)
         logger = ProductionGCSLogger()
         log_double = _GCSBaseDouble()
         logger.gcs_base = log_double
