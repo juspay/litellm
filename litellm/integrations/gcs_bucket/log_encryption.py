@@ -18,12 +18,12 @@ GCP KMS hybrid scheme documented for the log-decryption tooling:
 Encryption is opt-in: name the KMS key once and the proxy does the rest.
 ``GCS_LOG_ENCRYPTION_KMS_KEY`` takes the bare key name (e.g.
 "gcs-log-encryption"); the GCP project comes from workload identity / ADC and
-location, key ring and key version fall back to the defaults below
-(overridable via ``GCS_LOG_ENCRYPTION_KMS_LOCATION`` / ``..._KEY_RING`` /
-``..._KEY_VERSION``). Alternatively ``GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE``
-takes the full key version resource
+location, key ring and key version fall back to the defaults below.
+Alternatively ``GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE`` takes the full key
+version resource
 (projects/.../locations/.../keyRings/.../cryptoKeys/.../cryptoKeyVersions/N)
-and wins over the short form. The public key is fetched from the Cloud KMS API
+and wins over the short form - use it whenever location, ring or version
+differ from the defaults. The public key is fetched from the Cloud KMS API
 at startup via application default credentials (workload identity); no key
 material is deployed to the host. ``GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH``
 optionally overrides the fetch with a local PEM file for offline development
@@ -45,9 +45,6 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH = "GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH"
 GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE = "GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE"
 GCS_LOG_ENCRYPTION_KMS_KEY = "GCS_LOG_ENCRYPTION_KMS_KEY"
-GCS_LOG_ENCRYPTION_KMS_LOCATION = "GCS_LOG_ENCRYPTION_KMS_LOCATION"
-GCS_LOG_ENCRYPTION_KMS_KEY_RING = "GCS_LOG_ENCRYPTION_KMS_KEY_RING"
-GCS_LOG_ENCRYPTION_KMS_KEY_VERSION = "GCS_LOG_ENCRYPTION_KMS_KEY_VERSION"
 
 _DEFAULT_KMS_LOCATION = "global"
 _DEFAULT_KMS_KEY_RING = "gcs-logs"
@@ -139,9 +136,9 @@ def _resolve_short_key_name(key_name: str) -> str:
             f"{GCS_LOG_ENCRYPTION_KMS_KEY} takes the bare KMS key name (e.g. 'gcs-log-encryption'), "
             f"got {key_name!r}; use {GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE} for a full resource path"
         )
-    location = os.getenv(GCS_LOG_ENCRYPTION_KMS_LOCATION) or _DEFAULT_KMS_LOCATION
-    key_ring = os.getenv(GCS_LOG_ENCRYPTION_KMS_KEY_RING) or _DEFAULT_KMS_KEY_RING
-    key_version = os.getenv(GCS_LOG_ENCRYPTION_KMS_KEY_VERSION) or _DEFAULT_KMS_KEY_VERSION
+    location = _DEFAULT_KMS_LOCATION
+    key_ring = _DEFAULT_KMS_KEY_RING
+    key_version = _DEFAULT_KMS_KEY_VERSION
     return (
         f"projects/{_adc_project()}/locations/{location}"
         f"/keyRings/{key_ring}/cryptoKeys/{key_name}/cryptoKeyVersions/{key_version}"
