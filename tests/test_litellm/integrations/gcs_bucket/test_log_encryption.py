@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from litellm.integrations.gcs_bucket import log_encryption
 from litellm.integrations.gcs_bucket.gcs_logger import (
     ProductionGCSLogger,
     _gcs_filename_user_part,
@@ -172,6 +173,179 @@ class TestLoadConfigFromEnv:
         assert loaded is not None
         assert loaded.kms_key.key == "test-key"
         assert loaded.public_key.key_size == private_key.key_size
+
+    def test_kms_resource_only_fetches_public_key_from_kms(self, monkeypatch: pytest.MonkeyPatch, private_key):
+        fetched_with = []
+
+        def fake_fetch(resource_name: str) -> bytes:
+            fetched_with.append(resource_name)
+            return private_key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+
+        monkeypatch.setattr(log_encryption, "_fetch_kms_public_key", fake_fetch)
+        monkeypatch.delenv(GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH, raising=False)
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE, KMS_RESOURCE)
+        loaded, error = try_load_encryption_config_from_env()
+        assert error is None
+        assert fetched_with == [KMS_RESOURCE]
+        assert loaded is not None
+        assert loaded.kms_key.key == "test-key"
+        assert loaded.public_key.public_numbers() == private_key.public_key().public_numbers()
+
+    def test_pem_file_wins_over_fetch_when_both_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path, private_key):
+        def fail_fetch(resource_name: str) -> bytes:
+            raise AssertionError("fetch must not be called when PEM file is set")
+
+        monkeypatch.setattr(log_encryption, "_fetch_kms_public_key", fail_fetch)
+        _set_encryption_env(monkeypatch, tmp_path, private_key)
+        loaded, error = try_load_encryption_config_from_env()
+        assert error is None
+        assert loaded is not None
+
+    def test_error_when_fetch_fails(self, monkeypatch: pytest.MonkeyPatch):
+        def fail_fetch(resource_name: str) -> bytes:
+            raise ValueError("no credentials")
+
+        monkeypatch.setattr(log_encryption, "_fetch_kms_public_key", fail_fetch)
+        monkeypatch.delenv(GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH, raising=False)
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE, KMS_RESOURCE)
+        loaded, error = try_load_encryption_config_from_env()
+        assert loaded is None
+        assert error is not None
+        assert "no credentials" in error
+
+    def test_error_when_fetched_key_is_not_rsa(self, monkeypatch: pytest.MonkeyPatch):
+        ec_pem = (
+            ec.generate_private_key(ec.SECP256R1())
+            .public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        )
+        monkeypatch.setattr(log_encryption, "_fetch_kms_public_key", lambda resource_name: ec_pem)
+        monkeypatch.delenv(GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH, raising=False)
+        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE, KMS_RESOURCE)
+        loaded, error = try_load_encryption_config_from_env()
+        assert loaded is None
+        assert error is not None
+        assert "must contain an RSA public key" in error
+
+
+class TestFetchKMSPublicKey:
+    def test_fetches_pem_via_authorized_session(self, monkeypatch: pytest.MonkeyPatch, private_key):
+        import google.auth
+        import google.auth.transport.requests as google_requests
+
+        pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        refreshed = []
+        captured = {}
+
+        class FakeCredentials:
+            def refresh(self, request):
+                refreshed.append(request)
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {"pem": pem.decode("utf-8")}
+
+        class FakeSession:
+            def __init__(self, credentials):
+                captured["credentials"] = credentials
+
+            def get(self, url, timeout):
+                captured["url"] = url
+                captured["timeout"] = timeout
+                return FakeResponse()
+
+        monkeypatch.setattr(google.auth, "default", lambda scopes=None: (FakeCredentials(), "test-project"))
+        monkeypatch.setattr(google_requests, "AuthorizedSession", FakeSession)
+
+        result = log_encryption._fetch_kms_public_key(KMS_RESOURCE)
+
+        assert captured["url"] == f"https://cloudkms.googleapis.com/v1/{KMS_RESOURCE}/publicKey"
+        assert captured["timeout"] == 10
+        assert len(refreshed) == 1
+        assert result == pem
+        assert isinstance(serialization.load_pem_public_key(result), rsa.RSAPublicKey)
+
+    def test_raises_on_http_error(self, monkeypatch: pytest.MonkeyPatch):
+        import google.auth
+        import google.auth.transport.requests as google_requests
+
+        class FakeCredentials:
+            def refresh(self, request):
+                pass
+
+        class FakeSession:
+            def __init__(self, credentials):
+                pass
+
+            def get(self, url, timeout):
+                class FakeResponse:
+                    status_code = 403
+                    text = "Forbidden"
+
+                return FakeResponse()
+
+        monkeypatch.setattr(google.auth, "default", lambda scopes=None: (FakeCredentials(), "test-project"))
+        monkeypatch.setattr(google_requests, "AuthorizedSession", FakeSession)
+
+        with pytest.raises(ValueError) as excinfo:
+            log_encryption._fetch_kms_public_key(KMS_RESOURCE)
+        assert "403" in str(excinfo.value)
+        assert KMS_RESOURCE in str(excinfo.value)
+
+    def test_raises_when_response_has_no_pem(self, monkeypatch: pytest.MonkeyPatch):
+        import google.auth
+        import google.auth.transport.requests as google_requests
+
+        class FakeCredentials:
+            def refresh(self, request):
+                pass
+
+        class FakeSession:
+            def __init__(self, credentials):
+                pass
+
+            def get(self, url, timeout):
+                class FakeResponse:
+                    status_code = 200
+                    text = ""
+
+                    def json(self):
+                        return {}
+
+                return FakeResponse()
+
+        monkeypatch.setattr(google.auth, "default", lambda scopes=None: (FakeCredentials(), "test-project"))
+        monkeypatch.setattr(google_requests, "AuthorizedSession", FakeSession)
+
+        with pytest.raises(ValueError) as excinfo:
+            log_encryption._fetch_kms_public_key(KMS_RESOURCE)
+        assert "pem" in str(excinfo.value)
+
+    def test_wraps_google_auth_errors(self, monkeypatch: pytest.MonkeyPatch):
+        import google.auth
+        from google.auth.exceptions import DefaultCredentialsError
+
+        def raise_default(scopes=None):
+            raise DefaultCredentialsError("nope")
+
+        monkeypatch.setattr(google.auth, "default", raise_default)
+
+        with pytest.raises(ValueError) as excinfo:
+            log_encryption._fetch_kms_public_key(KMS_RESOURCE)
+        assert "nope" in str(excinfo.value)
+        assert KMS_RESOURCE in str(excinfo.value)
 
 
 class TestEncryptLogPayload:
