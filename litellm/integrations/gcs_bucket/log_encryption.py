@@ -9,6 +9,7 @@ GCP KMS hybrid scheme documented for the log-decryption tooling:
 {
   "kms":              {"project", "location", "key_ring", "key", "key_version"},
   "original_filename": "<gcs object name>",
+  "metadata":          {<non-sensitive lookup fields, e.g. log_type, correlation_id>},
   "encryption":       {"algorithm": "AES-256-GCM", "nonce": b64},
   "wrapped_key":      {"algorithm": "RSA-OAEP-3072-SHA256", "ciphertext": b64},
   "data":             {"encoding": "base64", "ciphertext": b64}
@@ -100,7 +101,12 @@ def try_load_encryption_config_from_env() -> "tuple[LogEncryptionConfig | None, 
         return None, str(e)
 
 
-def encrypt_log_payload(payload: str, config: LogEncryptionConfig, object_name: str) -> str:
+def encrypt_log_payload(
+    payload: str,
+    config: LogEncryptionConfig,
+    object_name: str,
+    metadata: "dict[str, str] | None" = None,
+) -> str:
     aes_key = os.urandom(_AES_KEY_BYTES)
     nonce = os.urandom(_GCM_NONCE_BYTES)
     ciphertext = AESGCM(aes_key).encrypt(nonce, payload.encode("utf-8"), None)
@@ -121,6 +127,7 @@ def encrypt_log_payload(payload: str, config: LogEncryptionConfig, object_name: 
             "key_version": config.kms_key.key_version,
         },
         "original_filename": object_name,
+        "metadata": metadata or {},
         "encryption": {"algorithm": "AES-256-GCM", "nonce": _b64(nonce)},
         "wrapped_key": {
             "algorithm": f"RSA-OAEP-{config.public_key.key_size}-SHA256",
