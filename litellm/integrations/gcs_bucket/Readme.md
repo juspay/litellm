@@ -6,6 +6,8 @@ This folder contains the GCS Bucket Logging integration for LiteLLM Gateway.
 
 - `gcs_bucket.py`: This is the main file that handles failure/success logging to GCS Bucket
 - `gcs_bucket_base.py`: This file contains the GCSBucketBase class which handles Authentication for GCS Buckets
+- `gcs_logger.py`: Production GCS logger used by the proxy callbacks (success/failure buckets)
+- `log_encryption.py`: Optional client-side hybrid encryption of logs before upload — see [ENCRYPTION.md](ENCRYPTION.md)
 
 ## Further Reading
 - [Doc setting up GCS Bucket Logging on LiteLLM Proxy (Gateway)](https://docs.litellm.ai/docs/proxy/bucket)
