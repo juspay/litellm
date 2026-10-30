@@ -15,10 +15,13 @@ GCP KMS hybrid scheme documented for the log-decryption tooling:
   "data":             {"encoding": "base64", "ciphertext": b64}
 }
 
-Encryption is opt-in: it is enabled only when
-``GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH`` is set, in which case
-``GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE`` must also name the KMS key version
+Encryption is opt-in: it is enabled when ``GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE``
+names the KMS key version
 (projects/.../locations/.../keyRings/.../cryptoKeys/.../cryptoKeyVersions/N).
+The public key is fetched from the Cloud KMS API at startup via application
+default credentials (workload identity); no key material is deployed to the
+host. ``GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH`` optionally overrides this with a
+local PEM file for offline development and tests.
 """
 
 import base64
@@ -72,6 +75,32 @@ class KMSKeyReference:
         return cls(**match.groupdict())
 
 
+_KMS_PUBLIC_KEY_URL = "https://cloudkms.googleapis.com/v1/{}/publicKey"
+
+
+def _fetch_kms_public_key(resource_name: str) -> bytes:
+    import google.auth
+    import google.auth.transport.requests
+    from google.auth.exceptions import GoogleAuthError
+    from requests.exceptions import RequestException
+
+    try:
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        credentials.refresh(google.auth.transport.requests.Request())
+        session = google.auth.transport.requests.AuthorizedSession(credentials)
+        response = session.get(_KMS_PUBLIC_KEY_URL.format(resource_name), timeout=10)
+    except (GoogleAuthError, RequestException) as e:
+        raise ValueError(f"could not fetch Cloud KMS public key for {resource_name!r}: {e}") from e
+    if response.status_code != 200:
+        raise ValueError(
+            f"Cloud KMS getPublicKey failed for {resource_name!r}: HTTP {response.status_code} {response.text}"
+        )
+    pem_text = response.json().get("pem")
+    if not pem_text:
+        raise ValueError(f"Cloud KMS getPublicKey response for {resource_name!r} had no pem field")
+    return pem_text.encode("utf-8")
+
+
 @dataclass(frozen=True, slots=True)
 class LogEncryptionConfig:
     public_key: rsa.RSAPublicKey
@@ -80,17 +109,22 @@ class LogEncryptionConfig:
     @classmethod
     def from_env(cls) -> "LogEncryptionConfig | None":
         public_key_path = os.getenv(GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH)
-        if not public_key_path:
-            return None
         kms_resource = os.getenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE)
+        if not public_key_path and not kms_resource:
+            return None
         if not kms_resource:
             raise ValueError(
-                f"{GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH} is set, so "
-                f"{GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE} must also be set"
+                f"{GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE} must name the KMS key version "
+                "(projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>)"
             )
-        public_key = serialization.load_pem_public_key(Path(public_key_path).read_bytes())
+        if public_key_path:
+            pem_bytes = Path(public_key_path).read_bytes()
+        else:
+            pem_bytes = _fetch_kms_public_key(kms_resource)
+        public_key = serialization.load_pem_public_key(pem_bytes)
         if not isinstance(public_key, rsa.RSAPublicKey):
-            raise ValueError(f"{GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH} must contain an RSA public key")
+            source = public_key_path or kms_resource
+            raise ValueError(f"{source} must contain an RSA public key")
         return cls(public_key=public_key, kms_key=KMSKeyReference.from_resource_name(kms_resource))
 
 

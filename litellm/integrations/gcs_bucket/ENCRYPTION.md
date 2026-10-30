@@ -85,21 +85,33 @@ request completes / fails
 ## Enabling it
 
 ```bash
-export GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH=/secure/path/public-key.pem        # RSA public key exported from KMS
 export GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE=projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>
 ```
 
-Restart the proxy. All loggers read this once at startup. Both variables are
-required together — one without the other means "misconfigured", and uploads
-are blocked (fail-closed).
+That's it — one variable. At startup the proxy fetches the RSA **public** key
+straight from Cloud KMS (`getPublicKey`) using Application Default Credentials
+(workload identity on GKE / service account impersonation / local
+`gcloud auth application-default login`). No key file is ever deployed or
+checked in, and the proxy can never decrypt anything.
+
+Restart the proxy. All loggers read this once at startup.
+
+**Optional offline override** (dev machines / tests without KMS access):
+
+```bash
+export GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH=/secure/path/public-key.pem   # PEM takes precedence over the KMS fetch
+```
+
+Setting the PEM path without the KMS resource is "misconfigured" — uploads are
+blocked (fail-closed), same as a fetch/permission failure.
 
 Existing behaviours preserved: bucket names, folder partitioning
 (`success|failure/date=…`), redaction flag, mock mode — all unchanged.
 
 ## Rotation
 
-Re-export the new key version's public key PEM, point
-`GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH` at it, restart the proxy. Old files keep
+Bump the key version in `GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE` and restart the
+proxy — it picks up the new public key automatically. Old files keep
 decrypting because the envelope records exactly which key version wrapped
 them, and KMS keeps older versions.
 
