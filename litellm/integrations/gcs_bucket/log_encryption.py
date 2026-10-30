@@ -15,13 +15,19 @@ GCP KMS hybrid scheme documented for the log-decryption tooling:
   "data":             {"encoding": "base64", "ciphertext": b64}
 }
 
-Encryption is opt-in: it is enabled when ``GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE``
-names the KMS key version
-(projects/.../locations/.../keyRings/.../cryptoKeys/.../cryptoKeyVersions/N).
-The public key is fetched from the Cloud KMS API at startup via application
-default credentials (workload identity); no key material is deployed to the
-host. ``GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH`` optionally overrides this with a
-local PEM file for offline development and tests.
+Encryption is opt-in: name the KMS key once and the proxy does the rest.
+``GCS_LOG_ENCRYPTION_KMS_KEY`` takes the bare key name (e.g.
+"gcs-log-encryption"); the GCP project comes from workload identity / ADC and
+location, key ring and key version fall back to the defaults below
+(overridable via ``GCS_LOG_ENCRYPTION_KMS_LOCATION`` / ``..._KEY_RING`` /
+``..._KEY_VERSION``). Alternatively ``GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE``
+takes the full key version resource
+(projects/.../locations/.../keyRings/.../cryptoKeys/.../cryptoKeyVersions/N)
+and wins over the short form. The public key is fetched from the Cloud KMS API
+at startup via application default credentials (workload identity); no key
+material is deployed to the host. ``GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH``
+optionally overrides the fetch with a local PEM file for offline development
+and tests.
 """
 
 import base64
@@ -38,6 +44,14 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH = "GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH"
 GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE = "GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE"
+GCS_LOG_ENCRYPTION_KMS_KEY = "GCS_LOG_ENCRYPTION_KMS_KEY"
+GCS_LOG_ENCRYPTION_KMS_LOCATION = "GCS_LOG_ENCRYPTION_KMS_LOCATION"
+GCS_LOG_ENCRYPTION_KMS_KEY_RING = "GCS_LOG_ENCRYPTION_KMS_KEY_RING"
+GCS_LOG_ENCRYPTION_KMS_KEY_VERSION = "GCS_LOG_ENCRYPTION_KMS_KEY_VERSION"
+
+_DEFAULT_KMS_LOCATION = "global"
+_DEFAULT_KMS_KEY_RING = "gcs-logs"
+_DEFAULT_KMS_KEY_VERSION = "1"
 
 _AES_KEY_BYTES = 32
 _GCM_NONCE_BYTES = 12
@@ -101,6 +115,39 @@ def _fetch_kms_public_key(resource_name: str) -> bytes:
     return pem_text.encode("utf-8")
 
 
+def _adc_project() -> str:
+    import google.auth
+    from google.auth.exceptions import GoogleAuthError
+
+    try:
+        _, project = google.auth.default()
+    except GoogleAuthError as e:
+        raise ValueError(
+            f"{GCS_LOG_ENCRYPTION_KMS_KEY} needs a GCP project from workload identity / ADC, which failed: {e}"
+        ) from e
+    if not project:
+        raise ValueError(
+            f"ADC did not report a GCP project for {GCS_LOG_ENCRYPTION_KMS_KEY}; "
+            f"set {GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE} to the full KMS resource instead"
+        )
+    return project
+
+
+def _resolve_short_key_name(key_name: str) -> str:
+    if "/" in key_name:
+        raise ValueError(
+            f"{GCS_LOG_ENCRYPTION_KMS_KEY} takes the bare KMS key name (e.g. 'gcs-log-encryption'), "
+            f"got {key_name!r}; use {GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE} for a full resource path"
+        )
+    location = os.getenv(GCS_LOG_ENCRYPTION_KMS_LOCATION) or _DEFAULT_KMS_LOCATION
+    key_ring = os.getenv(GCS_LOG_ENCRYPTION_KMS_KEY_RING) or _DEFAULT_KMS_KEY_RING
+    key_version = os.getenv(GCS_LOG_ENCRYPTION_KMS_KEY_VERSION) or _DEFAULT_KMS_KEY_VERSION
+    return (
+        f"projects/{_adc_project()}/locations/{location}"
+        f"/keyRings/{key_ring}/cryptoKeys/{key_name}/cryptoKeyVersions/{key_version}"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LogEncryptionConfig:
     public_key: rsa.RSAPublicKey
@@ -110,12 +157,14 @@ class LogEncryptionConfig:
     def from_env(cls) -> "LogEncryptionConfig | None":
         public_key_path = os.getenv(GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH)
         kms_resource = os.getenv(GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE)
+        kms_key_name = os.getenv(GCS_LOG_ENCRYPTION_KMS_KEY)
+        if not kms_resource and kms_key_name:
+            kms_resource = _resolve_short_key_name(kms_key_name)
         if not public_key_path and not kms_resource:
             return None
         if not kms_resource:
             raise ValueError(
-                f"{GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE} must name the KMS key version "
-                "(projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>)"
+                f"{GCS_LOG_ENCRYPTION_KMS_KEY} or {GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE} must name the KMS key"
             )
         if public_key_path:
             pem_bytes = Path(public_key_path).read_bytes()

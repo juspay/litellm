@@ -85,14 +85,35 @@ request completes / fails
 ## Enabling it
 
 ```bash
-export GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE=projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>
+export GCS_LOG_ENCRYPTION_KMS_KEY=gcs-log-encryption   # just the key name
 ```
 
-That's it — one variable. At startup the proxy fetches the RSA **public** key
-straight from Cloud KMS (`getPublicKey`) using Application Default Credentials
+That's it — one short variable, like the bucket names. At startup the proxy
+resolves the full KMS key version resource and fetches the RSA **public** key
+from Cloud KMS (`getPublicKey`) using Application Default Credentials
 (workload identity on GKE / service account impersonation / local
 `gcloud auth application-default login`). No key file is ever deployed or
 checked in, and the proxy can never decrypt anything.
+
+Everything the key name alone can't say comes from workload identity or
+defaults (each overridable):
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| *(none — project)* | ADC project | GCP project is taken from workload identity |
+| `GCS_LOG_ENCRYPTION_KMS_LOCATION` | `global` | KMS key location |
+| `GCS_LOG_ENCRYPTION_KMS_KEY_RING` | `gcs-logs` | KMS key ring |
+| `GCS_LOG_ENCRYPTION_KMS_KEY_VERSION` | `1` | key version |
+
+Prefer spelling it out? The full resource form still works and wins over the
+short form when both are set:
+
+```bash
+export GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE=projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>
+```
+
+Either way, the envelope's `kms` block always records the fully resolved
+resource, so the decryption tooling never has to guess.
 
 Restart the proxy. All loggers read this once at startup.
 
@@ -102,18 +123,18 @@ Restart the proxy. All loggers read this once at startup.
 export GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH=/secure/path/public-key.pem   # PEM takes precedence over the KMS fetch
 ```
 
-Setting the PEM path without the KMS resource is "misconfigured" — uploads are
-blocked (fail-closed), same as a fetch/permission failure.
+Setting the PEM path without naming any KMS key is "misconfigured" — uploads
+are blocked (fail-closed), same as a fetch/permission failure.
 
 Existing behaviours preserved: bucket names, folder partitioning
 (`success|failure/date=…`), redaction flag, mock mode — all unchanged.
 
 ## Rotation
 
-Bump the key version in `GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE` and restart the
-proxy — it picks up the new public key automatically. Old files keep
-decrypting because the envelope records exactly which key version wrapped
-them, and KMS keeps older versions.
+Bump `GCS_LOG_ENCRYPTION_KMS_KEY_VERSION` (or the version in the full resource
+form) and restart the proxy — it picks up the new public key automatically.
+Old files keep decrypting because the envelope records exactly which key
+version wrapped them, and KMS keeps older versions.
 
 ## Cost of encryption
 
