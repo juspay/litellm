@@ -21,10 +21,7 @@ from litellm.integrations.gcs_bucket.log_encryption import (
     try_load_encryption_config_from_env,
 )
 
-KMS_RESOURCE = (
-    "projects/test-project/locations/asia-south1/keyRings/test-ring/"
-    "cryptoKeys/test-key/cryptoKeyVersions/1"
-)
+KMS_RESOURCE = "projects/test-project/locations/asia-south1/keyRings/test-ring/cryptoKeys/test-key/cryptoKeyVersions/1"
 PLAINTEXT_MARKER = "super-secret-marker-9f27b1"
 
 
@@ -155,7 +152,9 @@ class TestLoadConfigFromEnv:
     def test_error_when_key_is_not_rsa(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
         ec_pem_path = tmp_path / "ec-public.pem"
         ec_pem_path.write_bytes(
-            ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+            ec.generate_private_key(ec.SECP256R1())
+            .public_key()
+            .public_bytes(
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PublicFormat.SubjectPublicKeyInfo,
             )
@@ -178,7 +177,8 @@ class TestLoadConfigFromEnv:
 class TestEncryptLogPayload:
     def test_envelope_matches_documented_format(self, config: LogEncryptionConfig):
         envelope = json.loads(encrypt_log_payload('{"x": 1}', config, object_name="a/b.json"))
-        assert set(envelope) == {"kms", "original_filename", "encryption", "wrapped_key", "data"}
+        assert set(envelope) == {"kms", "original_filename", "metadata", "encryption", "wrapped_key", "data"}
+        assert envelope["metadata"] == {}
         assert envelope["kms"] == {
             "project": "test-project",
             "location": "asia-south1",
@@ -197,6 +197,14 @@ class TestEncryptLogPayload:
         payload = json.dumps({"marker": PLAINTEXT_MARKER, "nested": {"a": [1, 2, 3]}})
         envelope = json.loads(encrypt_log_payload(payload, config, object_name="x.json"))
         assert _decrypt_envelope(envelope, private_key).decode("utf-8") == payload
+
+    def test_metadata_stays_outside_ciphertext_and_preserves_payload(self, config: LogEncryptionConfig, private_key):
+        metadata = {"log_type": "success", "correlation_id": "corr-42", "user": "jane_doe", "date": "2026-01-01"}
+        payload = json.dumps({"marker": PLAINTEXT_MARKER})
+        envelope = json.loads(encrypt_log_payload(payload, config, object_name="x.json", metadata=metadata))
+        assert envelope["metadata"] == metadata
+        assert _decrypt_envelope(envelope, private_key).decode("utf-8") == payload
+        assert "corr-42" not in envelope["data"]["ciphertext"]
 
     def test_ciphertext_contains_no_plaintext(self, config: LogEncryptionConfig):
         envelope_str = encrypt_log_payload(PLAINTEXT_MARKER, config, object_name="x.json")
@@ -260,6 +268,12 @@ class TestGcsLoggerEncryptionWiring:
         assert PLAINTEXT_MARKER not in payload
         envelope = json.loads(payload)
         assert envelope["original_filename"] == name[: -len(".enc.json")] + ".json"
+        metadata = envelope["metadata"]
+        assert metadata["log_type"] == "success"
+        assert metadata["correlation_id"] == "corr-99"
+        assert metadata["user"] == "jane_doe"
+        assert f"date={metadata['date']}/" in name
+        assert name == f"success/date={metadata['date']}/{metadata['timestamp']}_jane_doe_corr-99.enc.json"
         decrypted = json.loads(_decrypt_envelope(envelope, private_key))
         assert decrypted == data
 

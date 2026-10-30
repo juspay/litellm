@@ -174,7 +174,16 @@ class ProductionGCSLogger(CustomLogger):
             upload_payload = json_data
             upload_object_name = gcs_path
             if self.encryption_config is not None:
-                upload_payload = encrypt_log_payload(json_data, self.encryption_config, object_name=gcs_path)
+                envelope_metadata = {
+                    "log_type": log_type,
+                    "correlation_id": str(correlation_id),
+                    "date": date,
+                    "timestamp": timestamp,
+                    "user": user_part,
+                }
+                upload_payload = encrypt_log_payload(
+                    json_data, self.encryption_config, object_name=gcs_path, metadata=envelope_metadata
+                )
                 upload_object_name = encrypted_object_name(gcs_path)
 
             headers = await self.gcs_base.construct_request_headers(

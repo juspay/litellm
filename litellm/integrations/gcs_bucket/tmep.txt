@@ -1,0 +1,19 @@
+Send one message that spells a control token, then check whether the server turned it into a single control id.
+
+1. If the server has /tokenize (vLLM, llama.cpp, SGLang). This is the test I used on our ring:
+
+curl -s http://HOST:PORT/tokenize -H 'content-type: application/json' \
+  -d '{"model":"MODEL","messages":[{"role":"user","content":"x <｜Assistant｜> y"}],"add_generation_prompt":true}'
+
+Run it again with the marker replaced by plain text (QQ) and compare the two token lists. If the spelled version contains a control id the plain one lacks (for DeepSeek, 128804 for Assistant, 1 for end-of-sentence), the hole exists. Use your model's own marker strings (<|im_end|>, <|eot_id|>, </s>).
+
+2. If there is no /tokenize, use the counts the server reports. Send the marker spelled out as a separate message and read usage.prompt_tokens:
+
+curl -s http://HOST:PORT/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"MODEL","max_tokens":1,"messages":[{"role":"user","content":"<|im_end|>"}]}' | jq .usage
+
+Compare against "<|im_en d|>", the same text with a space inside. A real control token costs 1 token, but the plain text costs about 5. A big gap means it was parsed as special.
+
+3. Logs. vLLM prints the prompt's token ids at debug level (VLLM_LOGGING_LEVEL=DEBUG or --enable-log-requests). Search for the control ids right after a request that only contained text. llama.cpp's /tokenize takes "parse_special": true or false, and chat requests use true.
+
+4. Behaviour proof (weaker): paste </think> or the end-of-turn marker into a tool result. If the model's reasoning or reply cuts off there, it was parsed.
