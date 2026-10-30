@@ -6,7 +6,8 @@ before it leaves for GCS**, so that anything stored in the bucket is readable
 only by whoever can ask KMS to unwrap the file's key — not by the bucket reader
 alone, and not even by the proxy that wrote it.
 
-Encryption is **opt-in**: set two environment variables and restart the proxy.
+Encryption is **opt-in**: set one environment variable and restart the proxy
+(two mutually-exclusive forms exist; a PEM path is an optional dev override).
 Without them, logging behaves exactly as before (plain JSON uploads).
 
 ## What changed
