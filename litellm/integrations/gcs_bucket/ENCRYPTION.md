@@ -96,17 +96,11 @@ from Cloud KMS (`getPublicKey`) using Application Default Credentials
 checked in, and the proxy can never decrypt anything.
 
 Everything the key name alone can't say comes from workload identity or
-defaults (each overridable):
+built-in defaults: the GCP project is taken from ADC, and location, key ring
+and key version default to `global` / `gcs-logs` / `1`.
 
-| Env var | Default | Purpose |
-| --- | --- | --- |
-| *(none — project)* | ADC project | GCP project is taken from workload identity |
-| `GCS_LOG_ENCRYPTION_KMS_LOCATION` | `global` | KMS key location |
-| `GCS_LOG_ENCRYPTION_KMS_KEY_RING` | `gcs-logs` | KMS key ring |
-| `GCS_LOG_ENCRYPTION_KMS_KEY_VERSION` | `1` | key version |
-
-Prefer spelling it out? The full resource form still works and wins over the
-short form when both are set:
+Location, ring or version differ from those defaults? Use the full resource
+form (also wins when both are set):
 
 ```bash
 export GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE=projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>
@@ -131,10 +125,10 @@ Existing behaviours preserved: bucket names, folder partitioning
 
 ## Rotation
 
-Bump `GCS_LOG_ENCRYPTION_KMS_KEY_VERSION` (or the version in the full resource
-form) and restart the proxy — it picks up the new public key automatically.
-Old files keep decrypting because the envelope records exactly which key
-version wrapped them, and KMS keeps older versions.
+Bump the version in `GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE` (full resource form)
+and restart the proxy — it picks up the new public key automatically. Old
+files keep decrypting because the envelope records exactly which key version
+wrapped them, and KMS keeps older versions.
 
 ## Cost of encryption
 

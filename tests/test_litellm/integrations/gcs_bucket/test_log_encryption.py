@@ -14,10 +14,7 @@ from litellm.integrations.gcs_bucket.gcs_logger import (
 )
 from litellm.integrations.gcs_bucket.log_encryption import (
     GCS_LOG_ENCRYPTION_KMS_KEY,
-    GCS_LOG_ENCRYPTION_KMS_KEY_RING,
     GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE,
-    GCS_LOG_ENCRYPTION_KMS_KEY_VERSION,
-    GCS_LOG_ENCRYPTION_KMS_LOCATION,
     GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH,
     KMSKeyReference,
     LogEncryptionConfig,
@@ -371,9 +368,6 @@ class TestShortKeyNameResolution:
         for env_var in (
             GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH,
             GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE,
-            GCS_LOG_ENCRYPTION_KMS_LOCATION,
-            GCS_LOG_ENCRYPTION_KMS_KEY_RING,
-            GCS_LOG_ENCRYPTION_KMS_KEY_VERSION,
         ):
             monkeypatch.delenv(env_var, raising=False)
         monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY, key_name)
@@ -400,15 +394,23 @@ class TestShortKeyNameResolution:
         assert loaded.kms_key.key_version == "1"
         assert loaded.public_key.public_numbers() == private_key.public_key().public_numbers()
 
-    def test_short_key_name_honors_location_ring_version_overrides(self, monkeypatch: pytest.MonkeyPatch, private_key):
+    def test_custom_location_ring_and_version_use_full_resource_form(
+        self, monkeypatch: pytest.MonkeyPatch, private_key
+    ):
         import google.auth
 
-        monkeypatch.setattr(google.auth, "default", lambda: (object(), "adc-project"))
+        def fail_default():
+            raise AssertionError("ADC project lookup must not run when full resource is set")
+
+        monkeypatch.setattr(google.auth, "default", fail_default)
         fetched_with = self._fake_fetch(monkeypatch, private_key)
-        self._set_short_form_env(monkeypatch, "gcs-log-encryption")
-        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_LOCATION, "asia-south1")
-        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_RING, "prod-ring")
-        monkeypatch.setenv(GCS_LOG_ENCRYPTION_KMS_KEY_VERSION, "7")
+        for env_var in (GCS_LOG_ENCRYPTION_PUBLIC_KEY_PATH, GCS_LOG_ENCRYPTION_KMS_KEY):
+            monkeypatch.delenv(env_var, raising=False)
+        monkeypatch.setenv(
+            GCS_LOG_ENCRYPTION_KMS_KEY_RESOURCE,
+            "projects/adc-project/locations/asia-south1/keyRings/prod-ring"
+            "/cryptoKeys/gcs-log-encryption/cryptoKeyVersions/7",
+        )
 
         loaded, error = try_load_encryption_config_from_env()
 
@@ -419,6 +421,8 @@ class TestShortKeyNameResolution:
         assert error is None
         assert fetched_with == [expected]
         assert loaded is not None
+        assert loaded.kms_key.location == "asia-south1"
+        assert loaded.kms_key.key_ring == "prod-ring"
         assert loaded.kms_key.key_version == "7"
 
     def test_full_resource_wins_over_short_key_name(self, monkeypatch: pytest.MonkeyPatch, private_key):
