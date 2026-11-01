@@ -7,9 +7,53 @@ Supports Docker, Podman, and Kubernetes backends.
 
 import base64
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from litellm._logging import verbose_logger
+
+# pip options that change WHERE packages come from. A requirements file is
+# model/skill-controlled input; without this check a malicious skill can pull
+# and execute arbitrary code during install (VCS checkout, -e directories,
+# alternate indexes, or local find-links).
+_UNSAFE_REQUIREMENTS_RE = re.compile(
+    r"""^\s*(?:
+        -e\b|--editable\b
+        |-i\b|--index-url\b
+        |--extra-index-url\b
+        |--find-links\b|-f\b
+        |--no-index\b
+        |--proxy\b
+        |--trusted-host\b
+        |--require-virtualenv\b
+    )""",
+    re.VERBOSE,
+)
+# Non-PEP-508 direct references: VCS URLs (git+..., svn+..., hg+..., bzr+...),
+# any URL spec, and bare local paths. Everything pip can install without
+# hitting an index we already trust is safer to forbid outright.
+_DIRECT_REQUIREMENT_RE = re.compile(
+    r"""^(?:
+        (?:git|svn|hg|bzr)\+https?://
+        |https?://
+        |(?:[./~]| [A-Za-z]:[\\/])
+    )""",
+    re.VERBOSE,
+)
+
+
+def _validate_requirements(requirements: str) -> None:
+    """Reject requirements lines that redirect or escape package sources.
+
+    Raises ValueError naming the offending line so the caller can surface a
+    generic message instead of executing the install.
+    """
+    for line in requirements.splitlines():
+        stripped = line.split("#", 1)[0].strip()
+        if not stripped:
+            continue
+        if _UNSAFE_REQUIREMENTS_RE.match(stripped) or _DIRECT_REQUIREMENT_RE.match(stripped):
+            raise ValueError(f"Disallowed requirements line: {stripped.split()[0]}")
 
 
 class SkillsSandboxExecutor:
@@ -75,6 +119,28 @@ class SkillsSandboxExecutor:
                 "files": [],
             }
 
+        # Validate requirements on the host before any sandbox resource is
+        # created: a rejected install must not spin up a container at all,
+        # and the caller gets the specific disallowed token instead of the
+        # generic failure (the message contains only the offending line's
+        # first token, never host paths).
+        _requirements_to_validate = requirements or (
+            skill_files.get("requirements.txt", b"").decode("utf-8", errors="replace")
+            if "requirements.txt" in skill_files
+            else ""
+        )
+        if _requirements_to_validate:
+            try:
+                _validate_requirements(_requirements_to_validate)
+            except ValueError as _req_err:
+                verbose_logger.error(f"SkillsSandboxExecutor: {_req_err}")
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": str(_req_err),
+                    "files": [],
+                }
+
         try:
             # Create sandbox session
             session_kwargs: Dict[str, Any] = {
@@ -84,6 +150,17 @@ class SkillsSandboxExecutor:
 
             if self.image:
                 session_kwargs["image"] = self.image
+
+            # Network isolation: model-generated code runs with no outbound
+            # network by default. Requirements installation is the only step
+            # that legitimately needs the network (to reach the package
+            # index), so it opts back in explicitly via runtime configs when
+            # present. Operators can override with LITELLM_SANDBOX_NETWORK_MODE
+            # (e.g. for allow-listed egress proxies).
+            _default_network_mode = os.getenv("LITELLM_SANDBOX_NETWORK_MODE", "none")
+            _needs_network = bool(requirements) or "requirements.txt" in skill_files
+            _network_mode = "bridge" if _needs_network and _default_network_mode == "none" else _default_network_mode
+            session_kwargs["runtime_configs"] = {"network_mode": _network_mode}
 
             with SandboxSession(**session_kwargs) as session:
                 # 1. Copy skill files into sandbox using copy_to_runtime
@@ -108,10 +185,10 @@ class SkillsSandboxExecutor:
 
                 verbose_logger.debug(f"SkillsSandboxExecutor: Copied {len(skill_files)} files to sandbox")
 
-                # 2. Install requirements if present. Let pip parse the
-                # requirements file inside the sandbox so standard syntax like
-                # `-r`, `-e`, VCS URLs, and inline `#egg=` fragments continue to
-                # work.
+                # 2. Install requirements if present. The file is parsed on the
+                # host first (_validate_requirements) so nothing that
+                # redirects the package source (-e, VCS URLs, alternate
+                # indexes) reaches pip inside the sandbox.
                 requirements_filename: Optional[str] = None
                 if requirements:
                     with tempfile.NamedTemporaryFile(
@@ -187,11 +264,14 @@ sys.path.insert(0, '/sandbox')
                 }
 
         except Exception as e:
+            # Log the full error server-side, but return a generic message:
+            # sandbox library exceptions embed host paths (staging dirs,
+            # docker socket locations) that must not reach the caller.
             verbose_logger.error(f"SkillsSandboxExecutor: Execution failed: {e}")
             return {
                 "success": False,
                 "output": "",
-                "error": str(e),
+                "error": "Sandbox execution failed",
                 "files": [],
             }
 

@@ -59,7 +59,7 @@ def test_execute_installs_inline_requirements_file(monkeypatch):
         executor, "_collect_generated_files", lambda *args, **kwargs: []
     )
 
-    requirements = "git+https://example.com/repo.git#egg=foo\n-r extra.txt\n-e ./pkg\n"
+    requirements = "requests==2.32.3\nhttpx>=0.27\n# a comment line\n\n"
     result = executor.execute(
         code="print('hello')",
         skill_files={"pkg/__init__.py": b""},
@@ -135,3 +135,130 @@ def test_execute_returns_install_failure(monkeypatch):
         "files": [],
     }
     assert len(_FailingSandboxSession.last_instance.run_calls) == 1
+
+
+def test_execute_rejects_unsafe_requirements(monkeypatch):
+    _install_fake_sandbox(monkeypatch)
+    executor = SkillsSandboxExecutor()
+    monkeypatch.setattr(
+        executor, "_collect_generated_files", lambda *args, **kwargs: []
+    )
+
+    for bad in [
+        "-e ./pkg",
+        "--editable ./pkg",
+        "-i https://evil.example.com/simple",
+        "--index-url https://evil.example.com/simple",
+        "--extra-index-url https://evil.example.com/simple",
+        "--find-links /tmp/wheels",
+        "-f /tmp/wheels",
+        "--trusted-host evil.example.com",
+        "--proxy http://evil.example.com:8080",
+        "git+https://evil.example.com/repo.git",
+        "svn+https://evil.example.com/repo",
+        "https://evil.example.com/pkg.whl",
+        "./local/pkg",
+        "/abs/path/pkg",
+    ]:
+        result = executor.execute(
+            code="print('hello')",
+            skill_files={"main.py": b"print('x')"},
+            requirements=bad + "\n",
+        )
+        assert result["success"] is False, bad
+        assert "Disallowed requirements" in result["error"], bad
+
+
+def test_execute_rejects_unsafe_bundled_requirements_txt(monkeypatch):
+    _install_fake_sandbox(monkeypatch)
+    executor = SkillsSandboxExecutor()
+    monkeypatch.setattr(
+        executor, "_collect_generated_files", lambda *args, **kwargs: []
+    )
+
+    result = executor.execute(
+        code="print('hello')",
+        skill_files={
+            "requirements.txt": b"git+https://evil.example.com/repo.git\n",
+            "main.py": b"print('x')",
+        },
+    )
+
+    assert result["success"] is False
+    assert "Disallowed requirements" in result["error"]
+
+
+def test_execute_network_mode_none_by_default(monkeypatch):
+    _install_fake_sandbox(monkeypatch)
+    executor = SkillsSandboxExecutor()
+    monkeypatch.setattr(
+        executor, "_collect_generated_files", lambda *args, **kwargs: []
+    )
+    monkeypatch.delenv("LITELLM_SANDBOX_NETWORK_MODE", raising=False)
+
+    executor.execute(
+        code="print('hello')",
+        skill_files={"main.py": b"print('x')"},
+    )
+
+    assert _FakeSandboxSession.last_instance.kwargs["runtime_configs"] == {"network_mode": "none"}
+
+
+def test_execute_network_mode_bridge_when_requirements_need_install(monkeypatch):
+    _install_fake_sandbox(monkeypatch)
+    executor = SkillsSandboxExecutor()
+    monkeypatch.setattr(
+        executor, "_collect_generated_files", lambda *args, **kwargs: []
+    )
+    monkeypatch.delenv("LITELLM_SANDBOX_NETWORK_MODE", raising=False)
+
+    executor.execute(
+        code="print('hello')",
+        skill_files={"main.py": b"print('x')"},
+        requirements="requests==2.32.3\n",
+    )
+
+    assert _FakeSandboxSession.last_instance.kwargs["runtime_configs"] == {"network_mode": "bridge"}
+
+
+def test_execute_network_mode_operator_override_wins(monkeypatch):
+    _install_fake_sandbox(monkeypatch)
+    executor = SkillsSandboxExecutor()
+    monkeypatch.setattr(
+        executor, "_collect_generated_files", lambda *args, **kwargs: []
+    )
+    monkeypatch.setenv("LITELLM_SANDBOX_NETWORK_MODE", "bridge")
+
+    executor.execute(
+        code="print('hello')",
+        skill_files={"main.py": b"print('x')"},
+    )
+
+    assert _FakeSandboxSession.last_instance.kwargs["runtime_configs"] == {"network_mode": "bridge"}
+
+
+def test_execute_generic_error_does_not_leak_host_paths(monkeypatch):
+    class _ExplodingSandboxSession(_FakeSandboxSession):
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            type(self).last_instance = self
+
+        def run(self, code):
+            raise RuntimeError("/Users/someone/secret/host/path.py: boom")
+
+    _install_fake_sandbox(monkeypatch, session_cls=_ExplodingSandboxSession)
+    executor = SkillsSandboxExecutor()
+    monkeypatch.setattr(
+        executor, "_collect_generated_files", lambda *args, **kwargs: []
+    )
+
+    result = executor.execute(
+        code="print('hello')",
+        skill_files={"main.py": b"print('x')"},
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "Sandbox execution failed"
+    assert "/Users" not in result["error"]

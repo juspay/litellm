@@ -4068,15 +4068,22 @@ class TestPKCEFunctionality:
                 )
 
                 # Assert
-                # Verify async cache was called to store code_verifier
-                mock_cache.async_set_cache.assert_called_once()
-                cache_call = mock_cache.async_set_cache.call_args
-                assert cache_call.kwargs["key"] == f"pkce_verifier:{test_state}"
-                assert cache_call.kwargs["ttl"] == 600
+                # Verify async cache stored both the code_verifier and the
+                # server-side single-use state mint for this state.
+                set_keys = [
+                    call.kwargs["key"]
+                    for call in mock_cache.async_set_cache.call_args_list
+                ]
+                assert set_keys == [f"pkce_verifier:{test_state}", f"sso_state:{test_state}"]
+                verifier_call = mock_cache.async_set_cache.call_args_list[0]
+                assert verifier_call.kwargs["ttl"] == 600
                 # Value is stored as dict for proper JSON serialization in Redis
-                cached = cache_call.kwargs["value"]
+                cached = verifier_call.kwargs["value"]
                 assert isinstance(cached, dict) and "code_verifier" in cached
                 assert len(cached["code_verifier"]) == 43
+                mint_call = mock_cache.async_set_cache.call_args_list[1]
+                assert mint_call.kwargs["value"] == {"minted": True}
+                assert mint_call.kwargs["ttl"] == 600
 
                 # Verify PKCE parameters were added to the redirect URL
                 assert result is not None
@@ -4212,12 +4219,18 @@ class TestPKCEFunctionality:
                         state="fallback_state_xyz",
                         generic_authorization_endpoint="https://auth.example.com/authorize",
                     )
-                    mock_in_memory.async_set_cache.assert_called_once()
-                    stored_key = mock_in_memory.async_set_cache.call_args.kwargs["key"]
-                    stored_value = mock_in_memory.async_set_cache.call_args.kwargs[
+                    set_keys = [
+                        call.kwargs["key"]
+                        for call in mock_in_memory.async_set_cache.call_args_list
+                    ]
+                    assert set_keys == [
+                        "pkce_verifier:fallback_state_xyz",
+                        "sso_state:fallback_state_xyz",
+                    ]
+                    stored_key = set_keys[0]
+                    stored_value = mock_in_memory.async_set_cache.call_args_list[0].kwargs[
                         "value"
                     ]
-                    assert stored_key == "pkce_verifier:fallback_state_xyz"
                     assert (
                         isinstance(stored_value, dict)
                         and len(stored_value["code_verifier"]) == 43
@@ -6738,6 +6751,24 @@ class TestSyncUserRoleFromJwtRoleMap:
 # ── VERIA-34 regression: PKCE state-to-session-cookie binding ───────────────
 
 
+class _StateSeedingCache:
+    """Minimal async cache that returns pre-seeded keys and records deletes."""
+
+    def __init__(self, store):
+        self._store = dict(store)
+        self.deleted_keys = []
+
+    async def async_get_cache(self, key, **kwargs):
+        return self._store.get(key)
+
+    async def async_set_cache(self, key, value, **kwargs):
+        self._store[key] = value
+
+    async def async_delete_cache(self, key, **kwargs):
+        self.deleted_keys.append(key)
+        self._store.pop(key, None)
+
+
 class TestPKCEStateCookieBinding:
     """The Generic SSO PKCE flow used the URL ``state`` parameter as a
     cache-key for the PKCE ``code_verifier`` without binding the state to
@@ -6987,6 +7018,146 @@ class TestPKCEStateCookieBinding:
         assert "state" in str(exc_info.value.message).lower()
 
     @pytest.mark.asyncio
+    async def test_pkce_callback_rejects_unminted_state_despite_matching_cookie(self):
+        """Cookie-equality alone must not pass: an attacker who presets the
+        browser's state cookie (e.g. from a sibling subdomain) picks a state
+        value with no server-side mint, and the callback must reject it even
+        though cookie and URL state match."""
+        from litellm.proxy._types import ProxyException
+        from litellm.proxy.management_endpoints.ui_sso import get_generic_sso_response
+
+        mock_request = MagicMock(spec=Request)
+        mock_request.query_params = {"state": "attacker-chosen-state", "code": "auth-code"}
+        mock_request.cookies = {"litellm_oauth_state": "attacker-chosen-state"}
+
+        from litellm.proxy.management_endpoints.ui_sso import SSOAuthenticationHandler
+
+        with (
+            patch.object(
+                SSOAuthenticationHandler,
+                "prepare_token_exchange_parameters",
+                AsyncMock(
+                    return_value={
+                        "code_verifier": "verifier",
+                        "_pkce_cache_key": "pkce_verifier:attacker-chosen-state",
+                    }
+                ),
+            ),
+            patch("litellm.proxy.proxy_server.redis_usage_cache", None),
+            patch(
+                "litellm.proxy.proxy_server.user_api_key_cache",
+                _StateSeedingCache({}),
+            ),
+            patch("fastapi_sso.sso.base.DiscoveryDocument"),
+            patch("fastapi_sso.sso.generic.create_provider", return_value=MagicMock()),
+            patch.dict(
+                os.environ,
+                {
+                    "GENERIC_CLIENT_SECRET": "x",
+                    "GENERIC_AUTHORIZATION_ENDPOINT": "https://idp.example.com/auth",
+                    "GENERIC_TOKEN_ENDPOINT": "https://idp.example.com/token",
+                    "GENERIC_USERINFO_ENDPOINT": "https://idp.example.com/userinfo",
+                    "GENERIC_CLIENT_USE_PKCE": "true",
+                },
+            ),
+            pytest.raises(ProxyException) as exc_info,
+        ):
+            await get_generic_sso_response(
+                request=mock_request,
+                jwt_handler=MagicMock(spec=JWTHandler),
+                generic_client_id="cid",
+                redirect_url="https://proxy.example.com/sso/callback",
+                sso_jwt_handler=None,
+            )
+
+        assert "not issued by this proxy or already used" in str(exc_info.value.message)
+
+    @pytest.mark.asyncio
+    async def test_pkce_callback_consumes_state_mint_single_use(self):
+        """A successfully used state must not be replayable: the mint entry is
+        deleted during the callback, so replaying the same URL + cookie pair
+        is rejected on the second attempt."""
+        from litellm.proxy._types import ProxyException
+        from litellm.proxy.management_endpoints.ui_sso import (
+            SSOAuthenticationHandler,
+            get_generic_sso_response,
+        )
+
+        seeding_cache = _StateSeedingCache({"sso_state:single-use-state": {"minted": True}})
+
+        def _make_request():
+            req = MagicMock(spec=Request)
+            req.query_params = {"state": "single-use-state", "code": "auth-code"}
+            req.cookies = {"litellm_oauth_state": "single-use-state"}
+            return req
+
+        with (
+            patch.object(
+                SSOAuthenticationHandler,
+                "prepare_token_exchange_parameters",
+                AsyncMock(
+                    side_effect=lambda **kwargs: {
+                        "code_verifier": "verifier",
+                        "_pkce_cache_key": "pkce_verifier:single-use-state",
+                    }
+                ),
+            ),
+            patch.object(
+                SSOAuthenticationHandler,
+                "_pkce_token_exchange",
+                AsyncMock(
+                    return_value={
+                        "access_token": "tok",
+                        "id_token": "id",
+                        "sub": "user@example.com",
+                        "email": "user@example.com",
+                    }
+                ),
+            ),
+            patch.object(
+                SSOAuthenticationHandler,
+                "_delete_pkce_verifier",
+                AsyncMock(),
+            ),
+            patch("litellm.proxy.proxy_server.redis_usage_cache", None),
+            patch(
+                "litellm.proxy.proxy_server.user_api_key_cache",
+                seeding_cache,
+            ),
+            patch("fastapi_sso.sso.base.DiscoveryDocument"),
+            patch("fastapi_sso.sso.generic.create_provider", return_value=MagicMock()),
+            patch.dict(
+                os.environ,
+                {
+                    "GENERIC_CLIENT_SECRET": "x",
+                    "GENERIC_AUTHORIZATION_ENDPOINT": "https://idp.example.com/auth",
+                    "GENERIC_TOKEN_ENDPOINT": "https://idp.example.com/token",
+                    "GENERIC_USERINFO_ENDPOINT": "https://idp.example.com/userinfo",
+                    "GENERIC_CLIENT_USE_PKCE": "true",
+                },
+            ),
+        ):
+            result, _, _ = await get_generic_sso_response(
+                request=_make_request(),
+                jwt_handler=MagicMock(spec=JWTHandler),
+                generic_client_id="cid",
+                redirect_url="https://proxy.example.com/sso/callback",
+                sso_jwt_handler=None,
+            )
+            assert result is not None
+            assert "sso_state:single-use-state" in seeding_cache.deleted_keys
+
+            with pytest.raises(ProxyException) as exc_info:
+                await get_generic_sso_response(
+                    request=_make_request(),
+                    jwt_handler=MagicMock(spec=JWTHandler),
+                    generic_client_id="cid",
+                    redirect_url="https://proxy.example.com/sso/callback",
+                    sso_jwt_handler=None,
+                )
+            assert "not issued by this proxy or already used" in str(exc_info.value.message)
+
+    @pytest.mark.asyncio
     async def test_pkce_callback_accepts_matching_state_cookie(self):
         """Happy path: URL state and cookie state match (the legitimate
         flow where the same browser that started the redirect lands on
@@ -7028,6 +7199,13 @@ class TestPKCEStateCookieBinding:
                 "_delete_pkce_verifier",
                 AsyncMock(),
             ),
+            # Seed the server-side single-use state mint the redirect would
+            # have created, and let the callback consume it.
+            patch("litellm.proxy.proxy_server.redis_usage_cache", None),
+            patch(
+                "litellm.proxy.proxy_server.user_api_key_cache",
+                _StateSeedingCache({"sso_state:matched-state": {"minted": True}}),
+            ),
             patch("fastapi_sso.sso.base.DiscoveryDocument"),
             patch("fastapi_sso.sso.generic.create_provider", return_value=MagicMock()),
             patch.dict(
@@ -7057,6 +7235,21 @@ class TestPKCEStateCookieBinding:
 
 
 @pytest.mark.asyncio
+def _admin_session_cookie_request(master_key="sk-debug-test-key"):
+    """Build a MagicMock request carrying a valid admin UI session cookie."""
+    from litellm.proxy.common_utils.session_cookie_utils import encode_ui_session_jwt
+
+    token = encode_ui_session_jwt(
+        {"user_id": "admin-1", "user_role": "proxy_admin", "login_method": "username_password"},
+        master_key,
+    )
+    mock_request = MagicMock(spec=Request)
+    mock_request.base_url = "http://proxy.example.com/"
+    mock_request.cookies = {"token": token}
+    mock_request.query_params = {}
+    return mock_request
+
+
 async def test_debug_sso_callback_renders_full_jwt_claims():
     """
     /sso/debug/callback should render the complete set of claims returned by the
@@ -7066,9 +7259,8 @@ async def test_debug_sso_callback_renders_full_jwt_claims():
     """
     from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
 
-    mock_request = MagicMock(spec=Request)
+    mock_request = _admin_session_cookie_request()
     mock_request.base_url = "http://proxy.example.com/"
-    mock_request.cookies = {}
     mock_request.query_params = {}
 
     parsed_openid = CustomOpenID(
@@ -7114,7 +7306,11 @@ async def test_debug_sso_callback_renders_full_jwt_claims():
             "litellm.proxy.management_endpoints.ui_sso.get_generic_sso_response",
             side_effect=fake_get_generic_sso_response,
         ),
-        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"enable_sso_debug": True},
+        ),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
         patch("litellm.proxy.proxy_server.prisma_client", MagicMock()),
         patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()),
         patch("litellm.proxy.proxy_server.jwt_handler", MagicMock(spec=JWTHandler)),
@@ -7170,9 +7366,8 @@ async def test_debug_sso_callback_handles_missing_raw_response():
     """
     from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
 
-    mock_request = MagicMock(spec=Request)
+    mock_request = _admin_session_cookie_request()
     mock_request.base_url = "http://proxy.example.com/"
-    mock_request.cookies = {}
     mock_request.query_params = {}
 
     parsed_openid = CustomOpenID(
@@ -7200,7 +7395,11 @@ async def test_debug_sso_callback_handles_missing_raw_response():
             "get_microsoft_callback_response",
             side_effect=fake_microsoft_callback,
         ),
-        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"enable_sso_debug": True},
+        ),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
         patch("litellm.proxy.proxy_server.prisma_client", MagicMock()),
         patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()),
         patch("litellm.proxy.proxy_server.jwt_handler", MagicMock(spec=JWTHandler)),
@@ -7336,3 +7535,130 @@ def test_decode_sso_jwt_unverified_rejects_missing_alg():
 
     with pytest.raises(pyjwt.exceptions.DecodeError):
         _decode_sso_jwt_unverified(token)
+
+
+@pytest.mark.asyncio
+async def test_debug_sso_callback_disabled_by_default():
+    """Without an explicit operator opt-in, /sso/debug/* must 404 even for an
+    admin with a valid session cookie."""
+    from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
+
+    mock_request = _admin_session_cookie_request()
+    mock_request.base_url = "http://proxy.example.com/"
+    mock_request.query_params = {}
+
+    with (
+        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await debug_sso_callback(mock_request)
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_debug_sso_callback_requires_admin_session(monkeypatch):
+    """With the opt-in flag set, a request without an admin session cookie
+    must be rejected with 401."""
+    from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
+
+    monkeypatch.setenv("ENABLE_SSO_DEBUG", "true")
+    mock_request = MagicMock(spec=Request)
+    mock_request.base_url = "http://proxy.example.com/"
+    mock_request.cookies = {}
+    mock_request.query_params = {}
+
+    with (
+        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await debug_sso_callback(mock_request)
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_debug_sso_callback_rejects_non_admin_session(monkeypatch):
+    """With the opt-in flag set, a session cookie for a non-admin user must
+    be rejected with 403."""
+    from litellm.proxy.common_utils.session_cookie_utils import encode_ui_session_jwt
+    from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
+
+    monkeypatch.setenv("ENABLE_SSO_DEBUG", "true")
+    token = encode_ui_session_jwt(
+        {"user_id": "viewer-1", "user_role": "proxy_admin_viewer", "login_method": "sso"},
+        "sk-debug-test-key",
+    )
+    mock_request = MagicMock(spec=Request)
+    mock_request.base_url = "http://proxy.example.com/"
+    mock_request.cookies = {"token": token}
+    mock_request.query_params = {}
+
+    with (
+        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await debug_sso_callback(mock_request)
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_debug_sso_callback_drops_unlisted_claims():
+    """Claims outside the debug allowlist must not render even for an admin:
+    the page is a debugging aid for identity mapping, not a raw IdP dump."""
+    from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
+
+    mock_request = _admin_session_cookie_request()
+    mock_request.base_url = "http://proxy.example.com/"
+    mock_request.query_params = {}
+
+    parsed_openid = CustomOpenID(
+        id="user_900",
+        email="admin@example.com",
+        first_name="Ad",
+        last_name="Min",
+        display_name="Ad Min",
+        provider="generic",
+        team_ids=[],
+        user_role=None,
+    )
+
+    raw_userinfo = {
+        "sub": "user_900",
+        "email": "admin@example.com",
+        "custom_unlisted_field": "leak-me-not",
+        "internal_idp_secret": "leak-me-not-either",
+        "access_token": "should-not-render",
+    }
+
+    async def fake_get_generic_sso_response(**kwargs):
+        return parsed_openid, raw_userinfo, {"sub": "user_900"}
+
+    with (
+        patch.dict(os.environ, {"GENERIC_CLIENT_ID": "test_client_id"}),
+        patch(
+            "litellm.proxy.management_endpoints.ui_sso.get_generic_sso_response",
+            side_effect=fake_get_generic_sso_response,
+        ),
+        patch(
+            "litellm.proxy.proxy_server.general_settings",
+            {"enable_sso_debug": True},
+        ),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
+        patch("litellm.proxy.proxy_server.prisma_client", MagicMock()),
+        patch("litellm.proxy.proxy_server.user_api_key_cache", MagicMock()),
+        patch("litellm.proxy.proxy_server.jwt_handler", MagicMock(spec=JWTHandler)),
+    ):
+        for var in ("MICROSOFT_CLIENT_ID", "GOOGLE_CLIENT_ID"):
+            os.environ.pop(var, None)
+        response = await debug_sso_callback(mock_request)
+
+    body = response.body.decode()
+    assert "leak-me-not" not in body
+    assert "internal_idp_secret" not in body
+    assert "should-not-render" not in body
+    assert "admin@example.com" in body

@@ -1,7 +1,7 @@
 #### CRUD ENDPOINTS for UI Settings #####
 import asyncio
 import json
-from typing import Any, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import Annotated, Any, Dict, List, Optional, Set, Tuple, Type, Union
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
@@ -1406,22 +1406,23 @@ async def update_ui_settings(
     tags=["UI Theme Settings"],
     dependencies=[Depends(user_api_key_auth)],
 )
-async def upload_logo(file: UploadFile = File(...)):
+async def upload_logo(
+    file: Annotated[UploadFile, File(...)],
+    user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
+):
     """
     Upload a custom logo for the admin UI.
-    Accepts image files (PNG, JPG, JPEG, SVG) and stores them for use in the UI.
+    Accepts PNG, JPG, JPEG, GIF, WEBP, and ICO files and stores them for use in the UI.
     """
     import os
-    from pathlib import Path
 
-    # Validate file type
-    allowed_extensions = {".png", ".jpg", ".jpeg", ".svg"}
-    file_extension = Path(file.filename or "").suffix.lower()
+    from litellm._uuid import uuid
+    from litellm.proxy.common_utils.static_asset_utils import detect_local_image_media_type
 
-    if file_extension not in allowed_extensions:
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
         raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type. Allowed types: {', '.join(allowed_extensions)}",
+            status_code=403,
+            detail={"error": f"Only proxy admins can upload UI assets. Your user role={user_api_key_dict.user_role}"},
         )
 
     # Validate file size (max 5MB)
@@ -1429,13 +1430,32 @@ async def upload_logo(file: UploadFile = File(...)):
     if len(file_content) > 5 * 1024 * 1024:  # 5MB
         raise HTTPException(status_code=400, detail="File size too large. Maximum size is 5MB.")
 
-    # Create uploads directory if it doesn't exist
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    upload_dir = os.path.join(current_dir, "..", "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
+    # Validate content by magic bytes, not the client-controlled filename
+    # extension. The served image must never be HTML-ish (SVG) or a renamed
+    # non-image. detect_local_image_media_type understands exactly the set
+    # /get_logo can serve back.
+    media_type = detect_local_image_media_type(file_content)
+    if media_type is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Upload a PNG, JPG, GIF, WEBP, or ICO image.",
+        )
+    extension_by_media_type = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/x-icon": ".ico",
+    }
+    file_extension = extension_by_media_type[media_type]
 
-    # Generate unique filename
-    from litellm._uuid import uuid
+    # Write outside the importable proxy package: the old location (a
+    # directory inside litellm/proxy, on sys.path) turned any upload into a
+    # potentially importable module on disk.
+    upload_dir = os.path.join(
+        os.path.expanduser(os.getenv("LITELLM_UPLOADS_DIR", "~/.litellm_uploads")),
+    )
+    os.makedirs(upload_dir, exist_ok=True)
 
     unique_filename = f"logo_{uuid.uuid4().hex}{file_extension}"
     file_path = os.path.join(upload_dir, unique_filename)

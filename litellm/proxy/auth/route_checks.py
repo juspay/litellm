@@ -817,6 +817,18 @@ class RouteChecks:
                 detail=f"user not allowed to access this OpenAI routes, role= {_user_role}",
             )
 
+        # Known write routes are denied regardless of HTTP method, BEFORE the
+        # safe-method default-allow fires. The default-allow keys off the verb,
+        # so a write exposed on GET (or a method change on an existing write
+        # endpoint) would otherwise be auto-granted without review.
+        if route in RouteChecks._ADMIN_VIEWER_BLOCKED_WRITE_ROUTES or (
+            route.startswith("/key/") and route.endswith(_PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route}",
+            )
+
         # Check if this is a write operation on management routes
         if RouteChecks.check_route_access(route=route, allowed_routes=LiteLLMRoutes.management_routes.value):
             # For management routes, only allow read operations or specific allowed updates
@@ -862,16 +874,8 @@ class RouteChecks:
                         )
             return
 
-        # Hard-block known write routes regardless of HTTP method (defensive
-        # — these are POSTs in practice, but pinning them here protects
-        # against future GET-shaped writes).
-        if route in RouteChecks._ADMIN_VIEWER_BLOCKED_WRITE_ROUTES or (
-            route.startswith("/key/") and route.endswith("/regenerate")
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route}",
-            )
+        # Known write routes were already blocked verb-agnostically before the
+        # safe-method default-allow above, so they cannot reach this branch.
 
         # Legacy explicit-allow sets (kept for routes that are POST but
         # semantically read-only, e.g. /spend/calculate). Both admin_viewer_routes

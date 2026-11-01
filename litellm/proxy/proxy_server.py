@@ -300,6 +300,10 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     encrypt_value_helper,
 )
 from litellm.proxy.common_utils.html_forms.ui_login import build_ui_login_form
+from litellm.proxy.common_utils.session_cookie_utils import (
+    decode_ui_session_jwt,
+    encode_ui_session_jwt,
+)
 from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
     _safe_get_request_headers,
@@ -13276,13 +13280,7 @@ async def login(request: Request):
     )
 
     # Generate JWT token
-    import jwt
-
-    jwt_token = jwt.encode(
-        cast(dict, returned_ui_token_object),
-        cast(str, master_key),
-        algorithm="HS256",
-    )
+    jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), cast(str, master_key))
 
     # Build redirect URL
     litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
@@ -13323,13 +13321,7 @@ async def login_v2(request: Request):
             premium_user=premium_user,
         )
 
-        import jwt
-
-        jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
-            cast(str, master_key),
-            algorithm="HS256",
-        )
+        jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), cast(str, master_key))
 
         litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
@@ -13405,13 +13397,7 @@ async def login_v3(request: Request):
             premium_user=premium_user,
         )
 
-        import jwt
-
-        jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
-            cast(str, master_key),
-            algorithm="HS256",
-        )
+        jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), cast(str, master_key))
 
         litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
@@ -13574,10 +13560,8 @@ async def onboarding(invite_link: str, request: Request):
         litellm_dashboard_ui += "ui/onboarding"
     else:
         litellm_dashboard_ui += "/ui/onboarding"
-    import jwt
-
     user_email = user_obj.user_email
-    onboarding_token = jwt.encode(  # type: ignore
+    onboarding_token = encode_ui_session_jwt(
         {
             "token_type": "litellm_onboarding",
             "invitation_link": invite_link,
@@ -13585,7 +13569,6 @@ async def onboarding(invite_link: str, request: Request):
             "exp": litellm.utils.get_utc_datetime() + timedelta(minutes=15),
         },
         master_key,
-        algorithm="HS256",
     )
     disabled_non_admin_personal_key_creation = get_disabled_non_admin_personal_key_creation()
 
@@ -13600,11 +13583,7 @@ async def onboarding(invite_link: str, request: Request):
         disabled_non_admin_personal_key_creation=disabled_non_admin_personal_key_creation,
         server_root_path=get_server_root_path(),
     )
-    jwt_token = jwt.encode(  # type: ignore
-        cast(dict, returned_ui_token_object),
-        master_key,
-        algorithm="HS256",
-    )
+    jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), master_key)
 
     litellm_dashboard_ui += "?token={}&user_email={}".format(jwt_token, user_email)
     return {
@@ -13636,14 +13615,8 @@ def _get_onboarding_claims_from_request(request: Request) -> dict:
     if onboarding_token.lower().startswith("bearer "):
         onboarding_token = onboarding_token.split(" ", 1)[1]
 
-    import jwt
-
     try:
-        return jwt.decode(
-            onboarding_token,
-            master_key,
-            algorithms=["HS256"],
-        )
+        return decode_ui_session_jwt(onboarding_token, master_key, verify_exp=False)
     except Exception:
         raise HTTPException(
             status_code=401,
@@ -13693,8 +13666,6 @@ async def _generate_onboarding_ui_session_token(user_obj: Any) -> str:
     )
     key = response["token"]  # type: ignore
 
-    import jwt
-
     from litellm.types.proxy.ui_sso import ReturnedUITokenObject
 
     disabled_non_admin_personal_key_creation = get_disabled_non_admin_personal_key_creation()
@@ -13710,11 +13681,7 @@ async def _generate_onboarding_ui_session_token(user_obj: Any) -> str:
         server_root_path=get_server_root_path(),
     )
     assert master_key is not None
-    return jwt.encode(  # type: ignore
-        cast(dict, returned_ui_token_object),
-        master_key,
-        algorithm="HS256",
-    )
+    return encode_ui_session_jwt(cast(dict, returned_ui_token_object), master_key)
 
 
 @app.post("/onboarding/claim_token", include_in_schema=False)

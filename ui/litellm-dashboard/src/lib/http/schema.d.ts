@@ -14673,7 +14673,7 @@ export interface paths {
         /**
          * Upload Logo
          * @description Upload a custom logo for the admin UI.
-         *     Accepts image files (PNG, JPG, JPEG, SVG) and stores them for use in the UI.
+         *     Accepts PNG, JPG, JPEG, GIF, WEBP, and ICO files and stores them for use in the UI.
          */
         post: operations["upload_logo_upload_logo_post"];
         delete?: never;

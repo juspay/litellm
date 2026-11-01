@@ -4,17 +4,49 @@
 
 ## Summary
 
-This PR clears every actionable finding from the five security audits of the proxy:
+This PR clears every actionable finding from the six security audits of the proxy:
 
 1. **litellm-vul Strykea SCA scan (scan-1317)** — software-composition findings against the dependency tree (`fix(deps): clear all litellm-vul SCA findings, raise Python floor to 3.11`)
 2. **echo-scan SAST audit (PR #811 report)** — 66 code-level findings (0 critical / 20 high / 36 medium / 4 low / 6 info) (`fix(security): remediate all echo-scan SAST findings`)
 3. **litellm-vul-2 Strykea SCA scan (scan-1805, SCA-2026-56)** — a rescan of this branch that catalogued every secondary manifest in the tree: 77 findings (5 critical / 39 high / 23 medium / 10 low) (`fix(deps): clear all litellm-vul-2 scan-1805 findings across secondary manifests`)
 4. **echo-scan re-scan (PR #939 report)** — 11 findings remaining after the first SAST pass (5 medium / 6 low) (`fix(security): clear all 11 echo-scan re-scan findings`)
 5. **echo-scan re-scan (PR #1048 report)** — 11 findings remaining after the second SAST pass (0 critical / 2 high / 6 medium / 3 low) (`fix(security): clear all 11 echo-scan PR #1048 findings`)
+6. **echo-scan re-scan (PR #1492 report)** — 12 findings remaining after the third SAST pass (0 critical / 0 high / 8 medium / 4 low) (`fix(security): clear all 12 echo-scan PR #1492 findings`)
 
 Both audits ran against the wrong or stale base: the SCA scan resolved lockfiles from `origin/main` (a stale dev branch building litellm 1.61.x/1.81.3), and a portion of the SAST findings were already fixed in-tree by prior cherry-picks. This PR fixes everything that genuinely remained open on the fork's release line.
 
 ## Changes
+
+### Commit 7: third re-scan remediation (echo-scan PR #1492 report)
+
+All 12 findings are fixed, each with a regression test that fails if the fix regresses:
+
+1. **Logo upload without content validation (CWE-434, low):** `/ui/upload/logo` checks the uploaded file's magic bytes against the accepted image signatures (PNG, JPG, GIF, WEBP, ICO) before writing anything to disk, enforces the existing 5MB size cap, and stores the file under `LITELLM_UPLOADS_DIR` (default `~/.litellm_uploads`) with a generated `logo_` prefix; a non-image payload (e.g. an SVG or a script renamed to `.png`) is rejected with a 400 before the write
+2. **Unauthenticated SSO debug claim dump (CWE-200, low):** the `/sso/debug/login` and `/sso/debug/callback` endpoints are disabled unless `general_settings.enable_sso_debug` (or `ENABLE_SSO_DEBUG=true`) is set, and even then they require a proxy-admin UI session cookie; the rendered page allowlists the OIDC claims it prints, so tokens and internal identifiers never render
+3. **Bearer token prefix strip via unanchored replace (CWE-20, low):** `get_bearer_token` strips exactly one leading `Bearer ` scheme (case-insensitive) from the start of the credential and rejects values with an embedded scheme token (`sk-one Bearer sk-two`) with a 400, so `sk-BearerSecret` style keys are no longer silently mangled
+4. **Token hash without per-token salt (CWE-916, low):** `hash_token` (and `PrismaClient.hash_token`) now HMAC-SHA256 digests under `LITELLM_SALT_KEY` when it is set, so a database leak alone reveals nothing about the keys and digests differ across environments; when it is unset the output is byte-for-byte the legacy bare SHA-256; read paths (`hash_token_candidates`) try the peppered digest first and fall back to the legacy digest, so rows written before the pepper was configured keep authenticating with no migration
+5. **Master key used directly as the UI session JWT secret (CWE-798, medium):** UI session cookies, BYOK session tokens, and onboarding session tokens are now signed with an HKDF-SHA256-derived key (`litellm-ui-session-jwt-v1` / `litellm-byok-session-jwt-v1` info strings) instead of the raw master key, so a leaked session cookie can never be used to verify or forge a master-key JWT (and vice versa); BYOK tokens additionally require an `exp` claim
+6. **Skills sandbox executes model-generated code without a trust boundary (CWE-94, medium):** `requirements` and any bundled `requirements.txt` are validated before the sandbox session is created; `-e`/`--editable`, VCS URLs (`git+`, `svn+`, ...), `--index-url`/`--extra-index-url`, `--find-links`, `--trusted-host`, `--proxy`, and local filesystem paths are all rejected with a message that names only the offending token; validation errors never include host paths (the generic sandbox failure keeps returning `Sandbox execution failed`), and the container defaults to `network_mode: "none"` unless requirements are present (`LITELLM_SANDBOX_NETWORK_MODE` overrides)
+7. **OAuth2 state validation relies solely on the cookie (CWE-352, medium):** the proxy mints a single-use `sso_state:{state}` cache entry at redirect time and consumes it at the callback; a state that was never issued by this proxy (or was already used) is rejected even when the attacker can set a matching cookie, and the entry is deleted on use so a replayed callback fails
+8. **JWT audience/issuer verification silently disabled when env unset (CWE-347, medium):** `_build_decode_kwargs` raises unless `JWT_AUDIENCE` or `JWT_ISSUER` is configured (or `LITELLM_JWT_ALLOW_UNSCOPED=true` explicitly opts back into the legacy unscoped behavior, which warns once), so a JWT auth deployment without scoping fails closed instead of accepting any well-signed token
+9. **OAuth2 introspection role unvalidated (CWE-863, medium):** the introspection response's role field is accepted only when it names a real `LitellmUserRoles` value, non-string roles are rejected, and tokens whose introspection response lacks `active: true` (or reports `active` missing) are refused; unauthenticated `proxy_admin` from a token-info path requires client credentials
+10. **Proxy-Admin-Viewer default-allow keyed off HTTP method (CWE-285, medium):** the known write routes (`/key/delete`, `/key/update`, `/customer/update`, etc.) are blocked verb-agnostically before the safe-method default-allow, so a viewer key cannot reach a write route even via GET; suffix-parameter write routes (`/key/{key}/regenerate`, `/key/{key}/reset_spend`) are covered by the same mechanism
+11. **Unauthenticated cross-tenant write `POST /customer/update` (CWE-639, medium):** `update_end_user` requires a proxy admin (`allow_view_only=False`), so viewer and all non-admin roles get a 403 before any DB write
+12. **Unauthenticated `GET /customer/info` IDOR (CWE-639, medium):** `end_user_info` requires an admin session; viewer keys may read (`allow_view_only=True`) but every non-admin role gets a 403
+
+#### Operator notes for commit 7
+
+**Existing UI sessions invalidate on upgrade.** Session cookies, BYOK tokens, and onboarding tokens minted before this change were signed with the raw master key; the new code verifies with the HKDF-derived key, so users are simply logged out and re-login fixes it. No data migration is involved
+
+**Token hashes change when `LITELLM_SALT_KEY` is set.** New writes store the peppered HMAC digest, while lookups accept both the peppered and the legacy bare-SHA-256 digests, so existing keys keep working. Set `LITELLM_SALT_KEY` (already used for at-rest encryption) before the first keys are minted on a new deployment; leaving it unset preserves the exact legacy digests
+
+**JWT auth deployments need scoping configured.** A proxy relying on JWT auth with neither `JWT_AUDIENCE` nor `JWT_ISSUER` set now refuses requests with a 401 explaining the requirement; deployments that genuinely accept unscoped tokens can set `LITELLM_JWT_ALLOW_UNSCOPED=true` to restore the old behavior (a warning is logged once per process)
+
+**SSO debug endpoints are opt-in.** `/sso/debug/login` and `/sso/debug/callback` return 404 unless `enable_sso_debug` is set in `general_settings` (or `ENABLE_SSO_DEBUG=true`), and then still require a proxy-admin session cookie; the pages print only allowlisted OIDC claims
+
+**Uploads and sandbox defaults changed.** Logo uploads land in `LITELLM_UPLOADS_DIR` (default `~/.litellm_uploads`) with magic-byte validation; a previously accepted SVG upload is now rejected. Skills sandboxes run with no network unless the skill carries requirements, and `LITELLM_SANDBOX_NETWORK_MODE` overrides for operators who need the old behavior
+
+**Customer endpoints are admin-gated.** Both `/customer/info` and `/customer/update` now require a proxy-admin session key (viewer keys may still read `/customer/info`); scripts or dashboards that called these endpoints with weaker keys need to switch to an admin key
 
 ### Commit 6: second re-scan remediation (echo-scan PR #1048 report)
 
@@ -141,11 +173,15 @@ A re-scan after the first SAST pass found 11 findings still open (5 medium / 6 l
 
 The second re-scan still found 11 findings open (0 critical / 2 high / 6 medium / 3 low), all deeper variants of the earlier clusters: default-allow egress in the guardrail HTTP primitives, unverified access-token claims, the master-key fallback for at-rest encryption, claim TTL staleness in the plugin session, a TOCTOU window in the MCP stdio spawn, and a field allowlist gap in non-admin self-updates. Commit 6 clears all of them with the fixes itemized above.
 
+### echo-scan third re-scan (PR #1492 report)
+
+The third re-scan still found 12 findings open (0 critical / 0 high / 8 medium / 4 low), all deeper variants of the earlier clusters: upload content validation, session-cookie trust boundaries, OAuth2 state and introspection hardening, JWT scope fail-closed, viewer write-route gating, and customer-endpoint authorization. Commit 7 clears all of them with the fixes itemized above.
+
 ## Pre-Submission checklist
 
-- [x] Meaningful tests added (token_counter download-cap tests, url_utils scheme tests, auth_utils allowlist tests, ui_sso alg tests, azure/anthropic count_tokens destination-guard tests, provider_url_destination_guard tests, plugin-proxy traversal and salt fail-closed tests, MCP stdio validation tests, session-cookie flag tests, host-trust redirect tests, tag-filter parameter-binding tests, ORDER BY allowlist tests, JWKS verification tests including forged-signature and wrong-audience fail-closed cases, HKDF derivation tests, custom-code allowlist and timeout tests, salt-key fallback guard tests, context-bound ciphertext transplant tests, plugin claim live-role re-resolution tests, stdio pinned-path and world-writable-file/ancestor tests, self-update privileged-field allowlist tests)
+- [x] Meaningful tests added (token_counter download-cap tests, url_utils scheme tests, auth_utils allowlist tests, ui_sso alg tests, azure/anthropic count_tokens destination-guard tests, provider_url_destination_guard tests, plugin-proxy traversal and salt fail-closed tests, MCP stdio validation tests, session-cookie flag tests, host-trust redirect tests, tag-filter parameter-binding tests, ORDER BY allowlist tests, JWKS verification tests including forged-signature and wrong-audience fail-closed cases, HKDF derivation tests, custom-code allowlist and timeout tests, salt-key fallback guard tests, context-bound ciphertext transplant tests, plugin claim live-role re-resolution tests, stdio pinned-path and world-writable-file/ancestor tests, self-update privileged-field allowlist tests, logo magic-byte and role-gate tests, SSO debug gate and claim-allowlist tests, bearer-scheme parse tests, peppered token-hash and legacy-digest fallback tests, sandbox requirements-validation and network-mode tests, OAuth2 state single-use tests, JWT scope fail-closed tests, introspection role and active-flag tests, viewer write-route block tests, customer-endpoint admin-gate tests)
 - [ ] CI/CD checks pass
-- [x] Scope isolated: six commits, one per audit plus one lint cleanup
+- [x] Scope isolated: seven commits, one per audit plus one lint cleanup
 - [ ] Greptile review requested
 
 ## Type

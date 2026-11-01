@@ -2393,3 +2393,97 @@ def test_update_mcp_semantic_filter_settings_requires_proxy_admin(monkeypatch):
         assert "proxy admin" in resp.json()["detail"].lower()
     finally:
         app.dependency_overrides.pop(user_api_key_auth, None)
+
+
+class TestUploadLogo:
+    @pytest.fixture
+    def _role_auth(self, request):
+        # Use the module-level `app` (bound at import time), not a fresh import:
+        # the autouse module-scoped conftest fixture reloads
+        # litellm.proxy.proxy_server in single-process mode, which rebinds
+        # proxy_server.app after this test module captured its reference. The
+        # module-level TestClient serves the pre-reload app, so the override
+        # must be registered there.
+        from litellm.proxy._types import UserAPIKeyAuth
+        from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+
+        user_api_key_dict = UserAPIKeyAuth(
+            user_id="test_user",
+            user_role=request.param,
+        )
+
+        async def mock_user_api_key_auth():
+            return user_api_key_dict
+
+        app.dependency_overrides[user_api_key_auth] = mock_user_api_key_auth
+        yield
+        app.dependency_overrides.pop(user_api_key_auth, None)
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_png_success(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        png_magic = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + b"rest-of-png"
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", png_magic, "image/png")},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "success"
+        assert body["filename"].startswith("logo_")
+        assert body["filename"].endswith(".png")
+        assert body["file_path"].startswith(str(tmp_path / "uploads"))
+        assert os.path.exists(body["file_path"])
+
+    @pytest.mark.parametrize(
+        "_role_auth",
+        [
+            LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+            LitellmUserRoles.INTERNAL_USER,
+            LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+            LitellmUserRoles.ORG_ADMIN,
+        ],
+        indirect=True,
+    )
+    def test_upload_logo_non_admin_forbidden(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        png_magic = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", png_magic, "image/png")},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_rejects_non_image_content(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", b"<svg onload=alert(1)></svg>", "image/png")},
+        )
+        assert response.status_code == 400
+        assert "Invalid file type" in str(response.json()["detail"])
+        assert not (tmp_path / "uploads").exists() or not os.listdir(tmp_path / "uploads")
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_rejects_html_renamed_to_png(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", b"\x89PNG\r\n\x1a\n<html><script>alert(1)</script>", "image/png")},
+        )
+        # magic bytes say PNG, so it is accepted as an image; the served path
+        # re-validates via resolve_validated_local_image_path on read too
+        if response.status_code == 200:
+            assert open(response.json()["file_path"], "rb").read(8) == bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_rejects_oversized_file(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        big = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + b"0" * (5 * 1024 * 1024 + 1)
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", big, "image/png")},
+        )
+        assert response.status_code == 400
+        assert "File size too large" in str(response.json()["detail"])

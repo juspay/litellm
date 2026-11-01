@@ -3068,10 +3068,9 @@ class PrismaClient:
             return "success"
 
     def hash_token(self, token: str):
-        # Hash the string using SHA-256
-        hashed_token = hashlib.sha256(token.encode()).hexdigest()
+        from litellm.proxy.common_utils.token_hash_utils import hash_token as _hash_token
 
-        return hashed_token
+        return _hash_token(token)
 
     def jsonify_object(self, data: dict) -> dict:
         db_data = copy.deepcopy(data)
@@ -5177,18 +5176,14 @@ async def send_email(
 
 
 def hash_token(token: str):
-    import hashlib
+    from litellm.proxy.common_utils.token_hash_utils import hash_token as _hash_token
 
-    # Hash the string using SHA-256
-    hashed_token = hashlib.sha256(token.encode()).hexdigest()
-
-    return hashed_token
+    return _hash_token(token)
 
 
 def hash_password(password: str) -> str:
     """Hash a password using scrypt with a random salt."""
     import base64
-    import hashlib
     import os
 
     salt = os.urandom(16)
@@ -5199,7 +5194,6 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, stored: str) -> bool:
     """Verify a password against a stored hash. Supports scrypt and SHA256."""
     import base64
-    import hashlib
     import secrets
 
     if stored.startswith("scrypt:"):

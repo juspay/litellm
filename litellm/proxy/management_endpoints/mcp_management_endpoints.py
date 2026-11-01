@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Set
 
+import jwt
 from fastapi import (
     APIRouter,
     Depends,
@@ -46,11 +47,12 @@ import litellm
 from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.constants import LITELLM_PROXY_ADMIN_NAME
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.proxy._experimental.mcp_server.utils import (
-    build_env_var_setup_url,
-    collect_env_var_references,
     LITELLM_MCP_SERVER_DESCRIPTION,
     LITELLM_MCP_SERVER_NAME,
+    build_env_var_setup_url,
+    collect_env_var_references,
     get_server_prefix,
     parse_admin_env_vars,
 )
@@ -66,7 +68,6 @@ from litellm.repositories.table_repositories import (
     MCPServerRepository,
     MCPUserCredentialsRepository,
 )
-from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 
@@ -1467,8 +1468,9 @@ if MCP_AVAILABLE:
         allows browser-based OAuth redirects to work without an explicit
         Authorization header.
         """
-        import jwt as _jwt
-
+        from litellm.proxy.common_utils.session_cookie_utils import (
+            decode_ui_session_jwt,
+        )
         from litellm.proxy.proxy_server import master_key
 
         auth_header = request.headers.get("Authorization", "")
@@ -1478,18 +1480,13 @@ if MCP_AVAILABLE:
             token_cookie = request.cookies.get("token")
             if token_cookie and master_key:
                 try:
-                    decoded = _jwt.decode(
-                        token_cookie,
-                        master_key,
-                        algorithms=["HS256"],
-                        # UI session cookies may omit exp; don't require it.
-                        options={"verify_exp": False, "verify_aud": False},
-                    )
+                    # UI session cookies may omit exp; don't require it.
+                    decoded = decode_ui_session_jwt(token_cookie, master_key, verify_exp=False)
                     if decoded.get("login_method") in ("sso", "username_password"):
                         cookie_key = decoded.get("key", "")
                         if cookie_key:
                             api_key = f"Bearer {cookie_key}"
-                except _jwt.InvalidTokenError:
+                except jwt.InvalidTokenError:
                     pass
 
         # For delegate_auth_to_upstream servers the entire PKCE handshake

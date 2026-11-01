@@ -215,12 +215,9 @@ class Litellm_EntityType(enum.Enum):
 
 
 def hash_token(token: str):
-    import hashlib
+    from litellm.proxy.common_utils.token_hash_utils import hash_token as _hash_token
 
-    # Hash the string using SHA-256
-    hashed_token = hashlib.sha256(token.encode()).hexdigest()
-
-    return hashed_token
+    return _hash_token(token)
 
 
 class KeyManagementRoutes(str, enum.Enum):

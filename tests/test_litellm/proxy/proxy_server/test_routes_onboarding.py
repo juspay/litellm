@@ -93,8 +93,11 @@ def test_onboarding_get_token_happy(client, monkeypatch, mock_prisma):
     assert body["user_email"] == "alice@example.com"
     assert "ui/onboarding" in body["login_url"]
     assert "token=" in body["login_url"]
-    # The JWT in body["token"] must decode with the master_key.
-    decoded = jwt.decode(body["token"], "sk-master-test", algorithms=["HS256"])
+    # The JWT in body["token"] verifies with the HKDF-derived UI session
+    # key, so the raw master key alone can neither verify nor forge it.
+    from litellm.proxy.common_utils.session_cookie_utils import decode_ui_session_jwt
+
+    decoded = decode_ui_session_jwt(body["token"], "sk-master-test", verify_exp=False)
     assert normalize(
         {
             "user_id": decoded["user_id"],
@@ -190,7 +193,9 @@ def _make_onboarding_jwt(
     user_id: str = "user-abc",
     token_type: str = "litellm_onboarding",
 ) -> str:
-    return jwt.encode(
+    from litellm.proxy.common_utils.session_cookie_utils import encode_ui_session_jwt
+
+    return encode_ui_session_jwt(
         {
             "token_type": token_type,
             "invitation_link": invitation_link,
@@ -198,7 +203,6 @@ def _make_onboarding_jwt(
             "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
         },
         master_key,
-        algorithm="HS256",
     )
 
 

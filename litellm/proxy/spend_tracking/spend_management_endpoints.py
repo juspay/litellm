@@ -33,7 +33,8 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.spend_tracking.spend_tracking_utils import (
     get_spend_by_team_and_customer,
 )
-from litellm.proxy.utils import handle_exception_on_proxy, hash_token
+from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates
+from litellm.proxy.utils import handle_exception_on_proxy
 from litellm.repositories.table_repositories import SpendLogsRepository
 from litellm.repositories.team_repository import TeamRepository
 from litellm.repositories.verification_token_repository import (
@@ -1088,7 +1089,7 @@ async def get_global_spend_report(
         if api_key is not None:
             verbose_proxy_logger.debug("Getting /spend for api_key: [set=%s]", api_key is not None)
             if api_key.startswith("sk-"):
-                api_key = hash_token(token=api_key)
+                api_key = list(hash_token_candidates(api_key))  # type: ignore
             sql_query = """
                 WITH SpendByModelApiKey AS (
                     SELECT
@@ -1102,7 +1103,7 @@ async def get_global_spend_report(
                     WHERE
                         sl."startTime" >= ($1::timestamptz AT TIME ZONE 'UTC')
                         AND sl."startTime" <  (($2::timestamptz + INTERVAL '1 day') AT TIME ZONE 'UTC')
-                        AND sl.api_key = $3
+                        AND sl.api_key = ANY($3)
                     GROUP BY
                         sl.api_key,
                         sl.model
@@ -2984,7 +2985,11 @@ async def view_spend_logs(
 
             if api_key is not None and isinstance(api_key, str):
                 if api_key.startswith("sk-"):
-                    filter_query["api_key"] = prisma_client.hash_token(token=api_key)  # type: ignore
+                    # Match digests from both the peppered scheme and the
+                    # legacy bare SHA-256 so pre-pepper spend rows still show.
+                    filter_query["api_key"] = {  # type: ignore
+                        "in": hash_token_candidates(api_key),
+                    }
                 else:
                     filter_query["api_key"] = api_key  # type: ignore
             if request_id is not None and isinstance(request_id, str):
@@ -3060,10 +3065,11 @@ async def view_spend_logs(
             scoped_filter: Dict[str, Any] = {}
             if api_key is not None and isinstance(api_key, str):
                 if api_key.startswith("sk-"):
-                    hashed_token = prisma_client.hash_token(token=api_key)
+                    scoped_filter["api_key"] = {  # type: ignore
+                        "in": hash_token_candidates(api_key),
+                    }
                 else:
-                    hashed_token = api_key
-                scoped_filter["api_key"] = hashed_token
+                    scoped_filter["api_key"] = api_key
             if request_id is not None and isinstance(request_id, str):
                 scoped_filter["request_id"] = request_id
             if user_id is not None and isinstance(user_id, str):
@@ -4645,7 +4651,7 @@ async def concurrent_request_rate_limit_hits(
             # The UI shows the masked key (key_name, e.g. "sk-...gQxg"), so match
             # that first. Also accept the full raw key (hash it) or an already-hashed
             # token so the lookup is robust to whatever form is pasted.
-            token_candidates = list({api_key, hash_token(api_key)})
+            token_candidates = list({api_key, *hash_token_candidates(api_key)})
             token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
                 where={
                     "OR": [
@@ -4850,7 +4856,7 @@ async def concurrent_request_operation_counts(
         if api_key:
             # Resolve the masked key / full key / hashed token to its token(s).
             # GCP logs only carry the token, so we must filter by it.
-            token_candidates = list({api_key, hash_token(api_key)})
+            token_candidates = list({api_key, *hash_token_candidates(api_key)})
             token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
                 where={
                     "OR": [
@@ -5005,7 +5011,7 @@ async def concurrent_request_timeline(
         # Resolve the input to the key's token(s). Both SpendLogs (keyed on the
         # hashed token) and GCP logs (carry token) need the token.
         if api_key:
-            token_candidates = list({api_key, hash_token(api_key)})
+            token_candidates = list({api_key, *hash_token_candidates(api_key)})
             token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
                 where={
                     "OR": [

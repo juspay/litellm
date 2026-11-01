@@ -83,6 +83,7 @@ from litellm.proxy.common_utils.http_parsing_utils import (
     populate_request_with_path_params,
 )
 from litellm.proxy.common_utils.realtime_utils import _realtime_request_body
+from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates as _hash_token_candidates
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
 from litellm.proxy.utils import (
@@ -353,15 +354,22 @@ def _should_route_jwt_to_oauth2_override(token: str, jwt_handler: JWTHandler) ->
     return False
 
 
+# Matches a scheme token anywhere after the leading scheme was stripped. A
+# legit bearer token never contains one: sk- keys, JWTs, and Basic credentials
+# are all whitespace-free after extraction. A hit means the caller padded the
+# header so the value that reaches hashing differs from the value presented.
+_EMBEDDED_SCHEME_RE = re.compile(r"\s(?:Bearer|Basic|bearer)\s")
+
+
 def _get_bearer_token(
     api_key: str,
 ):
     if api_key.startswith("Bearer "):  # ensure Bearer token passed in
-        api_key = api_key.replace("Bearer ", "")  # extract the token
+        api_key = api_key.removeprefix("Bearer ")  # extract the token
     elif api_key.startswith("Basic "):
-        api_key = api_key.replace("Basic ", "")  # handle langfuse input
+        api_key = api_key.removeprefix("Basic ")  # handle langfuse input
     elif api_key.startswith("bearer "):
-        api_key = api_key.replace("bearer ", "")
+        api_key = api_key.removeprefix("bearer ")
     elif api_key.startswith("AWS4-HMAC-SHA256"):
         # Handle AWS Signature V4 format from LangChain
         # Format: AWS4-HMAC-SHA256 Credential=Bearer sk-12345/date/region/service/aws4_request, SignedHeaders=..., Signature=...
@@ -378,6 +386,11 @@ def _get_bearer_token(
                 api_key = ""
     else:
         api_key = ""
+    if _EMBEDDED_SCHEME_RE.search(api_key):
+        raise HTTPException(
+            status_code=400,
+            detail="Authorization header contains an embedded authentication scheme token",
+        )
     return api_key
 
 
@@ -1487,16 +1500,19 @@ async def _user_api_key_auth_builder(
         if valid_token is None:
             ## Check CACHE
             try:
-                with tracer.trace("litellm.proxy.auth.get_key_object_check_cache"):
-                    valid_token = IdentityStore.key_from_principal(
-                        await IdentityStore(
-                            prisma_client,
-                            user_api_key_cache,
-                            parent_otel_span=parent_otel_span,
-                            proxy_logging_obj=proxy_logging_obj,
-                            check_cache_only=True,
-                        ).resolve(hashed_token=hash_token(api_key))
-                    )
+                for _candidate in _hash_token_candidates(api_key):
+                    with tracer.trace("litellm.proxy.auth.get_key_object_check_cache"):
+                        valid_token = IdentityStore.key_from_principal(
+                            await IdentityStore(
+                                prisma_client,
+                                user_api_key_cache,
+                                parent_otel_span=parent_otel_span,
+                                proxy_logging_obj=proxy_logging_obj,
+                                check_cache_only=True,
+                            ).resolve(hashed_token=_candidate)
+                        )
+                    if valid_token is not None:
+                        break
             except Exception:
                 verbose_logger.debug("api key not found in cache.")
                 valid_token = None
@@ -1653,19 +1669,38 @@ async def _user_api_key_auth_builder(
                     )
                 )
             abbreviated_api_key = abbreviate_api_key(api_key=api_key)
+            _raw_api_key = api_key
             if api_key.startswith("sk-"):
                 api_key = hash_token(token=api_key)
 
             try:
                 with tracer.trace("litellm.proxy.auth.get_key_object_from_db"):
-                    valid_token = IdentityStore.key_from_principal(
-                        await IdentityStore(
-                            prisma_client,
-                            user_api_key_cache,
-                            parent_otel_span=parent_otel_span,
-                            proxy_logging_obj=proxy_logging_obj,
-                        ).resolve(hashed_token=api_key)
-                    )
+                    valid_token = None
+                    # Try the current digest first, then digests written by
+                    # older versions so pre-pepper rows keep authenticating.
+                    _candidates = _hash_token_candidates(_raw_api_key) if _raw_api_key.startswith("sk-") else (api_key,)
+                    for _candidate in _candidates:
+                        try:
+                            valid_token = IdentityStore.key_from_principal(
+                                await IdentityStore(
+                                    prisma_client,
+                                    user_api_key_cache,
+                                    parent_otel_span=parent_otel_span,
+                                    proxy_logging_obj=proxy_logging_obj,
+                                ).resolve(hashed_token=_candidate)
+                            )
+                            break
+                        except ProxyException as _lookup_err:
+                            if _lookup_err.code not in (401, "401"):
+                                raise
+                            valid_token = None
+                    if valid_token is None:
+                        raise ProxyException(
+                            message=f"Authentication Error, Invalid proxy server token passed. Received API Key = {abbreviated_api_key}, Key Hash (Token) ={api_key}. Unable to find token in cache or `LiteLLM_VerificationTokenTable`",
+                            type=ProxyErrorTypes.token_not_found_in_db,
+                            param="key",
+                            code=status.HTTP_401_UNAUTHORIZED,
+                        )
             except ProxyException as e:
                 if e.code == 401 or e.code == "401":
                     e.message = "Authentication Error, Invalid proxy server token passed. Received API Key = {}, Key Hash (Token) ={}. Unable to find token in cache or `LiteLLM_VerificationTokenTable`".format(

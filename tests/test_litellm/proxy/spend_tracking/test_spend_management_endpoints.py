@@ -3224,6 +3224,11 @@ class _CapturePrismaClient:
         return "hashed::" + token
 
 
+def _fake_hash_token_candidates(token):
+    """Deterministic single-candidate digest for spend-log filter tests."""
+    return ("hashed::" + token,)
+
+
 @pytest.mark.asyncio
 async def test_view_spend_logs_internal_user_combines_user_with_api_key(
     client, monkeypatch
@@ -3231,6 +3236,10 @@ async def test_view_spend_logs_internal_user_combines_user_with_api_key(
     """Internal users must have their user filter applied alongside api_key."""
     mock_client = _CapturePrismaClient()
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_client)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.spend_management_endpoints.hash_token_candidates",
+        _fake_hash_token_candidates,
+    )
 
     start_date = "2024-01-01"
     end_date = "2024-12-31"
@@ -3253,7 +3262,7 @@ async def test_view_spend_logs_internal_user_combines_user_with_api_key(
         where = mock_client.db.captured_where
         assert where is not None
         assert where["user"] == "internal-user-1"
-        assert where["api_key"] == "hashed::sk-some-raw-token"
+        assert where["api_key"] == {"in": ("hashed::sk-some-raw-token",)}
         assert "startTime" in where
     finally:
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
@@ -3325,6 +3334,10 @@ async def test_view_spend_logs_non_date_range_hashes_sk_api_key(client, monkeypa
     """Non-date-range path must hash sk- prefixed api_keys before filtering."""
     mock_client = _CapturePrismaClient()
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_client)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.spend_management_endpoints.hash_token_candidates",
+        _fake_hash_token_candidates,
+    )
 
     app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
         user_role=LitellmUserRoles.PROXY_ADMIN,
@@ -3338,7 +3351,7 @@ async def test_view_spend_logs_non_date_range_hashes_sk_api_key(client, monkeypa
         assert response.status_code == 200
         where = mock_client.db.captured_where
         assert where is not None
-        assert where["api_key"] == "hashed::sk-raw-admin-token"
+        assert where["api_key"] == {"in": ("hashed::sk-raw-admin-token",)}
     finally:
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
 
@@ -3348,6 +3361,10 @@ async def test_view_spend_logs_date_range_hashes_sk_api_key(client, monkeypatch)
     """Date-range path must hash sk- prefixed api_keys before filtering."""
     mock_client = _CapturePrismaClient()
     monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_client)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.spend_management_endpoints.hash_token_candidates",
+        _fake_hash_token_candidates,
+    )
 
     start_date = "2024-01-01"
     end_date = "2024-12-31"
@@ -3368,7 +3385,7 @@ async def test_view_spend_logs_date_range_hashes_sk_api_key(client, monkeypatch)
         assert response.status_code == 200
         where = mock_client.db.captured_where
         assert where is not None
-        assert where["api_key"] == "hashed::sk-raw-admin-token"
+        assert where["api_key"] == {"in": ("hashed::sk-raw-admin-token",)}
     finally:
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
 

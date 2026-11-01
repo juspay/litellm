@@ -4482,3 +4482,99 @@ class TestCheckKeyModelBudgetWithFallback:
 
         assert exc_info.value is original_error
         assert "model" not in request_data
+
+
+def test_get_bearer_token_strips_only_leading_scheme():
+    from litellm.proxy.auth.user_api_key_auth import _get_bearer_token
+
+    assert _get_bearer_token("Bearer sk-token") == "sk-token"
+    assert _get_bearer_token("Basic sk-token") == "sk-token"
+    assert _get_bearer_token("bearer sk-token") == "sk-token"
+    assert _get_bearer_token("Bearer sk-token-with-bearer-suffix") == "sk-token-with-bearer-suffix"
+    assert _get_bearer_token("Basic sk-key-named-basic") == "sk-key-named-basic"
+    assert _get_bearer_token("BearerBearer sk-token") == ""
+
+
+def test_get_bearer_token_rejects_embedded_scheme_token():
+    from fastapi import HTTPException
+
+    from litellm.proxy.auth.user_api_key_auth import _get_bearer_token
+
+    with pytest.raises(HTTPException) as exc_info:
+        _get_bearer_token("Bearer sk-one Bearer sk-two")
+    assert exc_info.value.status_code == 400
+    assert "embedded authentication scheme" in exc_info.value.detail
+
+    with pytest.raises(HTTPException):
+        _get_bearer_token("Bearer sk-one Basic sk-two")
+
+    with pytest.raises(HTTPException):
+        _get_bearer_token("Basic sk-one bearer sk-two")
+
+
+@pytest.mark.asyncio
+async def test_db_lookup_falls_back_to_legacy_digest_when_pepper_set(monkeypatch):
+    """
+    Regression: with LITELLM_SALT_KEY configured, a key row written by an older
+    build (bare SHA-256 digest) must keep authenticating. The DB lookup tries
+    both the peppered and the legacy digest, so a resolver that only knows the
+    legacy digest still resolves the token instead of 401ing.
+    """
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    import litellm.proxy.proxy_server as _proxy_server_mod
+    from litellm.proxy.auth.user_api_key_auth import _user_api_key_auth_builder
+    from litellm.proxy.common_utils.token_hash_utils import legacy_hash_token
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "regression-pepper")
+
+    raw_key = "sk-legacy-row-token"
+    legacy_digest = legacy_hash_token(raw_key)
+    key_object = UserAPIKeyAuth(
+        token=legacy_digest,
+        key_alias="legacy-row",
+        user_id="legacy-user",
+    )
+
+    attrs = _proxy_server_attrs_for_custom_auth(user_custom_auth=None)
+    originals = {attr: getattr(_proxy_server_mod, attr, None) for attr in attrs}
+
+    async def _resolve_only_legacy(hashed_token: str):
+        if hashed_token != legacy_digest:
+            raise ProxyException(
+                message="not found",
+                type=ProxyErrorTypes.token_not_found_in_db,
+                param="key",
+                code=401,
+            )
+        return key_object
+
+    try:
+        for attr, val in attrs.items():
+            setattr(_proxy_server_mod, attr, val)
+
+        with patch(
+            "litellm.proxy.auth.resolvers.store.IdentityStore._resolve_key",
+            side_effect=_resolve_only_legacy,
+        ) as mock_resolve:
+            request = Request(scope={"type": "http"})
+            request._url = URL(url="/chat/completions")
+
+            result = await _user_api_key_auth_builder(
+                request=request,
+                api_key=f"Bearer {raw_key}",
+                azure_api_key_header="",
+                anthropic_api_key_header=None,
+                google_ai_studio_api_key_header=None,
+                azure_apim_header=None,
+                request_data={},
+            )
+
+            called_digests = [call.args[-1] for call in mock_resolve.call_args_list]
+            assert legacy_digest in called_digests
+            assert result is not None
+            assert result.user_id == "legacy-user"
+    finally:
+        for attr, val in originals.items():
+            setattr(_proxy_server_mod, attr, val)

@@ -6937,6 +6937,11 @@ async def test_update_key_spend_updates_counter(monkeypatch):
         update_key_fn,
     )
 
+    monkeypatch.setattr(
+        "litellm.proxy.utils.hash_token",
+        lambda token: "0d62f396c1317066f55a96086517047c737087c61eb2bf016b72e6298927b15b",
+    )
+
     mock_prisma_client = AsyncMock()
     mock_user_api_key_cache = AsyncMock()
     mock_proxy_logging_obj = MagicMock()

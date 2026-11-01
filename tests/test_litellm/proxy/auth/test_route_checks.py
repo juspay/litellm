@@ -2994,3 +2994,109 @@ def test_user_delete_route_gate_defers_to_endpoint_for_non_admin_roles(role):
         valid_token=valid_token,
         request_data={"user_ids": ["victim"]},
     )
+
+
+# ── Admin Viewer: known write routes are blocked regardless of HTTP verb ────
+#
+# The default-allow for safe methods keys off the HTTP verb, not the handler's
+# effect. A write route exposed on GET (or a future method change on an
+# existing write endpoint) must still 403, so the write-route block runs
+# before the safe-method default-allow.
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/user/new",
+        "/team/update",
+        "/team/delete",
+        "/model/new",
+        "/model/delete",
+        "/key/generate",
+        "/key/delete",
+        "/key/update",
+        "/key/regenerate",
+        "/key/block",
+        "/key/unblock",
+        "/team/key/bulk_update",
+        "/user/bulk_update",
+        "/key/service-account/generate",
+    ],
+)
+def test_proxy_admin_viewer_write_routes_blocked_on_get(route):
+    user_obj = LiteLLM_UserTable(
+        user_id="viewer_user",
+        user_email="viewer@example.com",
+        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+    )
+    valid_token = UserAPIKeyAuth(
+        user_id="viewer_user",
+        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+    )
+    request = MagicMock(spec=Request)
+    request.method = "GET"
+    request.query_params = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=user_obj,
+            _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            route=route,
+            request=request,
+            valid_token=valid_token,
+            request_data={},
+        )
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/key/sk-1234/regenerate",
+        "/key/sk-1234/reset_spend",
+    ],
+)
+def test_proxy_admin_viewer_key_param_write_routes_blocked_on_get(route):
+    request = MagicMock(spec=Request)
+    request.method = "GET"
+    request.query_params = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=LiteLLM_UserTable(
+                user_id="viewer_user",
+                user_email="viewer@example.com",
+                user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            ),
+            _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            route=route,
+            request=request,
+            valid_token=UserAPIKeyAuth(
+                user_id="viewer_user",
+                user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            ),
+            request_data={},
+        )
+    assert exc_info.value.status_code == 403
+
+
+def test_proxy_admin_viewer_get_read_route_still_allowed():
+    request = MagicMock(spec=Request)
+    request.method = "GET"
+    request.query_params = {}
+
+    RouteChecks.non_proxy_admin_allowed_routes_check(
+        user_obj=LiteLLM_UserTable(
+            user_id="viewer_user",
+            user_email="viewer@example.com",
+            user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        ),
+        _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        route="/team/info",
+        request=request,
+        valid_token=UserAPIKeyAuth(
+            user_id="viewer_user",
+            user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        ),
+        request_data={},
+    )
