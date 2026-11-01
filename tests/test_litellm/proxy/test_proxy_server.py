@@ -4757,7 +4757,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     assert enc1["LANGFUSE_PUBLIC_KEY"] != plaintext
     assert (
         decrypt_value_helper(
-            value=enc1["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+            value=enc1["LANGFUSE_PUBLIC_KEY"],
+            key="LANGFUSE_PUBLIC_KEY",
+            context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
         )
         == plaintext
     )
@@ -4766,7 +4768,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     enc2 = proxy_config._encrypt_env_variables_for_db(enc1)
     assert (
         decrypt_value_helper(
-            value=enc2["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+            value=enc2["LANGFUSE_PUBLIC_KEY"],
+            key="LANGFUSE_PUBLIC_KEY",
+            context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
         )
         == plaintext
     )
@@ -4778,7 +4782,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     for stacked in (enc3, enc4):
         assert (
             decrypt_value_helper(
-                value=stacked["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+                value=stacked["LANGFUSE_PUBLIC_KEY"],
+                key="LANGFUSE_PUBLIC_KEY",
+                context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
             )
             == plaintext
         )
@@ -7781,7 +7787,7 @@ def test_update_config_env_var_round_trip_not_double_encrypted(
     """
 
     def _fake_decrypt(
-        value, key=None, exception_type="error", return_original_value=False
+        value, key=None, context=None, exception_type="error", return_original_value=False
     ):
         if isinstance(value, str) and value.startswith("enc:"):
             return value[len("enc:") :]

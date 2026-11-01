@@ -50,8 +50,10 @@ async def _set_vantage_settings(api_key: str, integration_token: str, base_url: 
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
 
-    encrypted_api_key = encrypt_value_helper(api_key)
-    encrypted_integration_token = encrypt_value_helper(integration_token)
+    encrypted_api_key = encrypt_value_helper(api_key, context="LiteLLM_Config:vantage_settings.api_key")
+    encrypted_integration_token = encrypt_value_helper(
+        integration_token, context="LiteLLM_Config:vantage_settings.integration_token"
+    )
 
     vantage_settings = {
         "api_key": encrypted_api_key,
@@ -96,7 +98,12 @@ async def _get_vantage_settings():
 
     encrypted_api_key = settings.get("api_key")
     if encrypted_api_key:
-        decrypted_api_key = decrypt_value_helper(encrypted_api_key, key="vantage_api_key", exception_type="error")
+        decrypted_api_key = decrypt_value_helper(
+            encrypted_api_key,
+            key="vantage_api_key",
+            exception_type="error",
+            context="LiteLLM_Config:vantage_settings.api_key",
+        )
         if decrypted_api_key is None:
             raise HTTPException(
                 status_code=500,
@@ -110,6 +117,7 @@ async def _get_vantage_settings():
             encrypted_integration_token,
             key="vantage_integration_token",
             exception_type="error",
+            context="LiteLLM_Config:vantage_settings.integration_token",
         )
         if decrypted_integration_token is None:
             raise HTTPException(

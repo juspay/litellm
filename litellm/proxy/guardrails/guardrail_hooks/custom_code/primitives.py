@@ -361,14 +361,21 @@ _HTTP_MAX_TIMEOUT = 60.0
 # Optional egress allowlist for guardrail HTTP primitives. When
 # CUSTOM_CODE_HTTP_ALLOWED_HOSTS is set (comma-separated hostnames, e.g.
 # "moderation.internal,api.example.com"), http_request/http_get/http_post
-# refuse any URL whose host is not listed. Empty/unset = unrestricted,
-# preserving existing deployments' behavior.
+# refuse any URL whose host is not listed. Hosts listed here are
+# admin-trusted to receive guardrail traffic, including private-range
+# destinations. When unset, every destination still passes SSRF
+# validation (validate_url), so loopback, link-local, RFC1918 and
+# cloud-metadata addresses are refused.
 _CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV = "CUSTOM_CODE_HTTP_ALLOWED_HOSTS"
+
+# Maximum redirect hops validated before giving up (mirrors url_utils).
+_HTTP_MAX_REDIRECTS = 10
 
 
 def _http_host_is_allowed(url: str) -> bool:
-    """True when CUSTOM_CODE_HTTP_ALLOWED_HOSTS is unset (unrestricted) or the
-    URL's host is listed in it. Exact host match only — no wildcards."""
+    """True when CUSTOM_CODE_HTTP_ALLOWED_HOSTS is unset (SSRF-validated
+    egress) or the URL's host is listed in it. Exact host match only — no
+    wildcards."""
     raw = os.getenv(_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV, "")
     if not raw:
         return True
@@ -379,6 +386,28 @@ def _http_host_is_allowed(url: str) -> bool:
     if host is None:
         return False
     return host.lower() in allowed
+
+
+def _http_allowlist_is_configured() -> bool:
+    raw = os.getenv(_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV, "")
+    return bool(raw.strip())
+
+
+def _validate_http_destination(url: str) -> Optional[str]:
+    """SSRF-validate a guardrail HTTP destination, honoring the admin
+    allowlist. Returns the URL to connect to (rewritten to a validated IP for
+    plain HTTP so DNS rebinding cannot swap the destination after the check),
+    or None when the destination must be refused."""
+    if _http_allowlist_is_configured() and _http_host_is_allowed(url):
+        return url
+    from litellm.litellm_core_utils.url_utils import SSRFError, validate_url
+
+    try:
+        validated_url, _host_header = validate_url(url)
+    except (SSRFError, ValueError) as e:
+        verbose_proxy_logger.warning(f"Custom code http_request blocked destination: {e}")
+        return None
+    return validated_url
 
 
 def _http_error_response(error: str) -> Dict[str, Any]:
@@ -473,11 +502,19 @@ async def http_request(
     if not is_valid_url(url):
         return _http_error_response(f"Invalid URL: {url}")
 
-    # Enforce the optional egress allowlist before any connection is opened
-    if not _http_host_is_allowed(url):
+    # Enforce the optional egress allowlist, and otherwise run the
+    # destination through SSRF validation so loopback, link-local, RFC1918
+    # and cloud-metadata addresses are refused even without an allowlist.
+    if _http_allowlist_is_configured() and not _http_host_is_allowed(url):
         host = get_url_domain(url) or url
         return _http_error_response(
             f"Host '{host}' is not in the guardrail HTTP allowlist ({_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV})"
+        )
+    validated_url = _validate_http_destination(url)
+    if validated_url is None:
+        return _http_error_response(
+            "Destination refused: it resolves to a blocked or private address. "
+            f"Set {_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV} to allow an internal service."
         )
 
     # Validate and normalize method
@@ -499,7 +536,7 @@ async def http_request(
     )
 
     try:
-        response = await _execute_http_request(client, method, url, headers, body, timeout)
+        response = await _execute_http_request_validated(client, method, url, validated_url, headers, body, timeout)
         return _http_success_response(response)
 
     except httpx.TimeoutException as e:
@@ -516,29 +553,51 @@ async def http_request(
         return _http_error_response(f"Unexpected error: {str(e)}")
 
 
-async def _execute_http_request(
+async def _execute_http_request_validated(
     client: Any,
     method: str,
-    url: str,
+    original_url: str,
+    validated_url: str,
     headers: Optional[Dict[str, str]],
     body: Optional[Any],
     timeout: float,
 ) -> httpx.Response:
-    """Execute the HTTP request using the appropriate client method."""
-    json_body, data_body = _prepare_http_body(body)
+    """Execute the request with SSRF validation on every redirect hop.
 
-    if method == "GET":
-        return await client.get(url=url, headers=headers)
-    elif method == "POST":
-        return await client.post(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    elif method == "PUT":
-        return await client.put(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    elif method == "DELETE":
-        return await client.delete(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    elif method == "PATCH":
-        return await client.patch(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    else:
-        raise ValueError(f"Unsupported HTTP method: {method}")
+    The pooled client follows redirects by default, which would let a
+    first-hop server bounce the request to an internal address after the
+    initial URL passed validation. Redirects are therefore followed
+    manually here: each Location target goes through the same destination
+    validation before the next request is sent.
+    """
+    json_body, data_body = _prepare_http_body(body)
+    current_url = validated_url
+    resolved_url = original_url
+    for _ in range(_HTTP_MAX_REDIRECTS):
+        req = client.client.build_request(
+            method=method,
+            url=current_url,
+            headers=headers,
+            json=json_body,
+            data=data_body,
+            timeout=timeout,
+        )
+        response = await client.client.send(req, follow_redirects=False)
+        if not response.is_redirect:
+            return response
+        location = response.headers.get("location", "")
+        if not isinstance(location, str) or not location:
+            return response
+        resolved_url = str(httpx.URL(resolved_url).join(location))
+        next_validated = _validate_http_destination(resolved_url)
+        if next_validated is None:
+            verbose_proxy_logger.warning(
+                f"Custom code http_request refused redirect to a blocked destination: {resolved_url}"
+            )
+            return response
+        current_url = next_validated
+    verbose_proxy_logger.warning("Custom code http_request exceeded the maximum number of redirects")
+    raise httpx.TooManyRedirects(f"Exceeded {_HTTP_MAX_REDIRECTS} redirects", request=req)
 
 
 async def http_get(

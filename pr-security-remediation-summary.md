@@ -4,16 +4,33 @@
 
 ## Summary
 
-This PR clears every actionable finding from the four security audits of the proxy:
+This PR clears every actionable finding from the five security audits of the proxy:
 
 1. **litellm-vul Strykea SCA scan (scan-1317)** — software-composition findings against the dependency tree (`fix(deps): clear all litellm-vul SCA findings, raise Python floor to 3.11`)
 2. **echo-scan SAST audit (PR #811 report)** — 66 code-level findings (0 critical / 20 high / 36 medium / 4 low / 6 info) (`fix(security): remediate all echo-scan SAST findings`)
 3. **litellm-vul-2 Strykea SCA scan (scan-1805, SCA-2026-56)** — a rescan of this branch that catalogued every secondary manifest in the tree: 77 findings (5 critical / 39 high / 23 medium / 10 low) (`fix(deps): clear all litellm-vul-2 scan-1805 findings across secondary manifests`)
 4. **echo-scan re-scan (PR #939 report)** — 11 findings remaining after the first SAST pass (5 medium / 6 low) (`fix(security): clear all 11 echo-scan re-scan findings`)
+5. **echo-scan re-scan (PR #1048 report)** — 11 findings remaining after the second SAST pass (0 critical / 2 high / 6 medium / 3 low) (`fix(security): clear all 11 echo-scan PR #1048 findings`)
 
 Both audits ran against the wrong or stale base: the SCA scan resolved lockfiles from `origin/main` (a stale dev branch building litellm 1.61.x/1.81.3), and a portion of the SAST findings were already fixed in-tree by prior cherry-picks. This PR fixes everything that genuinely remained open on the fork's release line.
 
 ## Changes
+
+### Commit 6: second re-scan remediation (echo-scan PR #1048 report)
+
+All 11 findings are fixed, each with a regression test that fails if the fix regresses:
+
+1. **Guardrail HTTP SSRF default-allow:** the `CUSTOM_CODE_HTTP_ALLOWED_HOSTS` allowlist now denies by default when unset, and every guardrail HTTP primitive additionally routes through the shared SSRF validator, so loopback, RFC1918, link-local, and cloud-metadata destinations are refused even with the allowlist off.
+2. **Unverified SSO access-token claims:** `process_sso_jwt_access_token` verifies the provider access token against the JWKS (`_verify_sso_access_token`) before any team/role extraction; verification failure fails closed (no claims, no role mapping), so an attacker-crafted RS256/HS256 payload can no longer drive role assignment.
+3. **Verbose DB/client error passthrough:** error responses are truncated and redacted so raw provider/database error bodies no longer reach the caller.
+4. **Internally computed identifiers interpolated into SQL:** the user-agent analytics endpoints bind all internally computed identifiers as `$N` parameters instead of f-string interpolation.
+5. **MCP server URL trusted at call time:** stdio/SSE/HTTP MCP server destinations are re-validated at call time, not just at config load.
+6. **At-rest encryption master-key fallback:** `_get_salt_key` refuses the `LITELLM_MASTER_KEY` fallback on a DB-connected proxy (`prisma_client is not None`); AES-256-GCM + HKDF is the default for new writes; a new `v4:ctx:` format binds each ciphertext to its `table:field` context via AES-GCM AAD so a value lifted from one column fails authentication in another; every encrypt/decrypt pair in the proxy (config env vars, SSO settings, credentials, model litellm_params, MCP tables, vantage/cloudzero, callback vars, rotation and migration walkers) threads the context through, and the migration engine recognizes all three markers.
+7. **Plugin session claim role staleness:** `verify_plugin_session_claim` re-resolves the caller's live role from the user cache/DB on every verification; a demoted or deactivated user fails verification immediately instead of riding the 30s claim TTL, and the claim's embedded role is treated as a hint only.
+8. **MCP stdio spawn TOCTOU:** `_resolve_mcp_stdio_command` returns a pinned absolute path (realpath'd, opened with `O_NOFOLLOW`, fstat-verified as a regular file, not group/world-writable, owned by root or the proxy euid, with every ancestor directory checked for world-writability), and `_create_mcp_client` hands that exact path to the spawn config, so PATH is never consulted at exec time and the checked object is the executed object.
+9. **Self-service user update field escalation:** `_check_user_update_authz` restricts non-admin self-updates to a positive allowlist (`user_alias`, `user_email`, `password`, `metadata`) via `model_fields_set` presence checks; `teams`, `models`, `tpm/rpm limits`, `budget_duration`, `guardrails`, `policies`, and every other privileged field require a proxy admin.
+10. **Unbounded months/date values in SQL:** the WAU/MAU analytics queries bind `months`, `end_date`, and the week-bucket offsets as positional parameters; f-strings are limited to fixed identifiers.
+11. **Plugin proxy credential/header hardening:** the shared plugin session claim carries no litellm bearer token, the plugin_key is injected server-side only, and all litellm credential headers are stripped before forwarding.
 
 ### Commit 4: re-scan remediation (echo-scan PR #939 report)
 
@@ -106,11 +123,15 @@ All 66 findings are addressed: the SSRF cluster (image URL fetch, api_base fetch
 
 A re-scan after the first SAST pass found 11 findings still open (5 medium / 6 low); commit 4 clears all of them with the fixes itemized above.
 
+### echo-scan second re-scan (PR #1048 report)
+
+The second re-scan still found 11 findings open (0 critical / 2 high / 6 medium / 3 low), all deeper variants of the earlier clusters: default-allow egress in the guardrail HTTP primitives, unverified access-token claims, the master-key fallback for at-rest encryption, claim TTL staleness in the plugin session, a TOCTOU window in the MCP stdio spawn, and a field allowlist gap in non-admin self-updates. Commit 6 clears all of them with the fixes itemized above.
+
 ## Pre-Submission checklist
 
-- [x] Meaningful tests added (token_counter download-cap tests, url_utils scheme tests, auth_utils allowlist tests, ui_sso alg tests, azure/anthropic count_tokens destination-guard tests, provider_url_destination_guard tests, plugin-proxy traversal and salt fail-closed tests, MCP stdio validation tests, session-cookie flag tests, host-trust redirect tests, tag-filter parameter-binding tests, ORDER BY allowlist tests, JWKS verification tests including forged-signature and wrong-audience fail-closed cases, HKDF derivation tests, custom-code allowlist and timeout tests)
+- [x] Meaningful tests added (token_counter download-cap tests, url_utils scheme tests, auth_utils allowlist tests, ui_sso alg tests, azure/anthropic count_tokens destination-guard tests, provider_url_destination_guard tests, plugin-proxy traversal and salt fail-closed tests, MCP stdio validation tests, session-cookie flag tests, host-trust redirect tests, tag-filter parameter-binding tests, ORDER BY allowlist tests, JWKS verification tests including forged-signature and wrong-audience fail-closed cases, HKDF derivation tests, custom-code allowlist and timeout tests, salt-key fallback guard tests, context-bound ciphertext transplant tests, plugin claim live-role re-resolution tests, stdio pinned-path and world-writable-file/ancestor tests, self-update privileged-field allowlist tests)
 - [ ] CI/CD checks pass
-- [x] Scope isolated: five commits, one per audit plus one lint cleanup
+- [x] Scope isolated: six commits, one per audit plus one lint cleanup
 - [ ] Greptile review requested
 
 ## Type

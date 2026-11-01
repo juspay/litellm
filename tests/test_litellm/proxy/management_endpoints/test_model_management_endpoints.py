@@ -551,7 +551,7 @@ class TestUpdateModel:
             ),
             patch(
                 "litellm.proxy.management_endpoints.model_management_endpoints.encrypt_value_helper",
-                side_effect=lambda value: value,
+                side_effect=lambda value, **kwargs: value,
             ),
             patch(
                 "litellm.proxy.management_endpoints.model_management_endpoints.clear_cache",

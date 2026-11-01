@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 if TYPE_CHECKING:
     import httpx
 
+import httpx
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -56,6 +57,7 @@ from litellm.constants import (
     MICROSOFT_USER_ID_ATTRIBUTE,
     MICROSOFT_USER_LAST_NAME_ATTRIBUTE,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.litellm_core_utils.dot_notation_indexing import get_nested_value
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
@@ -87,11 +89,11 @@ from litellm.proxy.common_utils.admin_ui_utils import (
     admin_ui_disabled,
     show_missing_vars_in_env,
 )
-from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
 from litellm.proxy.common_utils.html_forms.jwt_display_template import (
     jwt_display_template,
 )
 from litellm.proxy.common_utils.html_forms.ui_login import build_ui_login_form
+from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.management_endpoints.internal_user_endpoints import new_user
 from litellm.proxy.management_endpoints.sso import CustomMicrosoftSSO
@@ -125,7 +127,6 @@ from litellm.types.proxy.management_endpoints.ui_sso import (
     TeamMappings,
 )
 from litellm.types.proxy.ui_sso import ParsedOpenIDResult
-from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 if TYPE_CHECKING:
     from fastapi_sso.sso.base import OpenID
@@ -762,6 +763,25 @@ async def _decode_sso_id_token_verified(id_token: str, issuer: str | None, audie
     )
 
 
+async def _verify_sso_access_token(access_token: str) -> dict:
+    """Verify the SSO provider's access token against its JWKS.
+
+    Access-token claims drive authorization decisions in
+    ``process_sso_jwt_access_token`` (team_ids, user_role), so they require the
+    same signature verification as id_tokens. Accepts either a JWKS URL or an
+    OIDC discovery URL in GENERIC_JWKS_ENDPOINT, and applies GENERIC_ISSUER /
+    GENERIC_CLIENT_ID as issuer/audience constraints when set.
+
+    Raises on any verification failure so callers fail closed (no claims are
+    extracted from an unverified token).
+    """
+    return await _decode_sso_id_token_verified(
+        access_token,
+        issuer=os.getenv("GENERIC_ISSUER") or None,
+        audience=os.getenv("GENERIC_CLIENT_ID") or None,
+    )
+
+
 def normalize_email(email: Optional[str]) -> Optional[str]:
     """
     Normalize email address to lowercase for consistent storage and comparison.
@@ -834,7 +854,7 @@ def determine_role_from_groups(
     return role_mappings.default_role
 
 
-def process_sso_jwt_access_token(
+async def process_sso_jwt_access_token(
     access_token_str: Optional[str],
     sso_jwt_handler: Optional[JWTHandler],
     result: Union[OpenID, dict, None],
@@ -847,6 +867,13 @@ def process_sso_jwt_access_token(
     role, then sets them on the result object. Role extraction from the access
     token is needed because some SSO providers (e.g., Keycloak) do not include
     role claims in the UserInfo endpoint response.
+
+    team_ids and user_role are authorization-bearing claims, so they are only
+    extracted from a signature-verified token. Verification runs against the
+    provider's JWKS (GENERIC_JWKS_ENDPOINT) with GENERIC_ISSUER/GENERIC_CLIENT_ID
+    as the issuer/audience constraints; when verification is unavailable the
+    extraction is skipped entirely (fail closed) rather than trusting the
+    unverified payload.
 
     Args:
         access_token_str: The JWT access token string
@@ -864,10 +891,22 @@ def process_sso_jwt_access_token(
         import jwt
 
         try:
-            access_token_payload = _decode_sso_jwt_unverified(access_token_str)
+            _decode_sso_jwt_unverified(access_token_str)
         except jwt.exceptions.DecodeError:
             verbose_proxy_logger.debug(
                 "Access token is not a valid JWT (possibly an opaque token), skipping JWT-based extraction"
+            )
+            return None
+
+        try:
+            access_token_payload = await _verify_sso_access_token(access_token_str)
+        except ProxyException:
+            raise
+        except (jwt.exceptions.PyJWTError, httpx.HTTPError) as verification_err:
+            verbose_proxy_logger.error(
+                "Access token could not be signature-verified against the provider JWKS; "
+                "skipping JWT-based team/role extraction: %s",
+                verification_err,
             )
             return None
 
@@ -1553,7 +1592,7 @@ async def get_generic_sso_response(
             )
             access_token_str = generic_sso.access_token
 
-        access_token_payload = process_sso_jwt_access_token(
+        access_token_payload = await process_sso_jwt_access_token(
             access_token_str, sso_jwt_handler, result, role_mappings=role_mappings
         )
         # Delete the single-use PKCE verifier only after all downstream processing

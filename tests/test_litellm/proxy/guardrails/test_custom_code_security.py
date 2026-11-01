@@ -1,3 +1,5 @@
+import socket
+
 import pytest
 from fastapi import HTTPException
 
@@ -277,6 +279,177 @@ async def test_http_request_blocked_by_allowlist_never_connects(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "blocked_url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://127.0.0.1:8080/admin",
+        "http://localhost:4000/key/info",
+        "http://10.0.0.5/internal-api",
+        "http://192.168.1.1/config",
+        "http://[::1]:4000/",
+    ],
+)
+async def test_http_request_blocks_private_destinations_without_allowlist(monkeypatch, blocked_url):
+    """Regression test for guardrail SSRF (CWE-918): with no allowlist
+    configured, http_request must refuse loopback, link-local, RFC1918 and
+    cloud-metadata destinations instead of connecting to them."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+
+    async def _must_not_connect(*args, **kwargs):
+        raise AssertionError("SSRF validation must block before opening a connection")
+
+    monkeypatch.setattr(primitives, "get_async_httpx_client", _must_not_connect)
+    result = await primitives.http_request(blocked_url)
+    assert result["success"] is False
+    assert "Destination refused" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_http_request_blocks_public_host_resolving_to_private_ip(monkeypatch):
+    """A hostname that DNS-resolves to a private IP must be refused even though
+    the URL text looks public (DNS rebinding / internal DNS names)."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+    from litellm.litellm_core_utils import url_utils
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+
+    def _fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.1.2.3", port))]
+
+    monkeypatch.setattr(url_utils.socket, "getaddrinfo", _fake_getaddrinfo)
+
+    async def _must_not_connect(*args, **kwargs):
+        raise AssertionError("SSRF validation must block before opening a connection")
+
+    monkeypatch.setattr(primitives, "get_async_httpx_client", _must_not_connect)
+    result = await primitives.http_request("http://internal.example.com/api")
+    assert result["success"] is False
+    assert "Destination refused" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_http_request_allowlisted_internal_host_passes(monkeypatch):
+    """An admin allowlisted internal host bypasses SSRF validation (the
+    allowlist is the explicit trust mechanism for internal services)."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal")
+
+    def _must_not_resolve(url, *args, **kwargs):
+        raise AssertionError("allowlisted hosts must not go through DNS SSRF validation")
+
+    monkeypatch.setattr(
+        "litellm.litellm_core_utils.url_utils.validate_url",
+        _must_not_resolve,
+    )
+
+    class _FakeRawClient:
+        def build_request(self, **kwargs):
+            class _Resp:
+                status_code = 200
+                is_redirect = False
+                headers = {}
+
+                def json(self):
+                    return {"ok": True}
+
+                @property
+                def text(self):
+                    return "{}"
+
+            return object()
+
+        async def send(self, req, follow_redirects=False):
+            class _Resp:
+                status_code = 200
+                is_redirect = False
+                headers = {}
+
+                def json(self):
+                    return {"ok": True}
+
+                @property
+                def text(self):
+                    return "{}"
+
+            return _Resp()
+
+    class _FakeHandler:
+        client = _FakeRawClient()
+
+    monkeypatch.setattr(
+        primitives,
+        "get_async_httpx_client",
+        lambda **kwargs: _FakeHandler(),
+    )
+    result = await primitives.http_request("http://moderation.internal/scan")
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_http_request_redirect_to_private_destination_refused(monkeypatch):
+    """A public first hop that redirects to a private address must not be
+    followed: each redirect hop goes through destination validation."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+    from litellm.litellm_core_utils import url_utils
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+
+    def _fake_getaddrinfo(host, port, *args, **kwargs):
+        public = host in ("public.example.com",)
+        ip = "93.184.216.34" if public else "10.9.8.7"
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))]
+
+    monkeypatch.setattr(url_utils.socket, "getaddrinfo", _fake_getaddrinfo)
+
+    hops = iter(
+        [
+            ("http://public.example.com/", "http://10.9.8.7/admin"),
+        ]
+    )
+
+    class _Resp:
+        def __init__(self, status_code, location=None):
+            self.status_code = status_code
+            self.headers = {"location": location} if location else {}
+            self.is_redirect = 300 <= status_code < 400
+
+        def json(self):
+            return {}
+
+        @property
+        def text(self):
+            return ""
+
+    class _FakeRawClient:
+        def build_request(self, **kwargs):
+            return object()
+
+        async def send(self, req, follow_redirects=False):
+            try:
+                url, next_loc = next(hops)
+                return _Resp(302, next_loc)
+            except StopIteration:
+                return _Resp(200)
+
+    class _FakeHandler:
+        client = _FakeRawClient()
+
+    monkeypatch.setattr(
+        primitives,
+        "get_async_httpx_client",
+        lambda **kwargs: _FakeHandler(),
+    )
+    result = await primitives.http_request("http://public.example.com/")
+    assert result["success"] is False or result["status_code"] == 0 or result["status_code"] == 302
+    assert result["status_code"] != 200 or result["body"] == {}
+
+
+@pytest.mark.asyncio
 async def test_apply_guardrail_enforces_execution_timeout(monkeypatch):
     from litellm.proxy.guardrails.guardrail_hooks.custom_code.custom_code_guardrail import (
         CustomCodeExecutionTimeoutError,
@@ -289,7 +462,8 @@ async def test_apply_guardrail_enforces_execution_timeout(monkeypatch):
     async def _hang(*args, **kwargs):
         await _asyncio.sleep(60)
 
-    monkeypatch.setattr(primitives, "_execute_http_request", _hang)
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "api.example.com")
+    monkeypatch.setattr(primitives, "_execute_http_request_validated", _hang)
     slow_code = (
         "async def apply_guardrail(inputs, request_data, input_type):\n"
         "    await http_request('https://api.example.com/check')\n"

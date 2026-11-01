@@ -269,22 +269,63 @@ def test_plugin_fernet_fails_closed_without_salt_key(monkeypatch) -> None:
         issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
 
 
-def test_plugin_session_claim_round_trip_with_salt(monkeypatch) -> None:
+def _patch_live_role(monkeypatch, role: str | None) -> None:
+    import litellm.proxy.plugin_routes as plugin_routes
+
+    async def _fake_resolve(user_id: str) -> str | None:
+        return role
+
+    monkeypatch.setattr(plugin_routes, "_resolve_live_user_role", _fake_resolve)
+
+
+async def test_plugin_session_claim_round_trip_with_salt(monkeypatch) -> None:
     monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
     from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
 
+    _patch_live_role(monkeypatch, "proxy_admin")
     claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
-    decoded = verify_plugin_session_claim("chat-ui", claim)
+    decoded = await verify_plugin_session_claim("chat-ui", claim)
     assert decoded["user_id"] == "user-1"
     assert decoded["plugin"] == "chat-ui"
 
 
-def test_plugin_claim_cannot_cross_plugins(monkeypatch) -> None:
+async def test_plugin_claim_cannot_cross_plugins(monkeypatch) -> None:
     monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
     import pytest as _pytest
 
     from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
 
+    _patch_live_role(monkeypatch, "proxy_admin")
     claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
     with _pytest.raises(ValueError):
-        verify_plugin_session_claim("other-plugin", claim)
+        await verify_plugin_session_claim("other-plugin", claim)
+
+
+async def test_plugin_claim_role_re_resolved_not_trusted_from_claim(monkeypatch) -> None:
+    """A claim minted for an admin must lose admin privileges the moment the
+    live user row says internal_user.  The claim's embedded role is a hint
+    only, never the authorization input."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    _patch_live_role(monkeypatch, "internal_user")
+    decoded = await verify_plugin_session_claim("chat-ui", claim)
+    assert decoded["user_role"] == "internal_user"
+
+
+async def test_plugin_claim_rejected_when_user_removed_or_deactivated(monkeypatch) -> None:
+    """Demotion to nothing (deactivated/deleted user) must fail verification
+    immediately, not at claim expiry."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    for gone_role in (None, ""):
+        _patch_live_role(monkeypatch, gone_role)
+        with _pytest.raises(ValueError, match="unknown, disabled, or removed"):
+            await verify_plugin_session_claim("chat-ui", claim)

@@ -25,6 +25,17 @@ from litellm.repositories.verification_token_repository import (
     VerificationTokenRepository,
 )
 
+from litellm._logging import verbose_proxy_logger
+
+
+def _internal_error(log_message: str, exc: Exception) -> HTTPException:
+    """Build a 500 with a constant, caller-safe detail while logging the real
+    exception server-side. Raw Prisma/psycopg exception text (table names,
+    connection details, SQL fragments) must not reach API callers."""
+    verbose_proxy_logger.exception(log_message, exc)
+    return HTTPException(status_code=500, detail="Internal server error")
+
+
 # Constants for analytics periods
 MAX_DAYS = 7  # Number of days to show in DAU analytics
 MAX_WEEKS = 7  # Number of weeks to show in WAU analytics
@@ -148,10 +159,7 @@ async def get_distinct_user_agent_tags(
         return DistinctTagsResponse(results=results)
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch distinct user agent tags: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch distinct user agent tags: %s", e)
 
 
 @router.get(
@@ -288,10 +296,7 @@ async def get_daily_active_users(
             detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}",
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch DAU analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch DAU analytics: %s", e)
 
 
 @router.get(
@@ -384,6 +389,11 @@ async def get_weekly_active_users(
             where_clause += f" AND dts.tag ILIKE ${len(params) + 1}"
             params.append(f"%{tag_filter}%")
 
+        # Bind end_date as a parameter instead of a DATE '...' literal so no
+        # value interpolation ever enters the SQL text.
+        end_date_param_index = len(params) + 1
+        params.append(end_date)
+
         # Use window function to group by weeks with clear week numbering
         sql_query = f"""
         WITH weekly_data AS (
@@ -392,7 +402,7 @@ async def get_weekly_active_users(
                 dts.date,
                 vt.user_id,
                 -- Calculate week number (0 = Week 1 most recent, 1 = Week 2, etc.)
-                FLOOR((DATE '{end_date}' - dts.date::date) / 7) as week_offset
+                FLOOR((${end_date_param_index}::date - dts.date::date) / 7) as week_offset
             FROM "LiteLLM_DailyTagSpend" dts
             INNER JOIN "LiteLLM_VerificationToken" vt ON dts.api_key = vt.token
             {where_clause}
@@ -402,10 +412,10 @@ async def get_weekly_active_users(
             COUNT(DISTINCT user_id) as active_users,
             -- Week identifier with month and day (Week 1 (earliest), Week 2, etc.)
             'Week ' || ({MAX_WEEKS} - week_offset)::text || ' (' ||
-            TO_CHAR(DATE '{end_date}' - (week_offset * 7 || ' days')::interval - '6 days'::interval, 'Mon DD') || ')' as date,
+            TO_CHAR(${end_date_param_index}::date - (week_offset * 7 || ' days')::interval - '6 days'::interval, 'Mon DD') || ')' as date,
             -- Calculate week start and end dates for each week
-            (DATE '{end_date}' - (week_offset * 7 || ' days')::interval - '6 days'::interval)::text as period_start,
-            (DATE '{end_date}' - (week_offset * 7 || ' days')::interval)::text as period_end,
+            (${end_date_param_index}::date - (week_offset * 7 || ' days')::interval - '6 days'::interval)::text as period_start,
+            (${end_date_param_index}::date - (week_offset * 7 || ' days')::interval)::text as period_end,
             week_offset
         FROM weekly_data
         WHERE week_offset < {MAX_WEEKS}
@@ -429,10 +439,7 @@ async def get_weekly_active_users(
         return ActiveUsersAnalyticsResponse(results=results)
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch WAU analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch WAU analytics: %s", e)
 
 
 @router.get(
@@ -542,8 +549,9 @@ async def get_monthly_active_users(
         FROM monthly_data
         GROUP BY tag, month_start
         ORDER BY month_start DESC, active_users DESC
-        LIMIT {MAX_TAGS * months}
+        LIMIT ${len(params) + 1}
         """
+        params.append(MAX_TAGS * months)
 
         db_response = await prisma_client.db.query_raw(sql_query, *params)
 
@@ -561,10 +569,7 @@ async def get_monthly_active_users(
         return ActiveUsersAnalyticsResponse(results=results)
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch MAU analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch MAU analytics: %s", e)
 
 
 @router.get(
@@ -684,10 +689,7 @@ async def get_tag_summary(
             detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}",
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch tag summary analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch tag summary analytics: %s", e)
 
 
 @router.get(
@@ -828,10 +830,7 @@ async def get_per_user_analytics(
         )
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch per-user analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch per-user analytics: %s", e)
 
 
 class LeaderboardUser(BaseModel):
@@ -997,10 +996,7 @@ async def get_user_leaderboard(
             detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}",
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch leaderboard: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch leaderboard: %s", e)
 
 
 class UserActiveUsersResponse(BaseModel):
@@ -1115,10 +1111,7 @@ async def get_user_daily_active_users(
             detail=f"Invalid date format. Use YYYY-MM-DD: {str(e)}",
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch user DAU analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch user DAU analytics: %s", e)
 
 
 @router.get(
@@ -1172,12 +1165,15 @@ async def get_user_weekly_active_users(
             where_clause += f" AND vt.team_id = ${len(params) + 1}"
             params.append(team_id)
 
+        end_date_param_index = len(params) + 1
+        params.append(end_date)
+
         sql_query = f"""
         WITH weekly_data AS (
             SELECT
                 dts.date,
                 vt.user_id,
-                FLOOR((DATE '{end_date}' - dts.date::date) / 7) as week_offset
+                FLOOR((${end_date_param_index}::date - dts.date::date) / 7) as week_offset
             FROM "LiteLLM_DailyTagSpend" dts
             INNER JOIN "LiteLLM_VerificationToken" vt ON dts.api_key = vt.token
             {where_clause}
@@ -1185,9 +1181,9 @@ async def get_user_weekly_active_users(
         SELECT
             COUNT(DISTINCT user_id) as active_users,
             'Week ' || ({MAX_WEEKS} - week_offset)::text || ' (' ||
-            TO_CHAR(DATE '{end_date}' - (week_offset * 7 || ' days')::interval - '6 days'::interval, 'Mon DD') || ')' as date,
-            (DATE '{end_date}' - (week_offset * 7 || ' days')::interval - '6 days'::interval)::text as period_start,
-            (DATE '{end_date}' - (week_offset * 7 || ' days')::interval)::text as period_end,
+            TO_CHAR(${end_date_param_index}::date - (week_offset * 7 || ' days')::interval - '6 days'::interval, 'Mon DD') || ')' as date,
+            (${end_date_param_index}::date - (week_offset * 7 || ' days')::interval - '6 days'::interval)::text as period_start,
+            (${end_date_param_index}::date - (week_offset * 7 || ' days')::interval)::text as period_end,
             week_offset
         FROM weekly_data
         WHERE week_offset < {MAX_WEEKS}
@@ -1210,10 +1206,7 @@ async def get_user_weekly_active_users(
         return UserActiveUsersResponse(results=results)
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch user WAU analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch user WAU analytics: %s", e)
 
 
 @router.get(
@@ -1290,8 +1283,9 @@ async def get_user_monthly_active_users(
         FROM monthly_data
         GROUP BY month_start
         ORDER BY month_start DESC
-        LIMIT {months}
+        LIMIT ${len(params) + 1}
         """
+        params.append(months)
 
         db_response = await prisma_client.db.query_raw(sql_query, *params)
 
@@ -1308,7 +1302,4 @@ async def get_user_monthly_active_users(
         return UserActiveUsersResponse(results=results)
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to fetch user MAU analytics: {str(e)}",
-        )
+        raise _internal_error("Failed to fetch user MAU analytics: %s", e)

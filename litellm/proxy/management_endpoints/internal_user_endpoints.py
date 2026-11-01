@@ -1241,6 +1241,17 @@ async def _schedule_user_update_audit_log(
         verbose_proxy_logger.warning(f"Failed to create audit log for user {response.get('user_id')}: {audit_error}")
 
 
+_SELF_SERVICE_ALLOWED_FIELDS = frozenset(
+    {
+        "user_id",
+        "user_email",
+        "user_alias",
+        "password",
+        "metadata",
+    }
+)
+
+
 def _check_user_update_authz(
     user_request: UpdateUserRequest,
     user_api_key_dict: UserAPIKeyAuth,
@@ -1259,6 +1270,19 @@ def _check_user_update_authz(
                     "error": "User does not have permission to update this user. Only PROXY_ADMIN can update other users."
                 },
             )
+        if user_api_key_dict.user_id == typed_row.user_id and user_api_key_dict.user_role != (
+            LitellmUserRoles.PROXY_ADMIN.value
+        ):
+            disallowed = user_request.model_fields_set - _SELF_SERVICE_ALLOWED_FIELDS
+            if disallowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "Non-admin users can only update their own user_alias, user_email, "
+                        f"password, and metadata. Fields not permitted on self-update: {sorted(disallowed)}. "
+                        "Contact your proxy admin."
+                    },
+                )
     elif user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:
         # Silent-create guard: only PROXY_ADMIN may create via /user/update.
         raise HTTPException(

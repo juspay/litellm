@@ -341,12 +341,32 @@ def test_get_custom_url_untrusted_host_falls_back_to_relative(monkeypatch):
     assert result == "/ui/"
 
 
-def test_get_custom_url_internal_client_trusts_host(monkeypatch):
+def test_get_custom_url_internal_client_no_longer_trusts_host(monkeypatch):
+    """Regression test for Host-header trust (CWE-601): a private/loopback
+    peer address alone must NOT make the client-controlled Host header
+    trusted — behind an in-cluster reverse proxy every peer is private."""
     _clear_url_env(monkeypatch)
     monkeypatch.delenv("ALLOWED_REDIRECT_HOSTS", raising=False)
     request = _fake_request(host="internal.corp", client_host="127.0.0.1")
     result = get_custom_url("https://internal.corp", "/ui/", request=request)
-    assert result == "https://internal.corp/ui/"
+    assert result == "/ui/"
+
+
+def test_get_custom_url_trusted_proxy_trusts_host(monkeypatch):
+    """A request through a configured trusted proxy (use_x_forwarded_for +
+    mcp_trusted_proxy_ranges matching the peer) keeps trusting the Host."""
+    from litellm.proxy.auth.ip_address_utils import IPAddressUtils
+
+    _clear_url_env(monkeypatch)
+    monkeypatch.delenv("ALLOWED_REDIRECT_HOSTS", raising=False)
+    request = _fake_request(host="proxy.internal.example", client_host="10.0.0.9")
+    monkeypatch.setattr(
+        IPAddressUtils,
+        "is_request_from_trusted_proxy",
+        staticmethod(lambda req, general_settings=None: True),
+    )
+    result = get_custom_url("https://proxy.internal.example", "/ui/", request=request)
+    assert result == "https://proxy.internal.example/ui/"
 
 
 def test_get_custom_url_allowed_redirect_host_trusted(monkeypatch):

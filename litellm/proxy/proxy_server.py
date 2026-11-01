@@ -5020,7 +5020,12 @@ class ProxyConfig:
         if not isinstance(value, str):
             return value
 
-        decrypted_value = decrypt_value_helper(value=value, key=key, return_original_value=True)
+        decrypted_value = decrypt_value_helper(
+            value=value,
+            key=key,
+            return_original_value=True,
+            context=f"LiteLLM_ProxyModelTable:litellm_params.{key}",
+        )
         if isinstance(decrypted_value, str) and decrypted_value.startswith("os.environ/"):
             return get_secret(decrypted_value)
         return decrypted_value
@@ -5232,18 +5237,30 @@ class ProxyConfig:
                     existing_callbacks=litellm.callbacks,
                 )
 
-    def _encrypt_env_variables(self, environment_variables: dict, new_encryption_key: Optional[str] = None) -> dict:
+    def _encrypt_env_variables(
+        self,
+        environment_variables: dict,
+        new_encryption_key: Optional[str] = None,
+        context_prefix: str = "LiteLLM_Config:environment_variables",
+    ) -> dict:
         """
         Encrypts a dictionary of environment variables and returns them.
         """
         encrypted_env_vars = {}
         for k, v in environment_variables.items():
-            encrypted_value = encrypt_value_helper(value=v, new_encryption_key=new_encryption_key)
+            encrypted_value = encrypt_value_helper(
+                value=v,
+                new_encryption_key=new_encryption_key,
+                context=f"{context_prefix}.{k}",
+            )
             encrypted_env_vars[k] = encrypted_value
         return encrypted_env_vars
 
     def _decrypt_and_set_db_env_variables(
-        self, environment_variables: dict, return_original_value: bool = False
+        self,
+        environment_variables: dict,
+        return_original_value: bool = False,
+        context_prefix: str = "LiteLLM_Config:environment_variables",
     ) -> dict:
         """
         Decrypts a dictionary of environment variables and then sets them in the environment
@@ -5255,7 +5272,12 @@ class ProxyConfig:
         decrypted_env_vars = {}
         for k, v in environment_variables.items():
             try:
-                decrypted_value = decrypt_value_helper(value=v, key=k, return_original_value=return_original_value)
+                decrypted_value = decrypt_value_helper(
+                    value=v,
+                    key=k,
+                    return_original_value=return_original_value,
+                    context=f"{context_prefix}.{k}",
+                )
                 if decrypted_value is not None:
                     os.environ[k] = decrypted_value
                     decrypted_env_vars[k] = decrypted_value
@@ -5269,7 +5291,12 @@ class ProxyConfig:
         """
         decrypted_variables = {}
         for k, v in variables_dict.items():
-            decrypted_value = decrypt_value_helper(value=v, key=k, return_original_value=True)
+            decrypted_value = decrypt_value_helper(
+                value=v,
+                key=k,
+                return_original_value=True,
+                context=f"LiteLLM_Config:environment_variables.{k}",
+            )
             decrypted_variables[k] = decrypted_value
         return decrypted_variables
 
@@ -5976,7 +6003,10 @@ class ProxyConfig:
                 sso_settings.sso_settings.pop("team_mappings", None)
                 sso_settings.sso_settings.pop("ui_access_mode", None)
                 uppercase_sso_settings = {key.upper(): value for key, value in sso_settings.sso_settings.items()}
-                self._decrypt_and_set_db_env_variables(environment_variables=uppercase_sso_settings)
+                self._decrypt_and_set_db_env_variables(
+                    environment_variables=uppercase_sso_settings,
+                    context_prefix="LiteLLM_SSOConfig:sso_settings",
+                )
         except Exception as e:
             verbose_proxy_logger.exception(
                 "litellm.proxy.proxy_server.py::ProxyConfig:_init_sso_settings_in_db - {}".format(truncate_error_str(e))
@@ -6483,7 +6513,14 @@ class ProxyConfig:
 
         decrypted_credential_values = {}
         for k, v in credential_object.credential_values.items():
-            decrypted_credential_values[k] = decrypt_value_helper(value=v, key=k) or v
+            decrypted_credential_values[k] = (
+                decrypt_value_helper(
+                    value=v,
+                    key=k,
+                    context=f"LiteLLM_CredentialsTable:credential_values.{k}",
+                )
+                or v
+            )
 
         credential_object.credential_values = decrypted_credential_values
         return credential_object

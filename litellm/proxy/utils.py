@@ -6010,31 +6010,31 @@ def join_paths(base_path: str, route: str) -> str:
 
 def _request_host_is_trusted_for_redirect(request: Any) -> bool:
     """True when the request's Host header may be used to build an absolute
-    login/SSO redirect URL: the caller is on a loopback/internal network, a
-    configured trusted proxy, or the Host is in ALLOWED_REDIRECT_HOSTS."""
-    try:
-        from litellm.proxy.auth.ip_address_utils import IPAddressUtils
+    login/SSO redirect URL.
 
-        client_ip: str | None = None
-        client = getattr(request, "client", None)
-        if client is not None:
-            client_ip = getattr(client, "host", None)
-        if IPAddressUtils.is_internal_ip(client_ip):
-            return True
-
-        if IPAddressUtils.is_request_from_trusted_proxy(request):
-            return True
-    except (ImportError, AttributeError):
-        return False
-
+    The Host header is client-controlled, so a private/loopback peer address is
+    NOT sufficient: behind an in-cluster reverse proxy the direct peer is
+    always private, which would make every request's Host trusted. Trust comes
+    only from an explicitly configured source: the Host is in
+    ALLOWED_REDIRECT_HOSTS, or the request arrived through a configured trusted
+    proxy whose X-Forwarded-* headers are validated (use_x_forwarded_for plus
+    mcp_trusted_proxy_ranges). Deployments should pin PROXY_BASE_URL instead,
+    which short-circuits this check entirely."""
     allowed_hosts = os.getenv("ALLOWED_REDIRECT_HOSTS", "")
     if allowed_hosts:
         from urllib.parse import urlparse
 
         host = urlparse(str(getattr(request, "base_url", ""))).hostname or ""
         allowed = {h.strip().lower() for h in allowed_hosts.split(",") if h.strip()}
-        return host.lower() in allowed
-    return False
+        if host.lower() in allowed:
+            return True
+
+    try:
+        from litellm.proxy.auth.ip_address_utils import IPAddressUtils
+
+        return IPAddressUtils.is_request_from_trusted_proxy(request)
+    except (ImportError, AttributeError):
+        return False
 
 
 def get_custom_url_relative(route: str | None = None) -> str:

@@ -358,9 +358,11 @@ if MCP_AVAILABLE:
         payload: Dict[str, Any] = server.model_dump(mode="json")
         payload_json = json.dumps(payload)
         try:
-            encrypted_payload = encrypt_value_helper(payload_json)
+            encrypted_payload = encrypt_value_helper(payload_json, context="temporary_mcp_server:redis_payload")
         except Exception as e:
-            verbose_proxy_logger.debug(f"Failed to encrypt temporary MCP server payload for Redis cache: {truncate_error_str(e)}")
+            verbose_proxy_logger.debug(
+                f"Failed to encrypt temporary MCP server payload for Redis cache: {truncate_error_str(e)}"
+            )
             return
 
         if not isinstance(encrypted_payload, str):
@@ -409,13 +411,16 @@ if MCP_AVAILABLE:
             value=cached_server,
             key="temporary_mcp_server",
             exception_type="debug",
+            context="temporary_mcp_server:redis_payload",
         )
         if decrypted_json is None:
             return None
         try:
             loaded = json.loads(decrypted_json)
         except Exception as e:
-            verbose_proxy_logger.debug(f"Invalid decrypted temporary MCP payload in Redis cache: {truncate_error_str(e)}")
+            verbose_proxy_logger.debug(
+                f"Invalid decrypted temporary MCP payload in Redis cache: {truncate_error_str(e)}"
+            )
             return None
         if not isinstance(loaded, dict):
             return None
@@ -2383,7 +2388,9 @@ if MCP_AVAILABLE:
             with open(_MCP_REGISTRY_PATH, "r") as f:
                 data: Dict[str, Any] = json.load(f)
         except Exception as e:
-            verbose_proxy_logger.warning(f"Failed to load MCP registry from {_MCP_REGISTRY_PATH}: {truncate_error_str(e)}")
+            verbose_proxy_logger.warning(
+                f"Failed to load MCP registry from {_MCP_REGISTRY_PATH}: {truncate_error_str(e)}"
+            )
             data = {"servers": []}
         _mcp_registry_cache = data
         return data
@@ -2474,7 +2481,9 @@ if MCP_AVAILABLE:
         try:
             return _load_openapi_registry()
         except Exception as e:
-            verbose_proxy_logger.warning(f"Failed to load OpenAPI registry from {_OPENAPI_REGISTRY_PATH}: {truncate_error_str(e)}")
+            verbose_proxy_logger.warning(
+                f"Failed to load OpenAPI registry from {_OPENAPI_REGISTRY_PATH}: {truncate_error_str(e)}"
+            )
             return {"apis": []}
 
     # ---------------------------------------------------------------------------

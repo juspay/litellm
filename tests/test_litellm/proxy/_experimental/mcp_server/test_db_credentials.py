@@ -339,6 +339,7 @@ async def test_rotate_re_encrypts_byok_with_new_key(monkeypatch):
             key="mcp_user_credential",
             exception_type="debug",
             return_original_value=False,
+            context="LiteLLM_MCPUserCredentials:credential_b64",
         )
         == secret
     )
@@ -373,6 +374,7 @@ async def test_rotate_migrates_legacy_plaintext_rows(monkeypatch):
             key="mcp_user_credential",
             exception_type="debug",
             return_original_value=False,
+            context="LiteLLM_MCPUserCredentials:credential_b64",
         )
         == "legacy-plain"
     )
@@ -619,6 +621,7 @@ async def test_rotate_user_env_vars_re_encrypts_with_new_key(monkeypatch):
         key="mcp_user_env_vars",
         exception_type="debug",
         return_original_value=False,
+        context="LiteLLM_MCPUserEnvVars:values_b64",
     )
     assert json.loads(decrypted) == values
 

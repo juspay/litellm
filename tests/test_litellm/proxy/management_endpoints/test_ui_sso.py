@@ -3181,6 +3181,15 @@ class TestProcessSSOJWTAccessToken:
         return mock_handler
 
     @pytest.fixture
+    def verified_payload(self, sample_jwt_payload):
+        """Patch JWKS verification so the verified payload is sample_jwt_payload."""
+        return patch(
+            "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+            new_callable=AsyncMock,
+            return_value=sample_jwt_payload,
+        )
+
+    @pytest.fixture
     def sample_jwt_token(self):
         """Create a sample JWT token string"""
         return "test-jwt-token-header.payload.signature"
@@ -3195,8 +3204,8 @@ class TestProcessSSOJWTAccessToken:
             "groups": ["team1", "team2", "team3"],
         }
 
-    def test_process_sso_jwt_access_token_with_existing_team_ids(
-        self, mock_jwt_handler, sample_jwt_token
+    async def test_process_sso_jwt_access_token_with_existing_team_ids(
+        self, mock_jwt_handler, sample_jwt_token, verified_payload
     ):
         """Test that existing team IDs are not overwritten"""
         from litellm.proxy.management_endpoints.ui_sso import (
@@ -3219,11 +3228,12 @@ class TestProcessSSOJWTAccessToken:
                 "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
             ) as mock_jwt_decode:
             # Act
-            process_sso_jwt_access_token(
-                access_token_str=sample_jwt_token,
-                sso_jwt_handler=mock_jwt_handler,
-                result=result,
-            )
+            with verified_payload:
+                await process_sso_jwt_access_token(
+                    access_token_str=sample_jwt_token,
+                    sso_jwt_handler=mock_jwt_handler,
+                    result=result,
+                )
 
             # Assert
             # JWT should still be decoded
@@ -3235,8 +3245,8 @@ class TestProcessSSOJWTAccessToken:
             # Existing team IDs should remain unchanged
             assert result.team_ids == existing_team_ids
 
-    def test_process_sso_jwt_access_token_with_dict_result(
-        self, mock_jwt_handler, sample_jwt_token, sample_jwt_payload
+    async def test_process_sso_jwt_access_token_with_dict_result(
+        self, mock_jwt_handler, sample_jwt_token, sample_jwt_payload, verified_payload
     ):
         """Test processing with a dictionary result object"""
         from litellm.proxy.management_endpoints.ui_sso import (
@@ -3251,11 +3261,12 @@ class TestProcessSSOJWTAccessToken:
                 return_value=sample_jwt_payload,
             ) as mock_jwt_decode:
             # Act
-            process_sso_jwt_access_token(
-                access_token_str=sample_jwt_token,
-                sso_jwt_handler=mock_jwt_handler,
-                result=result,
-            )
+            with verified_payload:
+                await process_sso_jwt_access_token(
+                    access_token_str=sample_jwt_token,
+                    sso_jwt_handler=mock_jwt_handler,
+                    result=result,
+                )
 
             # Assert
             mock_jwt_decode.assert_called_once_with(sample_jwt_token)
@@ -3267,8 +3278,8 @@ class TestProcessSSOJWTAccessToken:
             assert "team_ids" in result
             assert result["team_ids"] == ["team1", "team2", "team3"]
 
-    def test_process_sso_jwt_access_token_with_dict_existing_team_ids(
-        self, mock_jwt_handler, sample_jwt_token
+    async def test_process_sso_jwt_access_token_with_dict_existing_team_ids(
+        self, mock_jwt_handler, sample_jwt_token, verified_payload
     ):
         """Test that existing team IDs in dictionary are not overwritten"""
         from litellm.proxy.management_endpoints.ui_sso import (
@@ -3288,11 +3299,12 @@ class TestProcessSSOJWTAccessToken:
                 "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
             ) as mock_jwt_decode:
             # Act
-            process_sso_jwt_access_token(
-                access_token_str=sample_jwt_token,
-                sso_jwt_handler=mock_jwt_handler,
-                result=result,
-            )
+            with verified_payload:
+                await process_sso_jwt_access_token(
+                    access_token_str=sample_jwt_token,
+                    sso_jwt_handler=mock_jwt_handler,
+                    result=result,
+                )
 
             # Assert
             # JWT should still be decoded
@@ -3304,7 +3316,7 @@ class TestProcessSSOJWTAccessToken:
             # Existing team IDs should remain unchanged
             assert result["team_ids"] == existing_team_ids
 
-    def test_process_sso_jwt_access_token_no_access_token(self, mock_jwt_handler):
+    async def test_process_sso_jwt_access_token_no_access_token(self, mock_jwt_handler):
         """Test that nothing happens when access token is None or empty"""
         from litellm.proxy.management_endpoints.ui_sso import (
             process_sso_jwt_access_token,
@@ -3316,7 +3328,7 @@ class TestProcessSSOJWTAccessToken:
         with patch(
                 "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
             ) as mock_jwt_decode:
-            process_sso_jwt_access_token(
+            await process_sso_jwt_access_token(
                 access_token_str=None, sso_jwt_handler=mock_jwt_handler, result=result
             )
 
@@ -3329,7 +3341,7 @@ class TestProcessSSOJWTAccessToken:
         with patch(
                 "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
             ) as mock_jwt_decode:
-            process_sso_jwt_access_token(
+            await process_sso_jwt_access_token(
                 access_token_str="", sso_jwt_handler=mock_jwt_handler, result=result
             )
 
@@ -3338,7 +3350,7 @@ class TestProcessSSOJWTAccessToken:
             mock_jwt_handler.get_team_ids_from_jwt.assert_not_called()
             assert result.team_ids == []
 
-    def test_process_sso_jwt_access_token_no_result(
+    async def test_process_sso_jwt_access_token_no_result(
         self, mock_jwt_handler, sample_jwt_token
     ):
         """Test that nothing happens when result is None"""
@@ -3350,7 +3362,7 @@ class TestProcessSSOJWTAccessToken:
                 "litellm.proxy.management_endpoints.ui_sso._decode_sso_jwt_unverified",
             ) as mock_jwt_decode:
             # Act
-            process_sso_jwt_access_token(
+            await process_sso_jwt_access_token(
                 access_token_str=sample_jwt_token,
                 sso_jwt_handler=mock_jwt_handler,
                 result=None,
@@ -3360,7 +3372,7 @@ class TestProcessSSOJWTAccessToken:
             mock_jwt_decode.assert_not_called()
             mock_jwt_handler.get_team_ids_from_jwt.assert_not_called()
 
-    def test_process_sso_jwt_access_token_non_decode_exception_propagates(
+    async def test_process_sso_jwt_access_token_non_decode_exception_propagates(
         self, mock_jwt_handler, sample_jwt_token
     ):
         """Test that non-DecodeError JWT exceptions still propagate up."""
@@ -3377,7 +3389,7 @@ class TestProcessSSOJWTAccessToken:
             side_effect=pyjwt.exceptions.InvalidKeyError("Invalid key"),
         ) as mock_jwt_decode:
             with pytest.raises(pyjwt.exceptions.InvalidKeyError, match="Invalid key"):
-                process_sso_jwt_access_token(
+                await process_sso_jwt_access_token(
                     access_token_str=sample_jwt_token,
                     sso_jwt_handler=mock_jwt_handler,
                     result=result,
@@ -3386,8 +3398,8 @@ class TestProcessSSOJWTAccessToken:
             mock_jwt_decode.assert_called_once()
             mock_jwt_handler.get_team_ids_from_jwt.assert_not_called()
 
-    def test_process_sso_jwt_access_token_empty_team_ids_from_jwt(
-        self, mock_jwt_handler, sample_jwt_token, sample_jwt_payload
+    async def test_process_sso_jwt_access_token_empty_team_ids_from_jwt(
+        self, mock_jwt_handler, sample_jwt_token, sample_jwt_payload, verified_payload
     ):
         """Test processing when JWT handler returns empty team IDs"""
         from litellm.proxy.management_endpoints.ui_sso import (
@@ -3404,11 +3416,12 @@ class TestProcessSSOJWTAccessToken:
                 return_value=sample_jwt_payload,
             ) as mock_jwt_decode:
             # Act
-            process_sso_jwt_access_token(
-                access_token_str=sample_jwt_token,
-                sso_jwt_handler=mock_jwt_handler,
-                result=result,
-            )
+            with verified_payload:
+                await process_sso_jwt_access_token(
+                    access_token_str=sample_jwt_token,
+                    sso_jwt_handler=mock_jwt_handler,
+                    result=result,
+                )
 
             # Assert
             mock_jwt_decode.assert_called_once()
@@ -3419,7 +3432,7 @@ class TestProcessSSOJWTAccessToken:
             # Even empty team IDs should be set
             assert result.team_ids == []
 
-    def test_process_sso_jwt_access_token_with_opaque_token(self, mock_jwt_handler):
+    async def test_process_sso_jwt_access_token_with_opaque_token(self, mock_jwt_handler):
         """Test that opaque (non-JWT) access tokens are handled gracefully without raising."""
         from litellm.proxy.management_endpoints.ui_sso import (
             process_sso_jwt_access_token,
@@ -3440,7 +3453,7 @@ class TestProcessSSOJWTAccessToken:
         opaque_token = "uTxyjXbS_random_opaque_token_string"
 
         # Should NOT raise - opaque tokens should be silently skipped
-        process_sso_jwt_access_token(
+        await process_sso_jwt_access_token(
             access_token_str=opaque_token,
             sso_jwt_handler=mock_jwt_handler,
             result=result,
@@ -3451,8 +3464,8 @@ class TestProcessSSOJWTAccessToken:
         assert result.team_ids == ["existing_team"]
         assert result.user_role is None
 
-    def test_process_sso_jwt_access_token_real_jwt_with_role_and_teams(
-        self, mock_jwt_handler
+    async def test_process_sso_jwt_access_token_real_jwt_with_role_and_teams(
+        self, mock_jwt_handler, sample_jwt_payload
     ):
         """Test that a real JWT containing role and team fields is correctly processed."""
         import jwt as pyjwt
@@ -3485,11 +3498,16 @@ class TestProcessSSOJWTAccessToken:
             user_role=None,
         )
 
-        process_sso_jwt_access_token(
-            access_token_str=real_jwt_token,
-            sso_jwt_handler=mock_jwt_handler,
-            result=result,
-        )
+        with patch(
+            "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+            new_callable=AsyncMock,
+            return_value=payload,
+        ):
+            await process_sso_jwt_access_token(
+                access_token_str=real_jwt_token,
+                sso_jwt_handler=mock_jwt_handler,
+                result=result,
+            )
 
         # Team IDs should be extracted via sso_jwt_handler
         mock_jwt_handler.get_team_ids_from_jwt.assert_called_once_with(payload)
@@ -3500,7 +3518,7 @@ class TestProcessSSOJWTAccessToken:
 
         assert result.user_role == LitellmUserRoles.PROXY_ADMIN
 
-    def test_process_sso_jwt_access_token_real_jwt_without_role_and_teams(self):
+    async def test_process_sso_jwt_access_token_real_jwt_without_role_and_teams(self):
         """Test that a real JWT without role/team fields leaves result unchanged."""
         import jwt as pyjwt
 
@@ -3527,11 +3545,16 @@ class TestProcessSSOJWTAccessToken:
         )
 
         # No sso_jwt_handler, no role/team fields in JWT
-        process_sso_jwt_access_token(
-            access_token_str=real_jwt_token,
-            sso_jwt_handler=None,
-            result=result,
-        )
+        with patch(
+            "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+            new_callable=AsyncMock,
+            return_value=payload,
+        ):
+            await process_sso_jwt_access_token(
+                access_token_str=real_jwt_token,
+                sso_jwt_handler=None,
+                result=result,
+            )
 
         # Nothing should be modified
         assert result.team_ids == []
@@ -5778,7 +5801,7 @@ def test_get_litellm_user_role_with_list_multiple_roles():
 # ============================================================================
 
 
-def test_process_sso_jwt_access_token_extracts_role_from_access_token():
+async def test_process_sso_jwt_access_token_extracts_role_from_access_token():
     """
     Test that process_sso_jwt_access_token extracts user role from the JWT
     access token when the UserInfo response did not include it.
@@ -5809,8 +5832,12 @@ def test_process_sso_jwt_access_token_extracts_role_from_access_token():
     )
 
     # Call with GENERIC_USER_ROLE_ATTRIBUTE pointing to litellm_role
-    with patch.dict(os.environ, {"GENERIC_USER_ROLE_ATTRIBUTE": "litellm_role"}):
-        process_sso_jwt_access_token(
+    with patch.dict(os.environ, {"GENERIC_USER_ROLE_ATTRIBUTE": "litellm_role"}), patch(
+        "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+        new_callable=AsyncMock,
+        return_value=access_token_payload,
+    ):
+        await process_sso_jwt_access_token(
             access_token_str=access_token_str,
             sso_jwt_handler=None,
             result=result,
@@ -5820,7 +5847,7 @@ def test_process_sso_jwt_access_token_extracts_role_from_access_token():
     assert result.user_role == LitellmUserRoles.PROXY_ADMIN
 
 
-def test_process_sso_jwt_access_token_does_not_override_existing_role():
+async def test_process_sso_jwt_access_token_does_not_override_existing_role():
     """
     Test that process_sso_jwt_access_token does NOT override a role that was
     already extracted from the UserInfo response.
@@ -5844,8 +5871,12 @@ def test_process_sso_jwt_access_token_does_not_override_existing_role():
         user_role=LitellmUserRoles.PROXY_ADMIN,
     )
 
-    with patch.dict(os.environ, {"GENERIC_USER_ROLE_ATTRIBUTE": "litellm_role"}):
-        process_sso_jwt_access_token(
+    with patch.dict(os.environ, {"GENERIC_USER_ROLE_ATTRIBUTE": "litellm_role"}), patch(
+        "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+        new_callable=AsyncMock,
+        return_value=access_token_payload,
+    ):
+        await process_sso_jwt_access_token(
             access_token_str=access_token_str,
             sso_jwt_handler=None,
             result=result,
@@ -5856,7 +5887,7 @@ def test_process_sso_jwt_access_token_does_not_override_existing_role():
     assert result.user_role == LitellmUserRoles.PROXY_ADMIN
 
 
-def test_process_sso_jwt_access_token_extracts_role_from_nested_field():
+async def test_process_sso_jwt_access_token_extracts_role_from_nested_field():
     """
     Test role extraction from a nested JWT field like resource_access.client.roles.
     """
@@ -5880,8 +5911,12 @@ def test_process_sso_jwt_access_token_extracts_role_from_nested_field():
 
     with patch.dict(
         os.environ, {"GENERIC_USER_ROLE_ATTRIBUTE": "resource_access.my-client.roles"}
+    ), patch(
+        "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+        new_callable=AsyncMock,
+        return_value=access_token_payload,
     ):
-        process_sso_jwt_access_token(
+        await process_sso_jwt_access_token(
             access_token_str=access_token_str,
             sso_jwt_handler=None,
             result=result,
@@ -5891,7 +5926,7 @@ def test_process_sso_jwt_access_token_extracts_role_from_nested_field():
     assert result.user_role == LitellmUserRoles.PROXY_ADMIN
 
 
-def test_process_sso_jwt_access_token_with_role_mappings():
+async def test_process_sso_jwt_access_token_with_role_mappings():
     """
     Test role extraction using role_mappings (group-based role determination)
     from the JWT access token.
@@ -5925,15 +5960,107 @@ def test_process_sso_jwt_access_token_with_role_mappings():
         },
     )
 
-    process_sso_jwt_access_token(
-        access_token_str=access_token_str,
-        sso_jwt_handler=None,
-        result=result,
-        role_mappings=role_mappings,
-    )
+    with patch(
+        "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+        new_callable=AsyncMock,
+        return_value=access_token_payload,
+    ):
+        await process_sso_jwt_access_token(
+            access_token_str=access_token_str,
+            sso_jwt_handler=None,
+            result=result,
+            role_mappings=role_mappings,
+        )
 
     # Should get highest privilege role
     assert result.user_role == LitellmUserRoles.PROXY_ADMIN
+
+
+async def test_process_sso_jwt_access_token_fails_closed_without_verification():
+    """
+    Regression test for the unverified SSO access token escalation (CWE-347):
+    when the access token cannot be signature-verified (no JWKS endpoint, JWKS
+    unreachable, bad signature), team_ids and user_role must NOT be extracted
+    from the unverified payload.
+    """
+    import jwt as pyjwt
+
+    from litellm.proxy._types import LitellmUserRoles
+
+    access_token_payload = {
+        "sub": "user-123",
+        "litellm_role": ["proxy_admin"],
+        "groups": ["team_alpha"],
+    }
+    access_token_str = pyjwt.encode(access_token_payload, "attacker-secret", algorithm="HS256")
+
+    mock_jwt_handler = MagicMock(spec=JWTHandler)
+    mock_jwt_handler.get_team_ids_from_jwt.return_value = ["team_alpha"]
+
+    result = CustomOpenID(
+        id="user-123",
+        email="attacker@test.com",
+        display_name="Attacker",
+        team_ids=[],
+        user_role=None,
+    )
+
+    with patch.dict(os.environ, {"GENERIC_USER_ROLE_ATTRIBUTE": "litellm_role"}), patch(
+        "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+        new_callable=AsyncMock,
+        side_effect=pyjwt.exceptions.DecodeError("JWKS endpoint unreachable"),
+    ):
+        payload = await process_sso_jwt_access_token(
+            access_token_str=access_token_str,
+            sso_jwt_handler=mock_jwt_handler,
+            result=result,
+            role_mappings=None,
+        )
+
+    # Fail closed: no claims extracted, no payload returned
+    assert payload is None
+    mock_jwt_handler.get_team_ids_from_jwt.assert_not_called()
+    assert result.team_ids == []
+    assert result.user_role is None
+
+
+async def test_process_sso_jwt_access_token_fails_closed_on_proxy_exception():
+    """ProxyException from JWKS verification (e.g. GENERIC_JWKS_ENDPOINT unset)
+    propagates rather than silently trusting unverified claims."""
+    import jwt as pyjwt
+
+    from litellm.proxy._types import ProxyErrorTypes
+    from litellm.proxy._types import ProxyException
+
+    access_token_payload = {"litellm_role": ["proxy_admin"]}
+    access_token_str = pyjwt.encode(access_token_payload, "attacker-secret", algorithm="HS256")
+
+    result = CustomOpenID(
+        id="user-123",
+        email="attacker@test.com",
+        display_name="Attacker",
+        team_ids=[],
+        user_role=None,
+    )
+
+    with patch(
+        "litellm.proxy.management_endpoints.ui_sso._verify_sso_access_token",
+        new_callable=AsyncMock,
+        side_effect=ProxyException(
+            message="id_token identity requires signature verification",
+            type=ProxyErrorTypes.auth_error,
+            param="id_token_verification",
+            code=401,
+        ),
+    ):
+        with pytest.raises(ProxyException):
+            await process_sso_jwt_access_token(
+                access_token_str=access_token_str,
+                sso_jwt_handler=None,
+                result=result,
+            )
+
+    assert result.user_role is None
 
 
 def test_generic_response_convertor_with_extra_attributes(monkeypatch):

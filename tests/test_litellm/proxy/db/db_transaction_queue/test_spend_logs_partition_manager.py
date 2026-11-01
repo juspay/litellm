@@ -231,3 +231,57 @@ async def test_drop_partitions_continues_when_one_drop_fails():
 
     # both were eligible; the first drop failed so only the second is reported
     assert dropped == ["LiteLLM_SpendLogs_p20260602"]
+
+
+def test_quote_partition_name_accepts_valid_names():
+    from litellm.proxy.db.db_transaction_queue.spend_logs_partition_manager import (
+        _quote_partition_name,
+    )
+
+    assert _quote_partition_name("LiteLLM_SpendLogs_p20260601") == '"LiteLLM_SpendLogs_p20260601"'
+
+
+@pytest.mark.parametrize(
+    "evil_name",
+    [
+        'LiteLLM_SpendLogs_p20260601"; DROP TABLE LiteLLM_VerificationToken; --',
+        "LiteLLM_SpendLogs_users",
+        "LiteLLM_SpendLogs_p20260601_evil",
+        'liteLLM_spendlogs_p"20260601',
+        "LiteLLM_SpendLogs_p",
+        "",
+    ],
+)
+def test_quote_partition_name_rejects_crafted_identifiers(evil_name):
+    """Regression test for DDL identifier injection (CWE-89): any name outside
+    the exact LiteLLM_SpendLogs_pYYYYMMDD shape must be refused, not escaped
+    and executed."""
+    from litellm.proxy.db.db_transaction_queue.spend_logs_partition_manager import (
+        _quote_partition_name,
+    )
+
+    with pytest.raises(ValueError, match="Refusing DDL"):
+        _quote_partition_name(evil_name)
+
+
+@pytest.mark.asyncio
+async def test_drop_partitions_refuses_non_partition_table_names():
+    """A partition-like catalog row whose relname is crafted (e.g. created by
+    another role in the same schema) must never reach the DROP statement."""
+    mgr = SpendLogsPartitionManager()
+    client = MagicMock()
+    client.db.query_raw = AsyncMock(
+        return_value=[
+            {
+                "name": 'LiteLLM_SpendLogs_p20260601"; DROP TABLE LiteLLM_VerificationToken; --',
+                "bound": "FOR VALUES FROM ('2026-06-01 00:00:00') TO ('2026-06-02 00:00:00')",
+            }
+        ]
+    )
+    client.db.execute_raw = AsyncMock()
+
+    cutoff = datetime(2026, 6, 10, 0, 0, 0, tzinfo=timezone.utc)
+    dropped = await mgr.drop_partitions_older_than(client, cutoff)
+
+    assert dropped == []
+    client.db.execute_raw.assert_not_awaited()

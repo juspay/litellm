@@ -5,6 +5,7 @@ Maps to: litellm/proxy/agent_endpoints/a2a_routing.py
 """
 
 import os
+import socket
 import sys
 
 sys.path.insert(0, os.path.abspath("../../.."))
@@ -21,56 +22,71 @@ from litellm.proxy.route_llm_request import route_request
 async def test_route_a2a_model_bypasses_router():
     """Test that a2a/ prefixed models bypass router and go directly to litellm with api_base"""
 
-    # Mock data for chat completion with a2a model
-    data = {
-        "model": "a2a/test-agent",
-        "messages": [{"role": "user", "content": "Hello"}],
-    }
-
-    # Mock router that doesn't have the a2a model
-    mock_router = Mock()
-    mock_router.model_names = ["gpt-4", "gpt-3.5-turbo"]
-    mock_router.deployment_names = []
-    mock_router.has_model_id = Mock(return_value=False)
-    mock_router.model_group_alias = None
-    mock_router.router_general_settings = Mock(pass_through_all_models=False)
-    mock_router.default_deployment = None
-    mock_router.pattern_router = Mock(patterns=[])
-    mock_router.map_team_model = Mock(return_value=None)
-
-    # Mock agent in registry
-    from litellm.types.agents import AgentResponse
-
-    mock_agent = AgentResponse(
-        agent_id="test-agent-id",
-        agent_name="test-agent",
-        agent_card_params={"url": "http://agent.example.com"},
-        litellm_params=None,
-    )
-
-    mock_registry = Mock()
-    mock_registry.get_agent_by_name = Mock(return_value=mock_agent)
-
-    # Mock litellm.acompletion to verify it's called
-    mock_acompletion = AsyncMock(return_value={"id": "test-response"})
-
-    with patch("litellm.acompletion", mock_acompletion):
-        with patch(
-            "litellm.proxy.agent_endpoints.agent_registry.global_agent_registry",
-            mock_registry,
-        ):
-            result = await route_request(
-                data=data,
-                llm_router=mock_router,
-                user_model=None,
-                route_type="acompletion",
+    def _fake_getaddrinfo(host, port, *args, **kwargs):
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", port),
             )
+        ]
 
-            # Verify litellm.acompletion was called with api_base injected
-            mock_acompletion.assert_called_once()
-            call_kwargs = mock_acompletion.call_args.kwargs
-            assert call_kwargs["model"] == "a2a/test-agent"
-            assert call_kwargs["api_base"] == "http://agent.example.com"
+    from litellm.litellm_core_utils import url_utils
+
+    with patch.object(url_utils.socket, "getaddrinfo", _fake_getaddrinfo):
+
+        # Mock data for chat completion with a2a model
+        data = {
+            "model": "a2a/test-agent",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+
+        # Mock router that doesn't have the a2a model
+        mock_router = Mock()
+        mock_router.model_names = ["gpt-4", "gpt-3.5-turbo"]
+        mock_router.deployment_names = []
+        mock_router.has_model_id = Mock(return_value=False)
+        mock_router.model_group_alias = None
+        mock_router.router_general_settings = Mock(pass_through_all_models=False)
+        mock_router.default_deployment = None
+        mock_router.pattern_router = Mock(patterns=[])
+        mock_router.map_team_model = Mock(return_value=None)
+
+        # Mock agent in registry
+        from litellm.types.agents import AgentResponse
+
+        mock_agent = AgentResponse(
+            agent_id="test-agent-id",
+            agent_name="test-agent",
+            agent_card_params={"url": "http://agent.example.com"},
+            litellm_params=None,
+        )
+
+        mock_registry = Mock()
+        mock_registry.get_agent_by_name = Mock(return_value=mock_agent)
+
+        # Mock litellm.acompletion to verify it's called
+        mock_acompletion = AsyncMock(return_value={"id": "test-response"})
+
+        with patch("litellm.acompletion", mock_acompletion):
+            with patch(
+                "litellm.proxy.agent_endpoints.agent_registry.global_agent_registry",
+                mock_registry,
+            ):
+                result = await route_request(
+                    data=data,
+                    llm_router=mock_router,
+                    user_model=None,
+                    route_type="acompletion",
+                )
+
+                # Verify litellm.acompletion was called with api_base injected
+                mock_acompletion.assert_called_once()
+                call_kwargs = mock_acompletion.call_args.kwargs
+                assert call_kwargs["model"] == "a2a/test-agent"
+                assert call_kwargs["api_base"] == "http://agent.example.com"
 
 
 @pytest.mark.asyncio
@@ -104,3 +120,53 @@ async def test_route_non_a2a_model_raises_error_if_not_in_router():
             user_model=None,
             route_type="acompletion",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "agent_url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:6379/",
+        "http://10.1.2.3/a2a",
+    ],
+)
+async def test_route_a2a_agent_rejects_blocked_destination_at_call_time(agent_url):
+    """Registry rows are re-validated on every call.
+
+    A row written before the registration check existed (or a DNS record that
+    changed after registration) must not let the proxy forward a request and
+    the caller's credentials to a blocked address.
+    """
+    from fastapi import HTTPException
+
+    from litellm.types.agents import AgentResponse
+
+    data = {"model": "a2a/test-agent", "messages": [{"role": "user", "content": "hi"}]}
+
+    mock_agent = AgentResponse(
+        agent_id="test-agent-id",
+        agent_name="test-agent",
+        agent_card_params={"url": agent_url},
+        litellm_params=None,
+    )
+    mock_registry = Mock()
+    mock_registry.get_agent_by_name = Mock(return_value=mock_agent)
+
+    mock_acompletion = AsyncMock(return_value={"id": "test-response"})
+
+    with patch("litellm.acompletion", mock_acompletion):
+        with patch(
+            "litellm.proxy.agent_endpoints.agent_registry.global_agent_registry",
+            mock_registry,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await route_a2a_agent_request(
+                    data=data,
+                    route_type="acompletion",
+                    user_api_key_dict=None,
+                )
+
+    assert exc_info.value.status_code == 400
+    assert "failed destination validation" in exc_info.value.detail
+    mock_acompletion.assert_not_called()

@@ -359,7 +359,8 @@ async def test_tag_wau_tag_filter_bound_as_parameter(client_and_mocks):
     sql, *params = mock_db.query_raw.await_args.args
     assert "dts.tag ILIKE $3" in sql
     assert "prod" not in sql
-    assert params[-1] == "%prod%"
+    assert params[2] == "%prod%"
+    assert params[-1] == params[1]
 
 
 @pytest.mark.asyncio
@@ -371,4 +372,90 @@ async def test_tag_mau_tag_filter_bound_as_parameter(client_and_mocks):
 
     sql, *params = mock_db.query_raw.await_args.args
     assert "dts.tag = $3 OR dts.tag = $4" in sql
-    assert params[-2:] == ["prod", "dev"]
+    assert params[2:4] == ["prod", "dev"]
+    assert params[-1] == 250 * 7
+
+
+@pytest.mark.asyncio
+async def test_tag_wau_end_date_bound_as_parameter(client_and_mocks):
+    """Regression test for SQL interpolation (CWE-89): the server-computed
+    end_date must be bound as a $N parameter, never a DATE '...' literal."""
+    client, _, mock_db = client_and_mocks
+
+    resp = client.get("/tag/wau?tag_filter=prod")
+    assert resp.status_code == 200, resp.text
+
+    sql, *params = mock_db.query_raw.await_args.args
+    assert "DATE '" not in sql
+    end_date_1based = params.index(params[1], 2) + 1  # end_date bound again after start, end, tag
+    assert f"${end_date_1based}::date" in sql
+    assert params[-1] == params[1]
+
+
+@pytest.mark.asyncio
+async def test_tag_mau_limit_bound_as_parameter(client_and_mocks):
+    """months must never be interpolated into the SQL text; the LIMIT value
+    is passed as a parameter."""
+    client, _, mock_db = client_and_mocks
+
+    resp = client.get("/tag/mau?months=5")
+    assert resp.status_code == 200, resp.text
+
+    sql, *params = mock_db.query_raw.await_args.args
+    assert f"LIMIT ${len(params)}" in sql
+    assert params[-1] == 250 * 5
+
+
+@pytest.mark.asyncio
+async def test_user_mau_limit_bound_as_parameter(client_and_mocks):
+    client, _, mock_db = client_and_mocks
+
+    resp = client.get("/user/mau?months=3")
+    assert resp.status_code == 200, resp.text
+
+    sql, *params = mock_db.query_raw.await_args.args
+    assert f"LIMIT ${len(params)}" in sql
+    assert params[-1] == 3
+
+
+@pytest.mark.asyncio
+async def test_user_wau_end_date_bound_as_parameter(client_and_mocks):
+    client, _, mock_db = client_and_mocks
+
+    resp = client.get("/user/wau")
+    assert resp.status_code == 200, resp.text
+
+    sql, *params = mock_db.query_raw.await_args.args
+    assert "DATE '" not in sql
+    assert "$3::date" in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/tag/dau",
+        "/tag/wau",
+        "/tag/mau",
+        "/user/dau",
+        "/user/wau",
+        "/user/mau",
+    ],
+)
+async def test_analytics_db_error_does_not_leak_exception_detail(client_and_mocks, path):
+    """Regression test for verbose error exposure (CWE-209): when the DB
+    raises, the API response must carry a constant detail string, never the
+    raw Prisma exception text (table names, connection info, SQL fragments)."""
+    client, _, mock_db = client_and_mocks
+
+    mock_db.query_raw.side_effect = RuntimeError(
+        "connect ECONNREFUSED 10.0.4.7:5432 user=postgres db=litellm"
+    )
+
+    resp = client.get(path)
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert detail == "Internal server error"
+    assert "ECONNREFUSED" not in detail
+    assert "10.0.4.7" not in detail
+    assert "postgres" not in detail

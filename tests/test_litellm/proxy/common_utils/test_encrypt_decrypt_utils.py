@@ -45,8 +45,19 @@ def test_aes_gcm_round_trip(monkeypatch):
     assert decrypt_value_helper(ct, key="t") == "super-secret"
 
 
-def test_default_is_legacy_algorithm(monkeypatch):
-    """With no config, writes stay on the legacy algorithm (no v2: marker)."""
+def test_default_is_aes_algorithm(monkeypatch):
+    """With no config, new writes use AES-256-GCM + HKDF (v3: marker)."""
+    ct = encrypt_value_helper("fresh-secret")
+
+    assert ct.startswith(_V3_HKDF_PREFIX)
+    assert decrypt_value_helper(ct, key="t") == "fresh-secret"
+
+
+def test_explicit_legacy_algorithm_opt_in(monkeypatch):
+    """general_settings.encryption_algorithm: xsalsa20-poly1305 keeps legacy writes."""
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
     ct = encrypt_value_helper("legacy-secret")
 
     assert not ct.startswith(_V2_GCM_PREFIX) and not ct.startswith(_V3_HKDF_PREFIX)
@@ -59,11 +70,14 @@ def test_legacy_nacl_value_still_decrypts_after_flag_flip(monkeypatch):
     This is the mixed-format readback guarantee: decrypt is format-detecting, so
     flipping the flag forward never strands previously-written data.
     """
-    legacy = encrypt_value_helper("legacy-secret")  # default = xsalsa20
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
+    legacy = encrypt_value_helper("legacy-secret")  # explicit legacy opt-in
     assert not legacy.startswith(_V2_GCM_PREFIX) and not legacy.startswith(_V3_HKDF_PREFIX)
 
     _use_aes(monkeypatch)
-    # New writes are now AES, but the old value must still come back.
+    # The old value must still come back, whatever new writes use.
     assert decrypt_value_helper(legacy, key="t") == "legacy-secret"
     assert encrypt_value_helper("fresh").startswith(_V3_HKDF_PREFIX)
 
@@ -131,16 +145,17 @@ def test_callback_prefix_composes_with_v2(monkeypatch):
 
     assert stored.startswith(_CALLBACK_VAR_ENCRYPTED_PREFIX)
     inner = stored[len(_CALLBACK_VAR_ENCRYPTED_PREFIX) :]
-    assert inner.startswith(_V3_HKDF_PREFIX)
+    assert inner.startswith("v4:ctx:")
+    assert "metadata.callback_vars.gcs_path_service_account" in inner
     assert _decrypt_or_passthrough("gcs_path_service_account", stored) == "my-sa-secret"
 
 
-def test_unknown_algorithm_falls_back_to_legacy(monkeypatch):
-    """An unrecognized encryption_algorithm value does not produce v2 writes."""
+def test_unknown_algorithm_falls_back_to_aes(monkeypatch):
+    """An unrecognized encryption_algorithm value does not produce legacy writes."""
     monkeypatch.setattr(proxy_server, "general_settings", {"encryption_algorithm": "rot13"})
 
     ct = encrypt_value_helper("secret")
-    assert not ct.startswith(_V2_GCM_PREFIX) and not ct.startswith(_V3_HKDF_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == "secret"
 
 
@@ -269,3 +284,81 @@ def test_hkdf_info_binds_derivation_to_purpose(monkeypatch):
     )
     assert other != _derive_key_hkdf("sk-salt-aes-1234")
     assert _HKDF_INFO == b"litellm-at-rest-encryption-v1"
+
+
+def test_salt_key_fallback_refused_on_db_connected_proxy(monkeypatch):
+    """The master-key fallback is refused once a DB is connected.
+
+    Deriving the at-rest key from LITELLM_MASTER_KEY couples credential
+    encryption to a bearer credential; a DB-connected proxy must set
+    LITELLM_SALT_KEY instead of silently getting the fallback.
+    """
+    import pytest as _pytest
+
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.setattr(proxy_server, "master_key", "sk-master-fallback")
+    monkeypatch.setattr(proxy_server, "prisma_client", object())
+    monkeypatch.delenv("LITELLM_ALLOW_SALT_KEY_FALLBACK", raising=False)
+
+    with _pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+        _get_salt_key()
+
+
+def test_salt_key_fallback_allowed_via_explicit_opt_in(monkeypatch):
+    """LITELLM_ALLOW_SALT_KEY_FALLBACK=1 restores the legacy fallback."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.setattr(proxy_server, "master_key", "sk-master-fallback")
+    monkeypatch.setattr(proxy_server, "prisma_client", object())
+    monkeypatch.setenv("LITELLM_ALLOW_SALT_KEY_FALLBACK", "1")
+
+    assert _get_salt_key() == "sk-master-fallback"
+
+
+def test_salt_key_fallback_unchanged_without_db(monkeypatch):
+    """Without a DB connection the legacy master-key fallback still applies."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_ALLOW_SALT_KEY_FALLBACK", raising=False)
+    monkeypatch.setattr(proxy_server, "master_key", "sk-master-fallback")
+    monkeypatch.setattr(proxy_server, "prisma_client", None)
+
+    assert _get_salt_key() == "sk-master-fallback"
+
+
+def test_context_bound_value_round_trips_under_its_context(monkeypatch):
+    """A context-bound v4 ciphertext decrypts only under its own context."""
+    _use_aes(monkeypatch)
+
+    ct = encrypt_value_helper("secret", context="LiteLLM_ProxyModelTable:api_key")
+
+    assert ct.startswith("v4:ctx:")
+    assert (
+        decrypt_value_helper(ct, key="t", context="LiteLLM_ProxyModelTable:api_key")
+        == "secret"
+    )
+
+
+@pytest.mark.parametrize(
+    "wrong_context",
+    ["LiteLLM_CredentialsTable:credential_values", "LiteLLM_ProxyModelTable:model_key", None],
+)
+def test_context_bound_value_cannot_transplant_between_fields(monkeypatch, wrong_context):
+    """Replay protection: a ciphertext written for one column fails in another.
+
+    A value encrypted for the model table's api_key column must fail
+    authentication when read as a credentials-table value (or context-free),
+    so a DB write cannot silently move secrets between records/fields.
+    """
+    _use_aes(monkeypatch)
+
+    ct = encrypt_value_helper("secret", context="LiteLLM_ProxyModelTable:api_key")
+
+    result = decrypt_value_helper(
+        ct, key="t", exception_type="debug", return_original_value=False, context=wrong_context
+    )
+    assert result is None

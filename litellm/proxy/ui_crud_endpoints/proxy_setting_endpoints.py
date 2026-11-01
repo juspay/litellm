@@ -892,7 +892,10 @@ async def update_sso_settings(
                 # Clear environment variable if value is null/empty
                 os.environ.pop(env_var_name, None)
 
-    encrypted_sso_data = proxy_config._encrypt_env_variables(environment_variables=sso_data)
+    encrypted_sso_data = proxy_config._encrypt_env_variables(
+        environment_variables=sso_data,
+        context_prefix="LiteLLM_SSOConfig:sso_settings",
+    )
 
     # Save to dedicated SSO table
     await SSOConfigRepository(prisma_client).table.upsert(

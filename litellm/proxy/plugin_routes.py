@@ -161,11 +161,50 @@ def issue_plugin_session_claim(plugin_name: str, user_id: str | None, user_role:
     return _plugin_fernet(plugin_name).encrypt(json.dumps(claim).encode()).decode()
 
 
-def verify_plugin_session_claim(plugin_name: str, ciphertext: str) -> dict:
+async def _resolve_live_user_role(user_id: str) -> str | None:
+    """Re-resolve a user's role from the live user cache / DB at claim-verify time.
+
+    The claim's user_role is only a routing hint from the moment it was minted;
+    this is the value that actually decides authorization.  A demoted or
+    deactivated user fails verification immediately instead of riding the
+    claim's TTL.
+    """
+    if not user_id:
+        return None
+    from litellm.proxy.auth.user_api_key_auth import user_api_key_cache
+
+    cached = await user_api_key_cache.async_get_cache(key=user_id)
+    if cached is not None:
+        from litellm.models.user import LiteLLM_UserTable
+        from litellm.proxy.common_utils.cache_pydantic_utils import CacheCodec
+
+        row = CacheCodec.deserialize(cached, LiteLLM_UserTable)
+        if row is not None:
+            return row.user_role
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        return None
+    from prisma.errors import PrismaError
+
+    try:
+        row = await prisma_client.db.litellm_usertable.find_first(where={"user_id": user_id})
+    except PrismaError:
+        return None
+    if row is None:
+        return None
+    if getattr(row, "disabled", False):
+        return None
+    return getattr(row, "user_role", None)
+
+
+async def verify_plugin_session_claim(plugin_name: str, ciphertext: str) -> dict:
     """Verify and decode a plugin session claim.
 
-    Raises ValueError if the HMAC is invalid, the audience is wrong, or
-    the claim is expired.  Returns the decoded claim dict on success.
+    Raises ValueError if the HMAC is invalid, the audience is wrong, the
+    claim is expired, or the caller's role changed since issuance (demotion
+    and deactivation take effect immediately rather than at claim expiry).
+    Returns the decoded claim dict with the freshly resolved user_role.
     """
     try:
         raw = _plugin_fernet(plugin_name).decrypt(ciphertext.encode(), ttl=_CLAIM_TTL_SECONDS)
@@ -177,6 +216,11 @@ def verify_plugin_session_claim(plugin_name: str, ciphertext: str) -> dict:
         raise ValueError("Plugin claim audience mismatch")
     if int(claim.get("exp", 0)) < int(time.time()):
         raise ValueError("Plugin session claim expired")
+
+    live_role = await _resolve_live_user_role(str(claim.get("user_id") or ""))
+    if not live_role:
+        raise ValueError("Plugin session claim user is unknown, disabled, or removed")
+    claim["user_role"] = live_role
     return claim
 
 
