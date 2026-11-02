@@ -4,7 +4,7 @@
 
 ## Summary
 
-This PR clears every actionable finding from the ten security audits of the proxy:
+This PR clears every actionable finding from the eleven security audits of the proxy:
 
 1. **litellm-vul Strykea SCA scan (scan-1317)** — software-composition findings against the dependency tree (`fix(deps): clear all litellm-vul SCA findings, raise Python floor to 3.11`)
 2. **echo-scan SAST audit (PR #811 report)** — 66 code-level findings (0 critical / 20 high / 36 medium / 4 low / 6 info) (`fix(security): remediate all echo-scan SAST findings`)
@@ -15,10 +15,29 @@ This PR clears every actionable finding from the ten security audits of the prox
 7. **echo-scan re-scan (PR #1511 report)** — 8 findings remaining after the fourth SAST pass (0 critical / 1 high / 4 medium / 3 low) (`fix(security): clear all 8 echo-scan PR #1511 findings`)
 8. **echo-scan re-scan (PR #1527 report)** — 10 findings remaining after the fifth SAST pass (0 critical / 0 high / 7 medium / 3 low) (`fix(security): clear all 10 echo-scan PR #1527 findings`)
 9. **echo-scan re-scan (PR #1548 report)** — 10 findings remaining after the sixth SAST pass (0 critical / 0 high / 6 medium / 4 low) (`fix(security): clear all 10 echo-scan PR #1548 findings`)
+10. **Strykea SCA scan (SCA-2026-86, report-scan-2704)** — 24 software-composition findings (0 critical / 13 high / rest medium-low) (`fix(deps): clear Strykea SCA-2026-86 findings, bump fork version to 1.100.4`)
 
 Both audits ran against the wrong or stale base: the SCA scan resolved lockfiles from `origin/main` (a stale dev branch building litellm 1.61.x/1.81.3), and a portion of the SAST findings were already fixed in-tree by prior cherry-picks. This PR fixes everything that genuinely remained open on the fork's release line.
 
 ## Changes
+
+### Commit 11: Strykea SCA-2026-86 remediation (report-scan-2704)
+
+The scan reported 24 findings (13 unique components). Resolution:
+
+1. **litellm @1.92.0 (GHSA-7hp6-4w63-5g45, GHSA-g5ff-637f-6q2m, GHSA-3cv6-jpf6-8222):** all three fixes have been cherry-picked into this fork since the first SCA round (bearer tokens carry the `litellm_login_` AES-GCM AAD; `vertex_ai_credentials` is in the request-body blocklist; the request-parameter validation cleanup is bbdc06d5d5), but the workspace version string was still 1.92.0, inside every affected range, so every scanner kept re-reporting them. The version string now moves to 1.100.4 — the smallest release clearing all three ranges — which is also what the osv-scanner.toml ignore entries were waiting for; those three ignores are removed. The runtime version is read from package metadata (`litellm._version`), so the bump is self-contained: dashboard display, `/health/liveness`, and telemetry now report 1.100.4
+2. **pypdf 6.21.2 -> 6.21.4 (6 GHSAs):** page-tree memory, encrypted-PDF runtime, strict-mode exceptions, xref-trailer infinite loop, dictionary-clone infinite loop, cross-reference-stream memory. Floor raised in tool.uv constraint-dependencies
+3. **pyasn1 0.6.4 -> 0.6.5 (4 GHSAs):** quadratic CPU in BIT STRING, BER/CER/DER container, constructed-string/indefinite-ANY, and binary REAL decoding. Floor raised
+4. **langgraph 1.2.6 -> 1.2.18 and langgraph-sdk -> 0.4.9 (GHSA-3fx2-cqw9-xr3c):** the unencoded `thread_id`/`assistant_id` path-segment flaw lives in langgraph-sdk (fixed 0.4.6, requires langgraph 1.2.14+); the dev-group floor and the constraint floor now pin both past the fix
+5. **glob 13.0.0 -> 14.0.2 (GHSA-3g3m-2fjr-6pw4) and minimatch -> 11.0.1 (GHSA-g3hv-75wg-m249):** npm overrides updated in the root package.json, the dashboard, tests/pass_through_tests (minimatch 3.1.5 was inside the advisory's published range), and tests/proxy_admin_ui_tests/ui_unit_tests; all four package-locks regenerated (pass_through_tests' glob 7.2.3 is outside the affected >=9.0.0 range and stays). The fixed releases were 5 days old, 2 days short of the 7-day npm quarantine in .npmrc, so the locks were regenerated with a one-time `--before` override; the committed quarantine is unchanged
+6. **diskcache @5.6.3 (GHSA-w8v5-vhqr-4h9v):** no fixed release exists (5.6.3 is the latest; the advisory lists it as last-affected). Stays as the documented osv-scanner.toml ignore; the vulnerable surface (pickle deserialization by a process reading a cache directory an attacker can write to) does not apply to the proxy's own cache directory, which runs as a single service account
+7. **filelock @3.20.3 (GHSA-69hj-f68j-2879, GHSA-8mx5-7m5m-r77g):** cookbook/litellm-ollama-docker-image only. Both advisories are fixed solely in 4.2.1, but every upstream litellm release — through the current 1.109 dev line — caps `filelock<4.0`, so the resolved cookbook tree cannot reach a patched filelock under any litellm pin. The pin stays 3.20.3 (inside litellm's cap, newest 3.x adjacent to the fix line); this is the one finding the scan will keep reporting until upstream lifts the cap
+
+#### Operator notes for commit 11
+
+**The fork now reports version 1.100.4.** Any deployment dashboards, version-gates, or tooling that matched the literal 1.92.0 string need updating; `/health/liveness` and the dashboard about page report 1.100.4. The fork still builds from the release/v1.92.0 upstream line — the number is a security-compatibility marker (past every published litellm advisory range), not a rebase
+
+**The npm 7-day quarantine was honored with a one-time override.** glob 14.0.2 and minimatch 11.0.1 published Oct 27, 2026; the locks were regenerated Nov 2 against `--before=2026-11-02T00:00:00Z` with min-release-age temporarily disabled in the working tree only. The committed .npmrc files are unchanged; from Nov 4 the fixed versions satisfy the quarantine naturally
 
 ### Commit 9: fifth re-scan remediation (echo-scan PR #1527 report)
 
@@ -244,11 +263,15 @@ The fifth re-scan found 10 findings open (0 critical / 0 high / 7 medium / 3 low
 
 The sixth re-scan found 10 findings open (0 critical / 0 high / 6 medium / 4 low). The largest was the Admin Viewer's route-table-derived GET access (the very mechanism commit 9 introduced), which the scanner correctly flagged as a default-allow: it is now an explicit fail-closed allowlist with a classification-drift test forcing every new GET-only route to be classified deliberately. The rest were residual gaps on surface earlier rounds created or only partially hardened: the custom-code JSON schema primitive now pre-checks depth/size before the jsonschema library sees it; the plugin registry update is an atomic rebind; the concurrent-request-log siblings gained the ownership gate their sibling already had; plugin-proxy 502s and MCP registration errors stopped echoing raw exception text; skill-file extraction validates through a shared path-safety predicate; spend-log debug output is counts-only; the SSRF validation bypass is loud and redirect-proof instead of silent; and both the v2:gcm encryption rows and unsalted token digests now fail closed instead of silently persisting weak primitives. Commit 10 clears all of them.
 
+### Strykea SCA-2026-86 (report-scan-2704)
+
+The third SCA pass reported 24 findings (0 critical / 13 high / 11 medium-low) against 13 unique components. Three were litellm self-advisories that every prior SCA round kept re-reporting because the workspace version string (1.92.0) sat inside every affected range even though the fixes were cherry-picked in-tree; the version string now moves to 1.100.4, which the in-repo osv-scanner ignores were explicitly waiting on, and those ignores are removed. The rest were resolved by version floors and lock regeneration: pypdf 6.21.4 (six memory/loop advisories), pyasn1 0.6.5 (four quadratic-decode DoS advisories), langgraph 1.2.18 with langgraph-sdk 0.4.9 (unencoded streaming path identifiers), glob 14.0.2 and minimatch 11.0.1 across all four npm lockfiles. Two findings have no remediation available at any version: diskcache (no fixed release exists; documented ignore) and the cookbook's filelock pin (fixed only in 4.2.1, which every litellm release's `filelock<4.0` cap forbids). Commit 11 clears all 22 fixable findings; the scan will keep reporting diskcache and cookbook-filelock until upstreams publish fixes.
+
 ## Pre-Submission checklist
 
 - [x] Meaningful tests added (token_counter download-cap tests, url_utils scheme tests, auth_utils allowlist tests, ui_sso alg tests, azure/anthropic count_tokens destination-guard tests, provider_url_destination_guard tests, plugin-proxy traversal and salt fail-closed tests, MCP stdio validation tests, session-cookie flag tests, host-trust redirect tests, tag-filter parameter-binding tests, ORDER BY allowlist tests, JWKS verification tests including forged-signature and wrong-audience fail-closed cases, HKDF derivation tests, custom-code allowlist and timeout tests, salt-key fallback guard tests, context-bound ciphertext transplant tests, plugin claim live-role re-resolution tests, stdio pinned-path and world-writable-file/ancestor tests, self-update privileged-field allowlist tests, logo magic-byte and role-gate tests, SSO debug gate and claim-allowlist tests, bearer-scheme parse tests, peppered token-hash and legacy-digest fallback tests, sandbox requirements-validation and network-mode tests, OAuth2 state single-use tests, JWT scope fail-closed tests, introspection role and active-flag tests, viewer write-route block tests, customer-endpoint admin-gate tests, guardrail primitive size-cap and oversized-refusal tests, plugin-claim forge and tamper tests, logo Pillow re-encode and polyglot-stripping plus attachment-header tests, sandbox unsafe-skill-path drop tests, viewer route-table-derivation drift and unknown-GET denial tests, encode-exp injection and require-exp tests, segment-boundary allowlist and templated-entry absence tests, json-schema depth/size refusal and json_parse cap tests, plugin registry atomic-rebind test, concurrent-request-log sibling ownership tests, plugin-proxy 502 and MCP registration exception-echo suppression tests, extract_all_files traversal/windows-path drop tests and shared path-safety predicate tests, spend-log debug counts-only test, SSRF bypass loud-warning and no-redirect-follow tests, v2:gcm migration-to-HKDF test, unsalted token-digest fail-closed and legacy opt-in warn-once tests, viewer explicit-allowlist classification-drift and unlisted-route denial tests)
 - [ ] CI/CD checks pass
-- [x] Scope isolated: ten commits, one per audit plus one lint cleanup
+- [x] Scope isolated: eleven commits, one per audit plus one lint cleanup
 - [ ] Greptile review requested
 
 ## Type
