@@ -8,7 +8,7 @@ and provide safe, sandboxed functionality for common guardrail operations.
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -86,6 +86,45 @@ def modify(
 # deadline to interrupt it.
 _MAX_REGEX_TEXT_CHARS = 1_000_000
 _MAX_REGEX_PATTERN_CHARS = 1_000
+
+# Bounds for json_schema_valid inputs. jsonschema's $ref resolution can
+# recurse without a bound, so the schema is walked (iteratively, with the
+# same depth cap the fallback validator uses) and refused when it nests
+# deeper or serializes larger than these caps.
+_MAX_JSON_SCHEMA_CHARS = 1_000_000
+_MAX_JSON_SCHEMA_DEPTH = 50
+
+
+def _json_schema_within_limits(schema: object) -> bool:
+    """True if the schema is a JSON object within the depth/size caps.
+
+    Iterative walk with an explicit depth cap: a deeply nested or
+    self-referential schema (``$ref`` cycles) cannot drive unbounded
+    recursion here or in the jsonschema library afterwards.
+    """
+    if not isinstance(schema, dict):
+        verbose_proxy_logger.warning(f"Custom code json_schema_valid refused non-object schema: {type(schema)!r}")
+        return False
+    if len(json.dumps(schema)) > _MAX_JSON_SCHEMA_CHARS:
+        verbose_proxy_logger.warning(
+            f"Custom code json_schema_valid refused schema of {len(json.dumps(schema))} chars (limit {_MAX_JSON_SCHEMA_CHARS})"
+        )
+        return False
+    stack: list[tuple[object, int]] = [(schema, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _MAX_JSON_SCHEMA_DEPTH:
+            verbose_proxy_logger.warning(
+                f"Custom code json_schema_valid refused schema nested deeper than {_MAX_JSON_SCHEMA_DEPTH}"
+            )
+            return False
+        if isinstance(node, dict):
+            dict_node = cast("dict[object, object]", node)
+            stack.extend((v, depth + 1) for v in dict_node.values())
+        elif isinstance(node, list):
+            list_node = cast("list[object]", node)
+            stack.extend((v, depth + 1) for v in list_node)
+    return True
 
 
 def _regex_inputs_within_limits(text: str, pattern: str) -> bool:
@@ -248,6 +287,8 @@ def json_schema_valid(obj: Any, schema: Dict[str, Any]) -> bool:
         True if valid, False otherwise
     """
     try:
+        if not _json_schema_within_limits(schema):
+            return False
         # Try to import jsonschema, fall back to basic validation if not available
         try:
             import jsonschema

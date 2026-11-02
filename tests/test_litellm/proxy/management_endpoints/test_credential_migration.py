@@ -17,9 +17,20 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     _V2_GCM_PREFIX,
     _V3_HKDF_PREFIX,
     _V4_CTX_PREFIX,
+    _derive_key,
+    _seal_aes_gcm,
+    decrypt_value_helper,
     encrypt_value_helper,
 )
 from litellm.proxy.management_endpoints import credential_migration as cm
+
+
+def _v2_ct(value: str) -> str:
+    """Mint a genuine legacy v2:gcm ciphertext (unsalted-SHA-256 KDF)."""
+    import base64
+
+    sealed = _seal_aes_gcm(value=value, key=_derive_key("sk-migration-salt-1234"), aad=None)
+    return _V2_GCM_PREFIX + base64.urlsafe_b64encode(sealed).decode("utf-8")
 
 
 @pytest.fixture
@@ -74,6 +85,22 @@ def test_is_migrated(salt_key, monkeypatch):
     assert cm.is_migrated(encrypt_value_helper("x")) is True
     assert cm.is_migrated("plaintext") is False
     assert cm.is_migrated(5) is False
+    assert cm.is_migrated(_v2_ct("x")) is False
+
+
+def test_v2_gcm_counts_as_unmigrated_and_reencrypts_to_hkdf(salt_key, monkeypatch):
+    """A v2:gcm ciphertext is AES-GCM under the legacy unsalted-SHA-256 KDF:
+    it must be reported as needing migration and re-encrypted to v3:hkdf
+    (HKDF), not left on the legacy KDF indefinitely."""
+    _enable_aes(monkeypatch)
+    v2 = _v2_ct("secret")
+    assert cm.classify_value(v2) == "legacy"
+    assert cm.is_migrated(v2) is False
+
+    out = cm.reencrypt_value(v2)
+    assert out != v2
+    assert str(out).startswith(_V3_HKDF_PREFIX)
+    assert decrypt_value_helper(value=str(out), key="test") == "secret"
 
 
 def test_reencrypt_value_legacy_to_v2(salt_key, monkeypatch):

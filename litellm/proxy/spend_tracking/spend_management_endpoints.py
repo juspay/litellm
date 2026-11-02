@@ -2103,7 +2103,13 @@ async def ui_view_spend_logs(
         # Calculate total pages
         total_pages = (total_records + page_size - 1) // page_size
 
-        verbose_proxy_logger.debug("data= %s", json.dumps(data, indent=4, default=str))
+        verbose_proxy_logger.debug(
+            "spend logs ui page=%s page_size=%s total_records=%s rows_returned=%s",
+            page,
+            page_size,
+            total_records,
+            len(data),
+        )
 
         return await _build_ui_spend_logs_response(
             prisma_client,
@@ -4251,6 +4257,44 @@ async def _assert_user_can_view_request_id(
     )
 
 
+async def _assert_user_can_view_token_rows(
+    prisma_client,
+    user_api_key_dict: UserAPIKeyAuth,
+    token_rows: list,
+) -> None:
+    """Verify the caller may view analytics for the resolved verification-token rows.
+
+    Admin roles (proxy admin / org admin / admin viewer) see every key. Any
+    other authenticated caller must own every resolved token (same user_id) or
+    belong to a team the token belongs to with spend-log visibility (team
+    admin or /spend/logs permission). Raises HTTP 403 otherwise, so naming
+    another user's masked key or alias does not expose its concurrency data.
+    """
+    if user_api_key_dict.user_role in (
+        LitellmUserRoles.PROXY_ADMIN.value,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        LitellmUserRoles.ORG_ADMIN.value,
+    ):
+        return
+
+    caller_user_id = user_api_key_dict.user_id
+    for row in token_rows:
+        if row.user_id is not None and caller_user_id is not None and row.user_id == caller_user_id:
+            continue
+        if row.team_id is not None:
+            can_view = await _can_team_member_view_log(
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+                team_id=row.team_id,
+            )
+            if can_view:
+                continue
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Not authorized to view concurrency analytics for this key."},
+        )
+
+
 @router.get(
     "/concurrent_request_logs",
     tags=["Budget & Spend Tracking"],
@@ -4411,10 +4455,10 @@ async def concurrent_request_logs(
         return {"data": all_data, "total": len(all_data)}
 
     except Exception as e:
-        verbose_proxy_logger.error(f"[concurrent_request_logs] Error: {str(e)}")
+        verbose_proxy_logger.exception(f"[concurrent_request_logs] Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(e)},
+            detail={"error": "Internal error querying concurrent request logs."},
         )
 
 
@@ -4503,10 +4547,10 @@ async def reset_mpr_counter(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"[reset_mpr] Error: {str(e)}")
+        verbose_proxy_logger.exception(f"[reset_mpr] Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(e)},
+            detail={"error": "Internal error resetting MPR counters."},
         )
 
 
@@ -4592,6 +4636,7 @@ async def concurrent_request_rate_limit_hits(
         default=None,
         description="Key alias to look up. Provide either this or api_key, not both.",
     ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
     page: int = fastapi.Query(default=1, ge=1, description="Page number for pagination"),
     page_size: int = fastapi.Query(default=10, ge=1, le=100, description="Number of items per page"),
 ):
@@ -4673,6 +4718,7 @@ async def concurrent_request_rate_limit_hits(
                 param="api_key" if api_key else "key_alias",
                 code=status.HTTP_404_NOT_FOUND,
             )
+        await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, token_rows)
 
         # Step 2: query SpendLogs for MPR 429 failures in the time range.
         # error_information is read from metadata the same way the failure logs
@@ -4763,6 +4809,7 @@ async def concurrent_request_operation_counts(
         default=None,
         description="Key alias to look up. Provide either this or api_key, not both.",
     ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
 ):
     """
     Count the parallel_requests counter increment vs decrement [METRICS] log entries
@@ -4873,6 +4920,7 @@ async def concurrent_request_operation_counts(
                     param="api_key",
                     code=status.HTTP_404_NOT_FOUND,
                 )
+            await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, token_rows)
             # Aggregate counts across all resolved tokens (usually exactly one).
             for tok in tokens:
                 counts, success, was_truncated = await count_parallel_request_operations(
@@ -4886,6 +4934,17 @@ async def concurrent_request_operation_counts(
                 truncated = truncated or was_truncated
             resolved_token = tokens[0] if len(tokens) == 1 else f"{len(tokens)} keys"
         else:
+            alias_token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
+                where={"key_alias": key_alias},
+            )
+            if not alias_token_rows:
+                raise ProxyException(
+                    message="No key found matching the provided Key Alias.",
+                    type="not_found",
+                    param="key_alias",
+                    code=status.HTTP_404_NOT_FOUND,
+                )
+            await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, alias_token_rows)
             counts, success, was_truncated = await count_parallel_request_operations(
                 start_timestamp=start_ts,
                 end_timestamp=end_ts,
@@ -4945,6 +5004,7 @@ async def concurrent_request_timeline(
         default=None,
         description="Key alias to look up. Provide either this or api_key, not both.",
     ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
 ):
     """
     For a single key, return the Redis counter value and SpendLogs concurrency
@@ -5033,6 +5093,7 @@ async def concurrent_request_timeline(
                 param="api_key" if api_key else "key_alias",
                 code=status.HTTP_404_NOT_FOUND,
             )
+        await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, token_rows)
         display_alias = token_rows[0].key_alias or key_alias or "—"
         display_token = tokens[0] if len(tokens) == 1 else f"{len(tokens)} keys"
 

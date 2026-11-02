@@ -11,10 +11,22 @@ def salt_key(monkeypatch):
     monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
 
 
-def test_hash_token_unsalted_matches_legacy_sha256(monkeypatch) -> None:
+def test_hash_token_unsalted_fails_closed(monkeypatch) -> None:
+    """Without a pepper and without the explicit legacy opt-in, minting a
+    digest must raise instead of silently writing a bare SHA-256."""
     from litellm.proxy.common_utils.token_hash_utils import hash_token
 
     monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", raising=False)
+    with pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+        hash_token("sk-plain-legacy")
+
+
+def test_hash_token_unsalted_legacy_mode_matches_sha256(monkeypatch) -> None:
+    from litellm.proxy.common_utils.token_hash_utils import hash_token
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
     token = "sk-plain-legacy"
     assert hash_token(token) == hashlib.sha256(token.encode()).hexdigest()
 
@@ -28,10 +40,20 @@ def test_hash_token_salted_is_pepered_hmac(salt_key) -> None:
     assert hash_token(token) != hashlib.sha256(token.encode()).hexdigest()
 
 
-def test_hash_token_candidates_unsalted_is_single_legacy_digest(monkeypatch) -> None:
+def test_hash_token_candidates_unsalted_fails_closed(monkeypatch) -> None:
     from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates
 
     monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", raising=False)
+    with pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+        hash_token_candidates("sk-plain-legacy")
+
+
+def test_hash_token_candidates_unsalted_legacy_mode(monkeypatch) -> None:
+    from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
     token = "sk-plain-legacy"
     assert hash_token_candidates(token) == (hashlib.sha256(token.encode()).hexdigest(),)
 
@@ -109,3 +131,22 @@ def test_hash_token_delegates_from_types() -> None:
         assert types_hash("sk-types-delegated") == core_hash("sk-types-delegated")
     finally:
         os.environ.pop("LITELLM_SALT_KEY", None)
+
+
+def test_legacy_mode_warns_once(monkeypatch, caplog) -> None:
+    """In unpeppered legacy mode the pepper warning fires exactly once per
+    process, not per call."""
+    import logging
+
+    import litellm.proxy.common_utils.token_hash_utils as thu
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
+    thu._warn_unpeppered_legacy_mode_once.cache_clear()
+
+    with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+        thu.hash_token("sk-a")
+        thu.hash_token("sk-b")
+        thu.hash_token_candidates("sk-c")
+    warnings = [r for r in caplog.records if "LITELLM_SALT_KEY" in r.getMessage()]
+    assert len(warnings) == 1

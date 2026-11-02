@@ -118,7 +118,10 @@ def _derive_key(signing_key: str) -> bytes:
     random nonce gives the unique (key, nonce) pairs GCM requires. This
     derivation only handles ciphertext written under the ``v2:gcm:`` marker (and
     the legacy nacl format, which shares it); new AES writes use
-    :func:`_derive_key_hkdf` behind the ``v3:hkdf:`` marker.
+    :func:`_derive_key_hkdf` behind the ``v3:hkdf:`` marker. Read-path compat
+    for this KDF is bounded by the migration tooling: the
+    ``credential_migration`` module re-encrypts ``v2:gcm:`` rows to HKDF and the
+    ``check_encryption`` attestation counts them as unmigrated until they are.
     """
     import hashlib
 

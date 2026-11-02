@@ -5215,3 +5215,74 @@ class TestPerUserCredentialConfigServerResolution:
         _, _, _, updates, _ = merge_mock.await_args.args
         assert updates == {"CORP_USERNAME": "alice"}
         assert result.server_id == self.CONFIG_SERVER_ID
+
+
+class TestMCPServerRegistrationErrorGenericization:
+    @pytest.mark.asyncio
+    async def test_register_failure_does_not_echo_exception_text(self, monkeypatch):
+        """A registration failure must surface a generic detail; the raw
+        exception (which can carry DB DSNs or upstream URLs) goes to the
+        server-side log only."""
+        from litellm.proxy.management_endpoints import mcp_management_endpoints as m
+
+        mock_user_auth = generate_mock_user_api_key_auth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            team_id="team-1",
+        )
+        payload = SimpleNamespace(
+            transport="sse",
+            server_name="leaky",
+            url="https://upstream.example/mcp",
+            server_id=None,
+            alias=None,
+            description=None,
+            auth_type=None,
+            credentials=None,
+            spec_path=None,
+            mcp_info=None,
+            mcp_access_groups=[],
+            allowed_tools=None,
+            tool_name_to_display_name=None,
+            tool_name_to_description=None,
+            extra_headers=None,
+            static_headers=None,
+            env_vars=None,
+            instructions=None,
+            command=None,
+            args=[],
+            env={},
+            authorization_url=None,
+            token_url=None,
+            registration_url=None,
+            oauth2_flow=None,
+            allow_all_keys=False,
+            available_on_public_internet=True,
+            delegate_auth_to_upstream=False,
+            oauth_passthrough=False,
+            is_byok=False,
+            byok_description=[],
+            byok_api_key_help_url=None,
+        )
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("secret-dsn postgres://user:pw@10.0.0.9:5432/db failed")
+
+        monkeypatch.setattr(m, "create_mcp_server", boom)
+        monkeypatch.setattr(
+            m, "validate_and_normalize_mcp_server_payload", lambda p: None
+        )
+        monkeypatch.setattr(m, "_validate_mcp_required_fields", lambda p: None)
+        monkeypatch.setattr(
+            m, "get_prisma_client_or_throw", lambda msg: MagicMock()
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await m.register_mcp_server(
+                payload=payload, user_api_key_dict=mock_user_auth
+            )
+
+        assert exc_info.value.status_code == 500
+        detail = str(exc_info.value.detail)
+        assert "10.0.0.9" not in detail
+        assert "postgres://" not in detail
+        assert "Error registering mcp server" in detail

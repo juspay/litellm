@@ -35,6 +35,7 @@ from collections.abc import Mapping
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import PluginConfig, SpecialHeaders, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
@@ -285,8 +286,8 @@ def register_plugins_from_config(general_settings: dict[str, object]) -> None:
     raw = general_settings.get("plugins")
     entries: list[object] = raw if isinstance(raw, list) else []
     new_registry = {p.name: p for p in (PluginConfig.model_validate(entry) for entry in entries)}
-    _plugin_registry.clear()
-    _plugin_registry.update(new_registry)
+    global _plugin_registry  # noqa: PLW0603  # atomic rebind is the fix: readers never see a cleared registry
+    _plugin_registry = new_registry
 
 
 # ---------------------------------------------------------------------------
@@ -438,8 +439,9 @@ async def plugin_proxy(
         # the plugin to SSRF the proxy into fetching arbitrary internal services.
         resp = await handler.client.send(req, follow_redirects=False)
     except Exception:
+        verbose_proxy_logger.exception(f"Plugin proxy connection failure for plugin '{plugin_name}'")
         return Response(
-            content=f"Cannot connect to plugin '{plugin_name}' at {plugin.url}",
+            content=f"Cannot connect to plugin '{plugin_name}'.",
             status_code=502,
         )
 

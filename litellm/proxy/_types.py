@@ -789,12 +789,10 @@ class LiteLLMRoutes(enum.Enum):
     # Admin can read/list/get, Admin Viewer can too (no writes, no cost-incurring
     # actions).
     #
-    # NOTE: This list is no longer the primary mechanism for granting access —
-    # `_check_proxy_admin_viewer_access()` in route_checks.py default-allows
-    # any safe HTTP method (GET/HEAD/OPTIONS) on non-inference routes. This
-    # list now matters only for non-GET routes that are semantically reads
-    # (e.g. POST /spend/calculate). Adding a new GET endpoint does not require
-    # updating this list — the default-allow behavior covers it automatically.
+    # NOTE: GET routes for PROXY_ADMIN_VIEW_ONLY fail closed: read access is
+    # granted only by `_ADMIN_VIEWER_ALLOWED_GET_ROUTES` in route_checks.py or
+    # by these two explicit lists. Add new viewer-readable GET endpoints to
+    # this list (or the route_checks allowlist) deliberately.
     admin_viewer_routes = (
         [
             "/user/list",

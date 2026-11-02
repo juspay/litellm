@@ -7,6 +7,7 @@ Supports Docker, Podman, and Kubernetes backends.
 
 import base64
 import os
+import re
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
 
@@ -15,15 +16,17 @@ from packaging.requirements import InvalidRequirement, Requirement
 from litellm._logging import verbose_logger
 
 
-def _is_safe_skill_file_path(path: str) -> bool:
+def is_safe_skill_file_path(path: str) -> bool:
     if "\\" in path or "\x00" in path:
         return False
     p = PurePosixPath(path)
-    return bool(p.parts) and not p.is_absolute() and ".." not in p.parts
+    if not p.parts or p.is_absolute() or ".." in p.parts:
+        return False
+    return not re.match(r"^[A-Za-z]:", p.parts[0])
 
 
 def _validated_skill_file_paths(skill_files: dict[str, bytes]) -> dict[str, bytes]:
-    return {path: content for path, content in skill_files.items() if _is_safe_skill_file_path(path)}
+    return {path: content for path, content in skill_files.items() if is_safe_skill_file_path(path)}
 
 
 def _validate_requirements(requirements: str) -> None:

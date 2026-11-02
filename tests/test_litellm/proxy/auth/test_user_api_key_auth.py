@@ -4516,18 +4516,22 @@ def test_get_bearer_token_rejects_embedded_scheme_token():
 async def test_db_lookup_falls_back_to_legacy_digest_when_pepper_set(monkeypatch):
     """
     Regression: with LITELLM_SALT_KEY configured, a key row written by an older
-    build (bare SHA-256 digest) must keep authenticating. The DB lookup tries
-    both the peppered and the legacy digest, so a resolver that only knows the
-    legacy digest still resolves the token instead of 401ing.
+    build (bare SHA-256 digest) authenticates only while the operator keeps
+    LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS set as an explicit migration window. With
+    the flag set the DB lookup tries the peppered digest and then the legacy
+    one, so a resolver that only knows the legacy digest resolves the token;
+    without the flag only the peppered digest is tried and the lookup fails
+    closed instead of silently accepting a leaked bare SHA-256 row.
     """
     from fastapi import Request
     from starlette.datastructures import URL
 
     import litellm.proxy.proxy_server as _proxy_server_mod
     from litellm.proxy.auth.user_api_key_auth import _user_api_key_auth_builder
-    from litellm.proxy.common_utils.token_hash_utils import legacy_hash_token
+    from litellm.proxy.common_utils.token_hash_utils import hash_token, legacy_hash_token
 
     monkeypatch.setenv("LITELLM_SALT_KEY", "regression-pepper")
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
 
     raw_key = "sk-legacy-row-token"
     legacy_digest = legacy_hash_token(raw_key)
@@ -4572,9 +4576,81 @@ async def test_db_lookup_falls_back_to_legacy_digest_when_pepper_set(monkeypatch
             )
 
             called_digests = [call.args[-1] for call in mock_resolve.call_args_list]
+            assert called_digests[0] == hash_token(raw_key)
             assert legacy_digest in called_digests
             assert result is not None
             assert result.user_id == "legacy-user"
+    finally:
+        for attr, val in originals.items():
+            setattr(_proxy_server_mod, attr, val)
+
+
+@pytest.mark.asyncio
+async def test_db_lookup_fails_closed_without_legacy_digest_opt_in(monkeypatch):
+    """
+    Regression: with LITELLM_SALT_KEY set but LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS
+    unset, a resolver that only knows the legacy bare SHA-256 digest must NOT
+    authenticate the token. Only the peppered digest may be probed, so the
+    lookup 401s and a leaked legacy digest row stays dead.
+    """
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    import litellm.proxy.proxy_server as _proxy_server_mod
+    from litellm.proxy.auth.user_api_key_auth import _user_api_key_auth_builder
+    from litellm.proxy.common_utils.token_hash_utils import hash_token, legacy_hash_token
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "regression-pepper")
+    monkeypatch.delenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", raising=False)
+
+    raw_key = "sk-legacy-row-token"
+    legacy_digest = legacy_hash_token(raw_key)
+    key_object = UserAPIKeyAuth(
+        token=legacy_digest,
+        key_alias="legacy-row",
+        user_id="legacy-user",
+    )
+
+    attrs = _proxy_server_attrs_for_custom_auth(user_custom_auth=None)
+    originals = {attr: getattr(_proxy_server_mod, attr, None) for attr in attrs}
+
+    async def _resolve_only_legacy(hashed_token: str):
+        if hashed_token != legacy_digest:
+            raise ProxyException(
+                message="not found",
+                type=ProxyErrorTypes.token_not_found_in_db,
+                param="key",
+                code=401,
+            )
+        return key_object
+
+    try:
+        for attr, val in attrs.items():
+            setattr(_proxy_server_mod, attr, val)
+
+        with patch(
+            "litellm.proxy.auth.resolvers.store.IdentityStore._resolve_key",
+            side_effect=_resolve_only_legacy,
+        ) as mock_resolve:
+            request = Request(scope={"type": "http"})
+            request._url = URL(url="/chat/completions")
+
+            with pytest.raises(ProxyException) as exc_info:
+                await _user_api_key_auth_builder(
+                    request=request,
+                    api_key=f"Bearer {raw_key}",
+                    azure_api_key_header="",
+                    anthropic_api_key_header=None,
+                    google_ai_studio_api_key_header=None,
+                    azure_apim_header=None,
+                    request_data={},
+                )
+            assert int(exc_info.value.code) == 401
+
+            called_digests = [call.args[-1] for call in mock_resolve.call_args_list]
+            assert called_digests
+            assert set(called_digests) == {hash_token(raw_key)}
+            assert legacy_digest not in called_digests
     finally:
         for attr, val in originals.items():
             setattr(_proxy_server_mod, attr, val)

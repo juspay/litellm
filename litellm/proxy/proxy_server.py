@@ -934,6 +934,7 @@ async def proxy_startup_event(app: FastAPI):
         )
 
     if prisma_client is not None:
+        ProxyStartupEvent._check_token_pepper_configured()
 
         async def _run_pw_migration():
             try:
@@ -8123,6 +8124,35 @@ class ProxyStartupEvent:
                 await proxy_logging_obj.slack_alerting_instance.send_fallback_stats_from_prometheus()
 
     @classmethod
+    def _check_token_pepper_configured(cls) -> None:
+        """Fail startup on a DB-backed proxy without a token pepper.
+
+        A DB-backed virtual-key store digests keys with ``hash_token``; without
+        ``LITELLM_SALT_KEY`` those digests are bare SHA-256, so a database leak
+        allows offline key confirmation. Refuse to start (unless the operator
+        explicitly accepts the legacy mode via
+        ``LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS``) instead of silently minting
+        unsalted digests.
+        """
+        import os as _os
+
+        if _os.getenv("LITELLM_SALT_KEY"):
+            return
+        if _os.getenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "").lower() in ("1", "true"):
+            verbose_proxy_logger.warning(
+                "LITELLM_SALT_KEY is not set; running with legacy bare-SHA-256 token "
+                "digests because LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS is set. A database "
+                "leak would allow offline key confirmation; deploy LITELLM_SALT_KEY "
+                "and remove the flag."
+            )
+            return
+        raise ValueError(
+            "LITELLM_SALT_KEY is not set on a DB-backed proxy; virtual-key digests "
+            "would be bare SHA-256. Set LITELLM_SALT_KEY (see "
+            "https://docs.litellm.ai/docs/proxy/prod#5-set-litellm-salt-key) or set "
+            "LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS=1 to explicitly accept the legacy mode."
+        )
+
     async def _setup_prisma_client(
         cls,
         database_url: Optional[str],

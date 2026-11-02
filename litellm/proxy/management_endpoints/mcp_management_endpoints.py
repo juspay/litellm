@@ -1080,7 +1080,7 @@ if MCP_AVAILABLE:
             verbose_proxy_logger.exception(f"Error registering mcp server: {truncate_error_str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": f"Error registering mcp server: {str(e)}"},
+                detail={"error": "Error registering mcp server."},
             )
         # Do NOT add to runtime registry — pending servers are not active
         return _redact_mcp_credentials(new_mcp_server)
@@ -1379,7 +1379,7 @@ if MCP_AVAILABLE:
             verbose_proxy_logger.exception(f"Error creating mcp server: {truncate_error_str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": f"Error creating mcp server: {str(e)}"},
+                detail={"error": "Error creating mcp server."},
             )
 
         # Registry refresh is best-effort: the row is already committed, so a
@@ -1454,7 +1454,7 @@ if MCP_AVAILABLE:
             verbose_proxy_logger.exception(f"Error caching temporary mcp server: {truncate_error_str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": f"Error caching temporary mcp server: {str(e)}"},
+                detail={"error": "Error caching temporary mcp server."},
             )
 
         return _redact_mcp_credentials(temp_record)
@@ -2364,7 +2364,7 @@ if MCP_AVAILABLE:
             raise
         except Exception as e:
             verbose_proxy_logger.exception(f"Error making agent public: {truncate_error_str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Error making agent public.")
 
     # --- MCP Discovery ---
 

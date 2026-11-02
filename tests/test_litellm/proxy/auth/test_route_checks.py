@@ -2140,23 +2140,20 @@ def test_proxy_admin_viewer_can_access_settings_read_endpoints(route):
         )
 
 
-# ── Admin Viewer parity: default-allow GET semantics ─────────────────────────
+# ── Admin Viewer: explicit GET allowlist, fail closed ─────────────────────────
 #
-# The route-check layer is structured to default-allow safe HTTP methods
-# (GET / HEAD / OPTIONS) for PROXY_ADMIN_VIEW_ONLY. This eliminates the
-# whack-a-mole where every newly-added GET endpoint silently 403'd until
-# someone remembered to add it to admin_viewer_routes.
-#
-# These tests pin the new contract:
-#   - Any GET endpoint not on the LLM/inference path is readable.
-#   - Any unsafe method (POST/PUT/PATCH/DELETE) outside the explicit allow
-#     sets is still 403.
+# Read access for PROXY_ADMIN_VIEW_ONLY is granted only by
+# `_ADMIN_VIEWER_ALLOWED_GET_ROUTES` / admin_viewer_routes /
+# global_spend_tracking_routes. Nothing is derived from the live route
+# table, so a newly registered GET endpoint is denied to this role until it
+# is deliberately classified. These tests pin that contract:
+#   - Reported viewer-needed GETs are covered by the allowlists.
+#   - Unlisted GET routes 403 (fail closed).
+#   - Unsafe methods outside the explicit allow sets still 403.
 
-# Routes the user reported as broken in production — they're in disparate
-# corners of the codebase and represent the long tail of GETs we'd otherwise
-# need to enumerate manually. Read-parity now derives from the app's route
-# table: any route registered with safe methods only is readable, so these
-# all work without a manual allowlist entry.
+# Routes reported broken for viewers in production. Each must be covered by
+# one of the three read allowlists (the classification test below proves
+# the same for the whole route table).
 ADMIN_VIEWER_REPORTED_GET_ROUTES = [
     "/health/latest",
     "/credentials",
@@ -2179,13 +2176,13 @@ def _warm_lazy_feature(module_path: str) -> None:
 
     for feat in LAZY_FEATURES:
         if feat.module_path == module_path:
-            asyncio.get_event_loop().run_until_complete(_force_load(app, feat))
+            asyncio.run(_force_load(app, feat))
             return
     raise ValueError(f"no lazy feature for {module_path}")
 
 
 # Lazy-mounted routers are not in the route table until first matching
-# request; warm them here so the read-only derivation sees them.
+# request; warm them all here so the classification test below sees them.
 @pytest.fixture(autouse=True, scope="module")
 def _warm_lazy_read_routers():
     import asyncio
@@ -2194,25 +2191,18 @@ def _warm_lazy_read_routers():
     from litellm.proxy.proxy_server import app
 
     for _feat in LAZY_FEATURES:
-        if _feat.module_path in (
-            "litellm.proxy.management_endpoints.mcp_management_endpoints",
-            "litellm.proxy.anthropic_endpoints.claude_code_endpoints",
-            "litellm.proxy.management_endpoints.policy_endpoints",
-            "litellm.proxy.management_endpoints.jwt_key_mapping_endpoints",
-        ):
+        try:
             asyncio.run(_force_load(app, _feat))
+        except Exception:
+            pass
     yield
-    RouteChecks._GET_ONLY_ROUTE_PATHS = None
-    RouteChecks._GET_ONLY_ROUTE_COUNT = -1
 
 
 @pytest.mark.parametrize("route", ADMIN_VIEWER_REPORTED_GET_ROUTES)
-def test_proxy_admin_viewer_default_allows_any_get(route):
+def test_proxy_admin_viewer_reported_get_routes_allowed(route):
     """
-    PROXY_ADMIN_VIEW_ONLY must be able to GET any non-inference endpoint.
-
-    This is a structural guarantee: the route-check defaults to allow for
-    safe HTTP methods so we don't have to maintain an explicit allowlist.
+    Every GET route reported as viewer-needed must pass the route check via
+    one of the three read allowlists.
     """
     user_obj = LiteLLM_UserTable(
         user_id="viewer_user",
@@ -2239,7 +2229,125 @@ def test_proxy_admin_viewer_default_allows_any_get(route):
             request_data={},
         )
     except Exception as e:
-        pytest.fail(f"proxy_admin_viewer GET should default-allow {route!r}. Got: {e}")
+        pytest.fail(f"proxy_admin_viewer GET should allow {route!r} via the read allowlists. Got: {e}")
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/credentials/made-up-subroute",
+        "/health/nonsense",
+        "/some/future/read/endpoint",
+    ],
+)
+def test_proxy_admin_viewer_get_unlisted_subpath_denied(route):
+    """
+    Fail closed: a GET to a path that matches no read allowlist entry must
+    403 even when a sibling path is allowed. New GET endpoints are denied
+    until deliberately classified.
+    """
+    request = MagicMock(spec=Request)
+    request.method = "GET"
+    request.query_params = {}
+    request.url = MagicMock()
+    request.url.path = route
+
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=LiteLLM_UserTable(
+                user_id="viewer_user",
+                user_email="viewer@example.com",
+                user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            ),
+            _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            route=route,
+            request=request,
+            valid_token=UserAPIKeyAuth(
+                user_id="viewer_user",
+                user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            ),
+            request_data={},
+        )
+    assert exc_info.value.status_code == 403
+
+
+def _get_only_route_paths() -> set:
+    from litellm.proxy.proxy_server import app
+
+    write_verbs = {"POST", "PUT", "PATCH", "DELETE"}
+    paths = set()
+    for r in app.router.routes:
+        path = getattr(r, "path", None)
+        methods = getattr(r, "methods", None)
+        if path is None or not methods:
+            continue
+        if write_verbs & {m.upper() for m in methods}:
+            continue
+        paths.add(path)
+    return paths
+
+
+def _reaches_viewer_branch(route: str) -> bool:
+    if RouteChecks.is_llm_api_route(route=route):
+        return False
+    if route in LiteLLMRoutes.info_routes.value:
+        return False
+    if RouteChecks.is_auth_enforced_pass_through_route(route=route, method="GET"):
+        return False
+    return True
+
+
+def test_admin_viewer_get_route_classification_is_exhaustive():
+    """
+    Drift protection for the fail-closed GET allowlist.
+
+    Every GET-only route that reaches the viewer branch must be classified
+    in exactly one of `_ADMIN_VIEWER_ALLOWED_GET_ROUTES` /
+    `_ADMIN_VIEWER_DENIED_GET_ROUTES`, or already covered by
+    admin_viewer_routes / global_spend_tracking_routes. A newly registered
+    GET endpoint that skips classification fails this test until it is
+    deliberately added to one of the two sets.
+    """
+    pre_allowed = set(LiteLLMRoutes.admin_viewer_routes.value) | set(
+        LiteLLMRoutes.global_spend_tracking_routes.value
+    )
+    allow = RouteChecks._ADMIN_VIEWER_ALLOWED_GET_ROUTES
+    deny = RouteChecks._ADMIN_VIEWER_DENIED_GET_ROUTES
+    assert not (allow & deny), f"routes classified both allowed and denied: {sorted(allow & deny)}"
+
+    unclassified: list = []
+    misclassified: list = []
+    for path in _get_only_route_paths():
+        if not _reaches_viewer_branch(path):
+            continue
+        in_allow = RouteChecks.check_route_access(route=path, allowed_routes=list(allow))
+        in_deny = RouteChecks.check_route_access(route=path, allowed_routes=list(deny))
+        if in_allow and in_deny:
+            misclassified.append(path)
+        elif not in_allow and not in_deny:
+            if not RouteChecks.check_route_access(route=path, allowed_routes=list(pre_allowed)):
+                unclassified.append(path)
+    assert not misclassified, f"GET routes matching both classification sets: {sorted(misclassified)}"
+    assert not unclassified, (
+        "GET-only routes missing viewer classification (add to "
+        f"_ADMIN_VIEWER_ALLOWED_GET_ROUTES or _ADMIN_VIEWER_DENIED_GET_ROUTES): {sorted(unclassified)}"
+    )
+
+
+def test_admin_viewer_allowed_get_routes_exist_in_route_table():
+    """
+    Every allowlisted GET route must match a route actually registered on
+    the app, so the allowlist cannot accumulate dead entries.
+    """
+    paths = _get_only_route_paths()
+    for allowed in RouteChecks._ADMIN_VIEWER_ALLOWED_GET_ROUTES:
+        if allowed.endswith("*"):
+            prefix = allowed[:-1]
+            assert any(p.startswith(prefix) for p in paths), f"wildcard {allowed!r} matches no registered route"
+        else:
+            assert RouteChecks.check_route_access(
+                route=allowed, allowed_routes=list(paths)
+            ) or allowed in paths, f"allowlisted route {allowed!r} is not registered on the app"
 
 
 @pytest.mark.parametrize(

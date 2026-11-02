@@ -185,6 +185,7 @@ def make_ui_spend_logs_mock_prisma(mock_spend_logs, filter_fn, team_lookup_fn=No
 from litellm.proxy._types import (
     LitellmUserRoles,
     Member,
+    ProxyException,
     SpendLogsPayload,
     UserAPIKeyAuth,
 )
@@ -4388,3 +4389,256 @@ class TestSortByOrderExprAllowlist:
         assert _SORT_COLUMN_TO_ORDER_BY_EXPR["startTime"] == '"startTime"'
         assert _SORT_COLUMN_TO_ORDER_BY_EXPR["endTime"] == '"endTime"'
         assert "EXTRACT(EPOCH FROM" in _SORT_COLUMN_TO_ORDER_BY_EXPR["ttft_ms"]
+
+
+# ---------------------------------------------------------------------------
+# _assert_user_can_view_token_rows: ownership checks on the concurrency
+# analytics endpoints (rate_limit_hits / operation_counts / timeline)
+# ---------------------------------------------------------------------------
+
+
+from types import SimpleNamespace
+
+import litellm.proxy.spend_tracking.spend_management_endpoints as _sme
+
+
+def _token_row(user_id=None, team_id=None):
+    """Stand-in for a LiteLLM_VerificationToken row (user_id / team_id cols)."""
+    return SimpleNamespace(token="hashed-token", user_id=user_id, team_id=team_id)
+
+
+def _viewer_auth(role=LitellmUserRoles.INTERNAL_USER, user_id="user_1", team_id=None):
+    return UserAPIKeyAuth(user_role=role, user_id=user_id, team_id=team_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "role",
+    [
+        LitellmUserRoles.PROXY_ADMIN,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+        LitellmUserRoles.ORG_ADMIN,
+    ],
+)
+async def test_assert_user_can_view_token_rows_admin_roles_pass(role):
+    await _sme._assert_user_can_view_token_rows(
+        prisma_client=MagicMock(),
+        user_api_key_dict=_viewer_auth(role=role),
+        token_rows=[_token_row(user_id="someone_else", team_id="other_team")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_assert_user_can_view_token_rows_own_key_passes():
+    await _sme._assert_user_can_view_token_rows(
+        prisma_client=MagicMock(),
+        user_api_key_dict=_viewer_auth(user_id="user_1"),
+        token_rows=[_token_row(user_id="user_1")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_assert_user_can_view_token_rows_other_users_key_denied():
+    with pytest.raises(HTTPException) as exc_info:
+        await _sme._assert_user_can_view_token_rows(
+            prisma_client=MagicMock(),
+            user_api_key_dict=_viewer_auth(user_id="user_1"),
+            token_rows=[_token_row(user_id="user_2")],
+        )
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_assert_user_can_view_token_rows_unowned_row_denied():
+    with pytest.raises(HTTPException) as exc_info:
+        await _sme._assert_user_can_view_token_rows(
+            prisma_client=MagicMock(),
+            user_api_key_dict=_viewer_auth(user_id="user_1"),
+            token_rows=[_token_row(user_id=None, team_id=None)],
+        )
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_assert_user_can_view_token_rows_team_member_passes(monkeypatch):
+    async def fake_team_view(prisma_client, user_api_key_dict, team_id):
+        return True
+
+    monkeypatch.setattr(_sme, "_can_team_member_view_log", fake_team_view)
+    await _sme._assert_user_can_view_token_rows(
+        prisma_client=MagicMock(),
+        user_api_key_dict=_viewer_auth(user_id="user_1"),
+        token_rows=[_token_row(user_id="user_2", team_id="team_9")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_assert_user_can_view_token_rows_non_member_team_denied(monkeypatch):
+    async def fake_team_view(prisma_client, user_api_key_dict, team_id):
+        return False
+
+    monkeypatch.setattr(_sme, "_can_team_member_view_log", fake_team_view)
+    with pytest.raises(HTTPException) as exc_info:
+        await _sme._assert_user_can_view_token_rows(
+            prisma_client=MagicMock(),
+            user_api_key_dict=_viewer_auth(user_id="user_1"),
+            token_rows=[_token_row(user_id="user_2", team_id="team_9")],
+        )
+    assert exc_info.value.status_code == 403
+
+
+def _make_token_row_db(token_rows):
+    db = MagicMock()
+    db.litellm_verificationtoken.find_many = AsyncMock(return_value=token_rows)
+    prisma = MagicMock()
+    prisma.db = db
+    return prisma
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_hits_denies_other_users_key(monkeypatch):
+    """A non-admin naming another user's masked key must 403 before any
+    SpendLogs query runs."""
+    from litellm.proxy.spend_tracking.spend_management_endpoints import (
+        concurrent_request_rate_limit_hits,
+    )
+
+    prisma = _make_token_row_db([_token_row(user_id="user_2")])
+    monkeypatch.setattr(_sme, "_get_read_prisma_client", lambda: prisma)
+    spend_queries = []
+
+    async def fail_query(*args, **kwargs):
+        spend_queries.append(args)
+        return []
+
+    db = prisma.db
+    db.query_raw = fail_query
+
+    with pytest.raises(ProxyException) as exc_info:
+        await concurrent_request_rate_limit_hits(
+            start_date="2026-05-20 06:00:00",
+            end_date="2026-05-20 07:00:00",
+            api_key="sk-...gQxg",
+            key_alias=None,
+            user_api_key_dict=_viewer_auth(user_id="user_1"),
+        )
+    assert int(exc_info.value.code) == 403
+    assert spend_queries == []
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_hits_allows_own_key(monkeypatch):
+    from litellm.proxy.spend_tracking.spend_management_endpoints import (
+        concurrent_request_rate_limit_hits,
+    )
+
+    prisma = _make_token_row_db([_token_row(user_id="user_1")])
+    monkeypatch.setattr(_sme, "_get_read_prisma_client", lambda: prisma)
+    prisma.db.query_raw = AsyncMock(return_value=[])
+
+    result = await concurrent_request_rate_limit_hits(
+        start_date="2026-05-20 06:00:00",
+        end_date="2026-05-20 07:00:00",
+        api_key="sk-...gQxg",
+        key_alias=None,
+        user_api_key_dict=_viewer_auth(user_id="user_1"),
+    )
+    assert result["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_operation_counts_denies_other_users_alias(monkeypatch):
+    from litellm.proxy.spend_tracking.spend_management_endpoints import (
+        concurrent_request_operation_counts,
+    )
+
+    prisma = _make_token_row_db([_token_row(user_id="user_2", team_id=None)])
+    monkeypatch.setattr(_sme, "_get_read_prisma_client", lambda: prisma)
+
+    gcp_calls = []
+
+    async def fail_gcp(**kwargs):
+        gcp_calls.append(kwargs)
+        return {}, True
+
+    import litellm.integrations.gcp_logging_helpers.gcp_logs_query as _gcp
+    monkeypatch.setattr(_gcp, "count_parallel_request_operations", fail_gcp)
+
+    with pytest.raises(ProxyException) as exc_info:
+        await concurrent_request_operation_counts(
+            start_date="2026-05-20 06:00:00",
+            end_date="2026-05-20 07:00:00",
+            api_key=None,
+            key_alias="someone-elses-alias",
+            user_api_key_dict=_viewer_auth(user_id="user_1"),
+        )
+    assert int(exc_info.value.code) == 403
+    assert gcp_calls == []
+
+
+@pytest.mark.asyncio
+async def test_timeline_denies_other_users_key(monkeypatch):
+    from litellm.proxy.spend_tracking.spend_management_endpoints import (
+        concurrent_request_timeline,
+    )
+
+    prisma = _make_token_row_db([_token_row(user_id="user_2")])
+    monkeypatch.setattr(_sme, "_get_read_prisma_client", lambda: prisma)
+    import litellm.integrations.gcp_logging_helpers.gcp_logs_query as _gcp
+    monkeypatch.setattr(
+        _gcp,
+        "get_parallel_request_metric_series",
+        AsyncMock(side_effect=AssertionError("GCP query must not run for unauthorized callers")),
+    )
+
+    with pytest.raises(ProxyException) as exc_info:
+        await concurrent_request_timeline(
+            start_date="2026-05-20 06:00:00",
+            end_date="2026-05-20 06:20:00",
+            api_key="sk-...gQxg",
+            key_alias=None,
+            user_api_key_dict=_viewer_auth(user_id="user_1"),
+        )
+    assert int(exc_info.value.code) == 403
+
+
+def test_ui_view_spend_logs_debug_log_contains_no_row_data(client, monkeypatch, caplog):
+    """The spend-logs debug line must carry pagination counts only; full
+    spend-log rows (request bodies, key hashes, messages) must never be
+    serialized into debug logs."""
+    import logging
+
+    mock_spend_logs = [
+        {
+            "request_id": "req-secret-1",
+            "api_key": "sk-test-key",
+            "messages": [{"role": "user", "content": "secret prompt text"}],
+            "user": "user1",
+            "spend": 0.05,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "endTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(mock_spend_logs, lambda where: mock_spend_logs),
+    )
+
+    start_date, end_date = _default_date_range()
+    with caplog.at_level(logging.DEBUG, logger="LiteLLM Proxy"):
+        response = client.get(
+            "/spend/logs/ui",
+            params={"start_date": start_date, "end_date": end_date},
+            headers={"Authorization": "Bearer sk-test"},
+        )
+    assert response.status_code == 200
+
+    spend_debug = [r for r in caplog.records if r.message.startswith("spend logs ui")]
+    assert spend_debug, "expected the pagination debug line to be emitted"
+    for record in spend_debug:
+        assert "req-secret-1" not in record.getMessage()
+        assert "secret prompt text" not in record.getMessage()
+        assert "sk-test-key" not in record.getMessage()
+        assert "rows_returned=1" in record.getMessage()

@@ -42,7 +42,6 @@ if TYPE_CHECKING:
 from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     _ALGO_AES_GCM,
     _ENCRYPTION_ALGORITHM_SETTING,
-    _V2_GCM_PREFIX,
     _V3_HKDF_PREFIX,
     _V4_CTX_PREFIX,
     _get_salt_key,
@@ -110,20 +109,23 @@ class MigrationReport:
 
 
 def is_migrated(value: object) -> bool:
-    """True if ``value`` is already an AES-256-GCM ciphertext (any v2/v3/v4 marker)."""
-    return isinstance(value, str) and (
-        value.startswith(_V2_GCM_PREFIX) or value.startswith(_V3_HKDF_PREFIX) or value.startswith(_V4_CTX_PREFIX)
-    )
+    """True if ``value`` is already an AES-256-GCM ciphertext under the audited KDF (v3/v4).
+
+    A ``v2:gcm:`` value is AES-256-GCM but under the legacy unsalted-SHA-256
+    KDF, so it still needs re-encryption under HKDF and counts as unmigrated.
+    """
+    return isinstance(value, str) and (value.startswith(_V3_HKDF_PREFIX) or value.startswith(_V4_CTX_PREFIX))
 
 
 def classify_value(value: object, key: str = "scan") -> ValueClass:
     """Classify a stored value for the residual scanner.
 
     * ``not-a-string`` — not a string (numbers/bools/None left as-is on disk).
-    * ``migrated`` — carries the ``v2:gcm:`` prefix.
-    * ``legacy`` — decrypts under the legacy nacl reader (still needs migrating).
-    * ``plaintext`` — a non-empty string that does not decrypt and is not v2;
-      treated as legacy plaintext (nothing to migrate).
+    * ``migrated`` — carries the ``v3:hkdf:``/``v4:ctx:`` prefix (audited KDF).
+    * ``legacy`` — decrypts under the format-detecting reader but still carries
+      the legacy KDF/format (nacl, or ``v2:gcm:`` under unsalted SHA-256).
+    * ``plaintext`` — a non-empty string that does not decrypt and carries no
+      ciphertext marker; treated as legacy plaintext (nothing to migrate).
     * ``undecryptable`` — reserved for callers that already know a value is
       ciphertext but cannot decrypt it; ``classify_value`` itself cannot tell a
       corrupt ciphertext from plaintext, so it returns ``plaintext`` for both.
@@ -136,7 +138,7 @@ def classify_value(value: object, key: str = "scan") -> ValueClass:
         return "migrated"
     decrypted = decrypt_value_helper(value=value, key=key, exception_type="debug", return_original_value=False)
     if decrypted is None:
-        # Did not decrypt under nacl and has no v2 marker: legacy plaintext.
+        # Did not decrypt under any format and has no AES marker: legacy plaintext.
         return "plaintext"
     return "legacy"
 
@@ -144,11 +146,13 @@ def classify_value(value: object, key: str = "scan") -> ValueClass:
 def reencrypt_value(value: object, key: str = "migrate", context: str | None = None) -> object:
     """Re-encrypt a single stored string into the configured (AES) format.
 
-    Returns the value unchanged if it is not a string, is already ``v2:``, or
-    cannot be decrypted (skip-on-undecryptable). Otherwise decrypts under the
-    format-detecting reader and re-encrypts through ``encrypt_value_helper``
-    (which writes AES when the gate is on). ``context`` binds the re-encrypted
-    value to its ``table:field`` so it cannot be transplanted between columns.
+    Returns the value unchanged if it is not a string, is already under the
+    audited KDF (``v3:hkdf:``/``v4:ctx:``), or cannot be decrypted
+    (skip-on-undecryptable). Otherwise decrypts under the format-detecting
+    reader and re-encrypts through ``encrypt_value_helper`` (which writes AES
+    when the gate is on), so ``v2:gcm:`` rows under the legacy unsalted-SHA-256
+    KDF upgrade to HKDF on migration. ``context`` binds the re-encrypted value
+    to its ``table:field`` so it cannot be transplanted between columns.
     """
     if not isinstance(value, str) or value == "":
         return value

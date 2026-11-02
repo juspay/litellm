@@ -1,5 +1,4 @@
 import re
-from collections.abc import Iterable
 from typing import List, Optional
 
 from fastapi import HTTPException, Request, status
@@ -761,49 +760,255 @@ class RouteChecks:
             return True
         return False
 
-    # HTTP methods that are intrinsically read-only and therefore safe to
-    # default-allow for PROXY_ADMIN_VIEW_ONLY. Anything else (POST/PUT/PATCH/
-    # DELETE) is treated as a write attempt and goes through the explicit
-    # write-allowlist below.
+    # HTTP methods that are intrinsically read-only and therefore safe for
+    # PROXY_ADMIN_VIEW_ONLY. Anything else (POST/PUT/PATCH/DELETE) is treated
+    # as a write attempt and goes through the explicit write-allowlist below.
     _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-    # Cache for the GET-only route set derived from the app's route table.
-    # Keyed alongside the route count so lazily-mounted routers (which add
-    # routes on first matching request) invalidate the snapshot.
-    _GET_ONLY_ROUTE_PATHS: frozenset[str] | None = None
-    _GET_ONLY_ROUTE_COUNT: int = -1
+    # Explicit allowlist of GET-only routes PROXY_ADMIN_VIEW_ONLY may call.
+    # Read access is NOT derived from the live route table: a route is
+    # viewer-readable only if it is listed here (or in admin_viewer_routes /
+    # global_spend_tracking_routes), so a newly registered GET endpoint is
+    # denied to the read-only admin role until it is deliberately added.
+    # Entries may be exact paths, {param} templates, or trailing-* wildcards.
+    _ADMIN_VIEWER_ALLOWED_GET_ROUTES = frozenset(
+        [
+            # health / status / diagnostics
+            "/health/latest",
+            "/health/history",
+            "/health/backlog",
+            "/health/drain",
+            "/health/readiness",
+            "/health/readiness/details",
+            "/health/license",
+            "/health/liveness",
+            "/health/liveliness",
+            "/health/shared-status",
+            "/model/metrics",
+            "/model/metrics/exceptions",
+            "/model/metrics/slow_responses",
+            "/model/streaming_metrics",
+            "/model/settings",
+            "/models/{model_id}",
+            "/v1/models/{model_id}",
+            "/debug/asyncio-tasks",
+            "/cache/ping",
+            "/cache/settings",
+            "/cache/redis/info",
+            "/test",
+            "/routes",
+            "/",
+            # unauthenticated informational surfaces that still resolve here
+            "/docs/oauth2-redirect",
+            "/openapi.json",
+            "/redoc",
+            "/robots.txt",
+            "/get_favicon",
+            "/get_image",
+            "/get_logo_url",
+            "/claude-code/marketplace.json",
+            "/claude-code/plugins/{plugin_name}",
+            "/litellm/.well-known/litellm-ui-config",
+            "/.well-known/litellm-ui-config",
+            "/.well-known/jwks.json",
+            "/.well-known/openid-configuration",
+            "/public/*",
+            # analytics / activity reads (peers of admin_viewer_routes entries)
+            "/user/dau",
+            "/user/wau",
+            "/user/mau",
+            "/user/daily/activity/aggregated",
+            "/user/analytics/leaderboard",
+            "/agent/daily/activity",
+            "/organization/daily/activity",
+            "/customer/daily/activity",
+            "/end_user/daily/activity",
+            "/end_user/info",
+            "/end_user/list",
+            "/tag/dau",
+            "/tag/distinct",
+            "/tag/mau",
+            "/tag/wau",
+            "/tag/summary",
+            "/tag/user-agent/per-user-analytics",
+            "/spend/logs/error_stats",
+            "/spend/logs/failure_logs_analytics_paginated",
+            "/global/all_end_users",
+            "/global/activity/exceptions",
+            "/global/activity/exceptions/deployment",
+            # listing / info reads
+            "/project/info",
+            "/project/list",
+            "/organization/info",
+            "/access_group/list",
+            "/access_group/{access_group}/info",
+            "/v1/access_group",
+            "/v1/access_group/{access_group_id}",
+            "/v1/unified_access_group",
+            "/v1/unified_access_group/{access_group_id}",
+            "/jwt/key/mapping/info",
+            "/jwt/key/mapping/list",
+            "/service-account/list",
+            "/bench/run/list",
+            "/prompts/list",
+            "/prompts/{prompt_id}",
+            "/prompts/{prompt_id}/info",
+            "/prompts/{prompt_id}/versions",
+            "/fine_tuning/jobs/{fine_tuning_job_id:path}",
+            "/v1/fine_tuning/jobs/{fine_tuning_job_id:path}",
+            # settings reads (no secrets: sanitized config views)
+            "/settings",
+            "/router/settings",
+            "/router/fields",
+            "/adaptive_router/state",
+            "/cloudzero/settings",
+            "/vantage/settings",
+            "/email/event_settings",
+            "/config/cost_discount_config",
+            "/config/cost_margin_config",
+            "/get/allowed_ips",
+            "/get/default_team_settings",
+            "/get/internal_user_settings",
+            "/get/sso_settings",
+            "/get/ui_settings",
+            "/get/ui_theme_settings",
+            "/team/filter/ui",
+            "/team/permissions_list",
+            "/team/{team_id}/members/me",
+            "/utils/supported_openai_params",
+            "/schedule/anthropic_beta_headers_reload/status",
+            "/active/callbacks",
+            "/callback",
+            # guardrails / policy read views
+            "/guardrails/ui/add_guardrail_settings",
+            "/guardrails/ui/category_yaml/{category_name}",
+            "/guardrails/ui/major_airlines",
+            "/guardrails/ui/provider_specific_params",
+            "/guardrails/usage/detail/{guardrail_id}",
+            "/guardrails/usage/logs",
+            "/guardrails/{guardrail_id}",
+            "/guardrails/{guardrail_id}/info",
+            "/policies/attachments/{attachment_id}",
+            "/policies/compare",
+            "/policies/list",
+            "/policies/name/{policy_name}/versions",
+            "/policies/usage/overview",
+            "/policies/{policy_id}",
+            "/policies/{policy_id}/resolved-guardrails",
+            "/policy/info/{policy_name}",
+            "/policy/list",
+            "/policy/templates",
+            # MCP management reads (credential values are masked / status-only)
+            "/v1/mcp/access_groups",
+            "/v1/mcp/discover",
+            "/v1/mcp/network/client-ip",
+            "/v1/mcp/openapi-registry",
+            "/v1/mcp/registry.json",
+            "/v1/mcp/server",
+            "/v1/mcp/server/health",
+            "/v1/mcp/server/submissions",
+            "/v1/mcp/server/{server_id}",
+            "/v1/mcp/server/{server_id}/oauth-user-credential/status",
+            "/v1/mcp/toolset",
+            "/v1/mcp/toolset/{toolset_id}",
+            "/v1/mcp/user-credentials",
+            "/v1/mcp/user-env-vars/status",
+            # credentials views (values are masked server-side before return)
+            "/credentials",
+            "/credentials/by_model/{model_id}",
+            "/credentials/by_name/{credential_name:path}",
+            "/credentials/migrate-encryption/check",
+            "/provider/budgets",
+            "/sso/readiness",
+        ]
+    )
 
-    @classmethod
-    def _route_is_read_only(cls, route: str) -> bool:
-        """True if the app registers ``route`` with safe methods only.
-
-        Derived from the live route table so it cannot drift: any path with a
-        POST/PUT/PATCH/DELETE handler is a write surface, and a GET request to
-        it must not be auto-granted to PROXY_ADMIN_VIEW_ONLY. The snapshot is
-        rebuilt whenever the app's route count changes (lazy feature mounting
-        adds routers at request time). If the proxy app cannot be imported
-        (SDK-only use of these helpers), the set is empty and every
-        safe-method request falls through to the explicit read allowlists —
-        fail closed.
-        """
-        try:
-            from litellm.proxy.proxy_server import app  # noqa: PLC0415
-        except ImportError:
-            return False
-        if cls._GET_ONLY_ROUTE_PATHS is None or cls._GET_ONLY_ROUTE_COUNT != len(app.router.routes):
-            write_verbs = {"POST", "PUT", "PATCH", "DELETE"}
-            paths: set[str] = set()
-            for r in app.router.routes:
-                path: str | None = getattr(r, "path", None)
-                methods: Iterable[str] | None = getattr(r, "methods", None)
-                if path is None or not methods:
-                    continue
-                if write_verbs & {m.upper() for m in methods}:
-                    continue
-                paths.add(path)
-            cls._GET_ONLY_ROUTE_PATHS = frozenset(paths)
-            cls._GET_ONLY_ROUTE_COUNT = len(app.router.routes)
-        return route in cls._GET_ONLY_ROUTE_PATHS
+    # GET-only routes explicitly denied to PROXY_ADMIN_VIEW_ONLY. The runtime
+    # check denies by default, so this set is not consulted at request time;
+    # the classification test in
+    # tests/test_litellm/proxy/auth/test_route_checks.py requires every
+    # GET-only route to appear in exactly one of the two sets, which is what
+    # forces a new GET endpoint to be classified deliberately instead of
+    # being silently auto-granted to the read-only admin role.
+    _ADMIN_VIEWER_DENIED_GET_ROUTES = frozenset(
+        [
+            # secret / credential material
+            "/config/yaml",
+            "/config/pass_through_endpoint",
+            "/config/pass_through_endpoint/team/{team_id}",
+            "/config_overrides/hashicorp_vault",
+            "/api/plugins",
+            "/api/plugins/auth-token",
+            "/onboarding/get_token",
+            "/sso/key/generate",
+            "/sso/cli/poll/{key_id}",
+            # tenant directory data (SCIM)
+            "/scim/v2",
+            "/scim/v2/",
+            "/scim/v2/Groups",
+            "/scim/v2/Groups/{group_id}",
+            "/scim/v2/ResourceTypes",
+            "/scim/v2/ResourceTypes/{resource_type_id}",
+            "/scim/v2/Schemas",
+            "/scim/v2/Schemas/{schema_id:path}",
+            "/scim/v2/ServiceProviderConfig",
+            "/scim/v2/Users",
+            "/scim/v2/Users/{user_id}",
+            # request payloads / runtime introspection
+            "/debug/memory/details",
+            "/debug/memory/summary",
+            "/memory-usage-in-mem-cache",
+            "/memory-usage-in-mem-cache-items",
+            "/otel-spans",
+            "/v1/memory",
+            "/v1/memory/{key:path}",
+            "/spend/logs/ui/report/{log_id}",
+            "/fallback/{model}",
+            "/team/{team_id:path}/callback",
+            "/{provider}/v1/batches",
+            "/{provider}/v1/batches/{batch_id:path}",
+            "/{provider}/v1/files",
+            "/{provider}/v1/files/{file_id:path}",
+            "/{provider}/v1/files/{file_id:path}/content",
+            # auth flows (not viewer surfaces)
+            "/authorize",
+            "/sso/callback",
+            "/sso/debug/callback",
+            "/sso/debug/login",
+            "/fallback/login",
+            "/v1/mcp/oauth/authorize",
+            "/v1/mcp/server/oauth/{server_id}/authorize",
+            "/{mcp_server_name}/authorize",
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-authorization-server/mcp/{mcp_server_name}",
+            "/.well-known/oauth-authorization-server/{mcp_server_name}",
+            "/.well-known/oauth-authorization-server/{mcp_server_name}/mcp",
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp/{mcp_server_name}",
+            "/.well-known/oauth-protected-resource/{mcp_server_name}/mcp",
+            "/a2a/{agent_id}/.well-known/agent.json",
+            # inference-adjacent surfaces (cost-incurring or per-request scoped)
+            "/v1/evals",
+            "/v1/evals/{eval_id}",
+            "/v1/evals/{eval_id}/runs",
+            "/v1/evals/{eval_id}/runs/{run_id}",
+            "/v1/videos/characters/{character_id}",
+            "/videos/characters/{character_id}",
+            "/v1/workflows/runs",
+            "/v1/workflows/runs/{run_id}",
+            "/v1/workflows/runs/{run_id}/events",
+            "/v1/workflows/runs/{run_id}/messages",
+            "/search_tools/list",
+            "/search_tools/ui/available_providers",
+            "/search_tools/{search_tool_id}",
+            "/v1/tool/list",
+            "/v1/tool/policy/options",
+            "/v1/tool/{tool_name:path}",
+            "/v1/tool/{tool_name:path}/detail",
+            "/v1/tool/{tool_name:path}/logs",
+            "/v1/mcp/server/{server_id}/user-env-vars",
+        ]
+    )
 
     # Write routes the Admin Viewer may reach because the endpoint itself
     # performs the authorization (see `self_managed_routes`). `/user/delete`
@@ -830,13 +1035,13 @@ class RouteChecks:
 
         Implementation:
           1. LLM/inference routes → 403 (cost-incurring).
-          2. Safe HTTP method (GET/HEAD/OPTIONS) → allowed only for routes
-             the app registers as GET-only (no mutating verb on the same
-             path), or for routes in admin_viewer_routes /
-             global_spend_tracking_routes. This keeps read-parity for every
-             genuinely new read endpoint (GET-only registration needs no
-             allowlist entry) while failing closed for a write endpoint that
-             gains a GET alias.
+          2. Safe HTTP method (GET/HEAD/OPTIONS) → allowed only when the
+             route is explicitly classified viewer-readable:
+             `_ADMIN_VIEWER_ALLOWED_GET_ROUTES`, admin_viewer_routes, or
+             global_spend_tracking_routes. New GET endpoints are denied
+             until deliberately added to the allowlist (the classification
+             test enforces that every GET-only route lands in one of the
+             two classification sets).
           3. Unsafe HTTP method (POST/PUT/PATCH/DELETE):
              - Allow `/user/update` only when restricted to user_email/password.
              - Block all explicit writes in `_ADMIN_VIEWER_BLOCKED_WRITE_ROUTES`.
@@ -884,19 +1089,25 @@ class RouteChecks:
         method = request.method.upper() if request is not None else "GET"
         is_safe_method = method in RouteChecks._SAFE_HTTP_METHODS
 
-        # ── Safe HTTP method: read-only routes only ────────────────────────
-        # A GET/HEAD/OPTIONS request is allowed only for routes the app
-        # registers as GET-only (no POST/PUT/PATCH/DELETE handler exists for
-        # the same path), or for routes in the explicit read allowlist. A
-        # write endpoint that gains a GET alias — or any new route registered
-        # with mixed methods — therefore fails closed instead of being
-        # auto-granted to the read-only admin role.
+        # ── Safe HTTP method: explicit read allowlists only ────────────────
+        # Read access for PROXY_ADMIN_VIEW_ONLY fails closed: a GET/HEAD/
+        # OPTIONS request is allowed only when the route matches
+        # `_ADMIN_VIEWER_ALLOWED_GET_ROUTES`, admin_viewer_routes, or
+        # global_spend_tracking_routes. Nothing is granted by deriving
+        # read-parity from the live route table, so a newly registered GET
+        # endpoint is denied to this role until it is deliberately
+        # classified into the allowlist.
         if is_safe_method:
             from .auth_utils import get_request_route_template  # noqa: PLC0415
 
             route_template = get_request_route_template(request) if request is not None else None
-            if RouteChecks._route_is_read_only(route) or (
-                route_template is not None and RouteChecks._route_is_read_only(route_template)
+            if RouteChecks.check_route_access(
+                route=route, allowed_routes=list(RouteChecks._ADMIN_VIEWER_ALLOWED_GET_ROUTES)
+            ) or (
+                route_template is not None
+                and RouteChecks.check_route_access(
+                    route=route_template, allowed_routes=list(RouteChecks._ADMIN_VIEWER_ALLOWED_GET_ROUTES)
+                )
             ):
                 return
             if RouteChecks.check_route_access(route=route, allowed_routes=LiteLLMRoutes.admin_viewer_routes.value):

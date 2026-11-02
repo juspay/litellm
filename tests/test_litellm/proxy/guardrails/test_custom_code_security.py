@@ -1,3 +1,4 @@
+import json
 import socket
 
 import pytest
@@ -536,3 +537,52 @@ def test_json_parse_accepts_input_at_the_cap():
     from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
 
     assert primitives.json_parse('{"a": 1}') == {"a": 1}
+
+
+# --------------------------- json_schema_valid bounds ---------------------------
+
+
+def test_json_schema_valid_refuses_oversized_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big = {"properties": {"k": "a" * primitives._MAX_JSON_SCHEMA_CHARS}}
+    assert len(json.dumps(big)) > primitives._MAX_JSON_SCHEMA_CHARS
+    assert primitives.json_schema_valid({"k": "v"}, big) is False
+
+
+def test_json_schema_valid_refuses_deeply_nested_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    schema: dict = {}
+    node = schema
+    for _ in range(primitives._MAX_JSON_SCHEMA_DEPTH + 5):
+        node["properties"] = {}
+        node = node["properties"]
+    assert primitives.json_schema_valid({}, schema) is False
+
+
+def test_json_schema_valid_refuses_non_object_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    assert primitives.json_schema_valid({}, "not-a-dict") is False
+    assert primitives.json_schema_valid({}, 12345) is False
+
+
+def test_json_schema_valid_accepts_normal_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+    assert primitives.json_schema_valid({"name": "x"}, schema) is True
+    assert primitives.json_schema_valid({"name": 3}, schema) is False
+
+
+def test_json_schema_valid_accepts_schema_at_depth_cap():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    schema: dict = {}
+    node = schema
+    for _ in range(primitives._MAX_JSON_SCHEMA_DEPTH - 10):
+        node["properties"] = {}
+        node = node["properties"]
+    node["type"] = "object"
+    assert primitives.json_schema_valid({}, schema) is True

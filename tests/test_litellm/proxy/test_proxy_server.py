@@ -9141,3 +9141,30 @@ class TestRewriteUiFilesForRootPath:
 
         assert (ui_dir / "logo.png").read_bytes() == b"\x89PNG\r\n\x1a\n"
         assert (ui_dir / "blob.txt").read_bytes() == b"\xff\xfe not utf8"
+
+
+class TestTokenPepperStartupCheck:
+    def test_missing_pepper_fails_startup(self, monkeypatch) -> None:
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+        monkeypatch.delenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", raising=False)
+        with pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+            ProxyStartupEvent._check_token_pepper_configured()
+
+    def test_pepper_configured_passes(self, monkeypatch) -> None:
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.setenv("LITELLM_SALT_KEY", "test-pepper")
+        ProxyStartupEvent._check_token_pepper_configured()
+
+    def test_legacy_opt_in_warns_but_passes(self, monkeypatch, caplog) -> None:
+        import logging
+
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+        monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            ProxyStartupEvent._check_token_pepper_configured()
+        assert any("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS" in r.getMessage() for r in caplog.records)

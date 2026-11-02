@@ -14,6 +14,8 @@ Covers three bugs:
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
 from litellm.proxy._types import (
     ConfigGeneralSettings,
     LitellmUserRoles,
@@ -378,3 +380,73 @@ async def test_plugin_claim_tampered_issuer_mac_rejected(monkeypatch) -> None:
         await verify_plugin_session_claim("chat-ui", tampered)
     with _pytest.raises(ValueError, match="not proxy-issued"):
         await verify_plugin_session_claim("chat-ui", ciphertext)
+
+
+def test_register_plugins_rebind_is_atomic(monkeypatch) -> None:
+    """The registry is replaced by a single rebind, never cleared in place:
+    a concurrent reader either sees the old registry or the new one, never
+    an empty half-applied one."""
+    from litellm.proxy import plugin_routes
+    from litellm.proxy._types import PluginConfig
+
+    old_registry = {p.name: p for p in (PluginConfig.model_validate(e) for e in [{"name": "old", "url": "http://old"}])}
+    monkeypatch.setattr(plugin_routes, "_plugin_registry", old_registry)
+    original_obj = plugin_routes._plugin_registry
+
+    plugin_routes.register_plugins_from_config(
+        {"plugins": [{"name": "new", "url": "http://new"}]}
+    )
+
+    assert plugin_routes._plugin_registry is not original_obj
+    assert original_obj  # the old registry object is left fully intact
+    assert set(plugin_routes._plugin_registry) == {"new"}
+    assert set(original_obj) == {"old"}
+
+
+@pytest.mark.asyncio
+async def test_plugin_proxy_502_does_not_echo_connection_error(monkeypatch) -> None:
+    """A connection failure must surface a generic 502, never the raw
+    exception text (which can carry the resolved upstream host/IP)."""
+    from unittest.mock import MagicMock
+
+    from litellm.proxy.plugin_routes import plugin_proxy
+
+    class FailingClient:
+        client = MagicMock()
+
+        def __init__(self):
+            self.client.build_request = MagicMock(side_effect=OSError("dns failure to 10.0.0.5:3300"))
+
+    monkeypatch.setattr(
+        "litellm.proxy.plugin_routes.get_async_httpx_client",
+        lambda llm_provider: FailingClient(),
+    )
+    from litellm.proxy import plugin_routes as pr
+    from litellm.proxy._types import PluginConfig
+
+    monkeypatch.setattr(
+        pr,
+        "_plugin_registry",
+        {"p": PluginConfig(name="p", url="http://plugin:3300")},
+    )
+
+    request = MagicMock()
+    request.url.query = ""
+    request.headers = {}
+    request.method = "GET"
+
+    async def body():
+        return b""
+
+    request.body = body
+
+    resp = await plugin_proxy(
+        plugin_name="p",
+        path="x",
+        request=request,
+        user_api_key_dict=MagicMock(user_id="u", user_role="proxy_admin"),
+    )
+    assert resp.status_code == 502
+    assert b"10.0.0.5" not in resp.body
+    assert b"dns failure" not in resp.body
+    assert b"Cannot connect to plugin" in resp.body

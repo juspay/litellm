@@ -301,8 +301,10 @@ class TestRedirectHostnamePreservation:
 
 class TestValidationMasterSwitch:
     def test_disabled_bypasses_fetch_in_safe_get(self, monkeypatch):
-        """When user_url_validation is False, safe_get delegates to client.get without validation."""
+        """When user_url_validation is False, safe_get delegates to client.get
+        without validation, does NOT follow redirects, and logs the bypass."""
         monkeypatch.setattr(litellm, "user_url_validation", False)
+        url_utils._warn_validation_bypass_once.cache_clear()
 
         calls = []
 
@@ -317,7 +319,65 @@ class TestValidationMasterSwitch:
 
         url_utils.safe_get(FakeClient(), "http://127.0.0.1/internal")
         assert calls and calls[0][0] == "http://127.0.0.1/internal"
-        assert calls[0][1].get("follow_redirects") is True
+        assert calls[0][1].get("follow_redirects") is False
+
+    def test_disabled_bypass_warns_once(self, monkeypatch, caplog):
+        """The bypass fires a loud warning the first time it is used."""
+        import logging
+
+        import litellm as _litellm
+
+        monkeypatch.setattr(_litellm, "user_url_validation", False)
+        url_utils._warn_validation_bypass_once.cache_clear()
+
+        class FakeClient:
+            def get(self, url, **kwargs):
+                class R:
+                    is_redirect = False
+
+                return R()
+
+        class FakeAsyncClient:
+            async def get(self, url, **kwargs):
+                class R:
+                    is_redirect = False
+
+                return R()
+
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            url_utils.safe_get(FakeClient(), "http://127.0.0.1/internal")
+            assert url_utils._warn_validation_bypass_once.cache_info().currsize == 1
+
+        warnings = [r for r in caplog.records if "user_url_validation is False" in r.message]
+        assert len(warnings) == 1
+
+        # Second fetch: no additional warning.
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            import asyncio
+
+            asyncio.run(url_utils.async_safe_get(FakeAsyncClient(), "http://127.0.0.1/internal"))
+        warnings = [r for r in caplog.records if "user_url_validation is False" in r.message]
+        assert len(warnings) == 1
+
+    def test_disabled_bypass_post_refuses_redirects(self, monkeypatch):
+        monkeypatch.setattr(litellm, "user_url_validation", False)
+        url_utils._warn_validation_bypass_once()  # pre-arm the once-per-process warning
+
+        calls = []
+
+        class FakeAsyncClient:
+            async def post(self, url, **kwargs):
+                calls.append((url, kwargs))
+
+                class R:
+                    pass
+
+                return R()
+
+        import asyncio
+
+        asyncio.run(url_utils.async_safe_post(FakeAsyncClient(), "http://127.0.0.1/internal"))
+        assert calls and calls[0][1].get("follow_redirects") is False
 
     def test_enabled_still_blocks(self, monkeypatch):
         monkeypatch.setattr(litellm, "user_url_validation", True)
