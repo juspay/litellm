@@ -7,43 +7,23 @@ Supports Docker, Podman, and Kubernetes backends.
 
 import base64
 import os
-import re
 from typing import Any, Dict, List, Optional
+
+from packaging.requirements import InvalidRequirement, Requirement
 
 from litellm._logging import verbose_logger
 
-# pip options that change WHERE packages come from. A requirements file is
-# model/skill-controlled input; without this check a malicious skill can pull
-# and execute arbitrary code during install (VCS checkout, -e directories,
-# alternate indexes, or local find-links).
-_UNSAFE_REQUIREMENTS_RE = re.compile(
-    r"""^\s*(?:
-        -e\b|--editable\b
-        |-i\b|--index-url\b
-        |--extra-index-url\b
-        |--find-links\b|-f\b
-        |--no-index\b
-        |--proxy\b
-        |--trusted-host\b
-        |--require-virtualenv\b
-    )""",
-    re.VERBOSE,
-)
-# Non-PEP-508 direct references: VCS URLs (git+..., svn+..., hg+..., bzr+...),
-# any URL spec, and bare local paths. Everything pip can install without
-# hitting an index we already trust is safer to forbid outright.
-_DIRECT_REQUIREMENT_RE = re.compile(
-    r"""^(?:
-        (?:git|svn|hg|bzr)\+https?://
-        |https?://
-        |(?:[./~]| [A-Za-z]:[\\/])
-    )""",
-    re.VERBOSE,
-)
-
 
 def _validate_requirements(requirements: str) -> None:
-    """Reject requirements lines that redirect or escape package sources.
+    """Reject requirements that do anything besides name a package from the
+    trusted index.
+
+    Every line must parse as a PEP 508 ``Requirement`` with no direct URL:
+    pip options (-e, --index-url, --extra-index-url, --find-links, --hash,
+    per-requirement options after the package name, section headers like
+    [options]), VCS URLs, and local paths all fail to parse or carry ``url``,
+    so a model-generated requirements file can only pull named packages from
+    the configured index.
 
     Raises ValueError naming the offending line so the caller can surface a
     generic message instead of executing the install.
@@ -52,8 +32,12 @@ def _validate_requirements(requirements: str) -> None:
         stripped = line.split("#", 1)[0].strip()
         if not stripped:
             continue
-        if _UNSAFE_REQUIREMENTS_RE.match(stripped) or _DIRECT_REQUIREMENT_RE.match(stripped):
+        try:
+            req = Requirement(stripped)
+        except InvalidRequirement:
             raise ValueError(f"Disallowed requirements line: {stripped.split()[0]}")
+        if req.url is not None:
+            raise ValueError(f"Disallowed requirements line: {req.name}")
 
 
 class SkillsSandboxExecutor:

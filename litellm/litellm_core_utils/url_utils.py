@@ -435,6 +435,36 @@ def safe_get(client: Any, url: str, **kwargs: Any) -> Any:
     raise SSRFError("Too many redirects")
 
 
+async def async_safe_post(client: Any, url: str, **kwargs: Any) -> Any:
+    """POST a caller-influenced URL with the same SSRF validation as safe_get.
+
+    Resolves the hostname once, checks it against the blocked networks, and
+    connects to the validated IP with the original hostname in the Host
+    header. Redirects are not followed: a token or registration endpoint that
+    answers with a redirect is surfaced to the caller instead of being
+    auto-followed, so every hop the proxy talks to has been validated.
+
+    Args:
+        client: An httpx.AsyncClient.
+        url: The URL to POST to.
+        **kwargs: Additional kwargs passed to client.post().
+
+    Returns:
+        The httpx.Response.
+    """
+    if not getattr(litellm, "user_url_validation", True):
+        return await client.post(url, **kwargs)
+    kwargs.pop("follow_redirects", None)
+    caller_headers = kwargs.pop("headers", {})
+    validated_url, original_host = validate_url(url)
+    return await client.post(
+        validated_url,
+        headers={**caller_headers, "Host": original_host},
+        follow_redirects=False,
+        **kwargs,
+    )
+
+
 async def async_safe_get(client: Any, url: str, **kwargs: Any) -> Any:
     """Async version of safe_get."""
     if not getattr(litellm, "user_url_validation", True):

@@ -21,7 +21,7 @@
     "limit": 326
   },
   "reportDuplicateImport": {
-    "limit": 40
+    "limit": 39
   },
   "reportExplicitAny": {
     "limit": 10397
@@ -87,7 +87,7 @@
     "limit": 2438
   },
   "reportRedeclaration": {
-    "limit": 10
+    "limit": 9
   },
   "reportReturnType": {
     "limit": 226
@@ -105,7 +105,7 @@
     "limit": 113
   },
   "reportUnknownMemberType": {
-    "limit": 40556
+    "limit": 40553
   },
   "reportUnknownParameterType": {
     "limit": 20418
@@ -138,9 +138,9 @@
     "limit": 206
   },
   "reportUnusedImport": {
-    "limit": 993
+    "limit": 985
   },
   "reportUnusedVariable": {
-    "limit": 1291
+    "limit": 1289
   }
 }

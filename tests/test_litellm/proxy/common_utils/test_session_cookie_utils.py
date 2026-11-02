@@ -20,7 +20,7 @@ def test_session_cookie_has_hardened_attributes() -> None:
     assert "token=jwt-value" in header
     assert "Secure" in header
     assert "SameSite=lax" in header
-    assert "HttpOnly" not in header
+    assert "HttpOnly" in header
     assert f"Max-Age={24 * 60 * 60}" in header
 
 
@@ -142,3 +142,50 @@ def test_hkdf_keys_differ_per_purpose_and_per_master_key() -> None:
     assert ui_key != byok_key
     assert len(ui_key) == 32
     assert _derive_session_hkdf_key("sk-other-key", _UI_SESSION_HKDF_INFO) != ui_key
+
+
+class TestSetUiSessionCookieHttpOnly:
+    def _set_cookie_header(self, response) -> str:
+        headers = response.headers.getlist("set-cookie")
+        assert headers, "no cookie set"
+        return headers[0]
+
+    def test_json_response_cookie_defaults_httponly(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from fastapi.responses import JSONResponse
+
+        from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
+
+        monkeypatch.delenv("LITELLM_UI_SESSION_COOKIE_HTTPONLY", raising=False)
+        response = JSONResponse(content={})
+        set_ui_session_cookie(response, "tok")
+        assert "HttpOnly" in self._set_cookie_header(response)
+
+    def test_redirect_response_cookie_defaults_js_readable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from fastapi.responses import RedirectResponse
+
+        from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
+
+        monkeypatch.delenv("LITELLM_UI_SESSION_COOKIE_HTTPONLY", raising=False)
+        response = RedirectResponse(url="/ui/")
+        set_ui_session_cookie(response, "tok")
+        assert "HttpOnly" not in self._set_cookie_header(response)
+
+    def test_env_true_forces_httponly_on_redirect(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from fastapi.responses import RedirectResponse
+
+        from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
+
+        monkeypatch.setenv("LITELLM_UI_SESSION_COOKIE_HTTPONLY", "true")
+        response = RedirectResponse(url="/ui/")
+        set_ui_session_cookie(response, "tok")
+        assert "HttpOnly" in self._set_cookie_header(response)
+
+    def test_env_false_forces_js_readable_on_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from fastapi.responses import JSONResponse
+
+        from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
+
+        monkeypatch.setenv("LITELLM_UI_SESSION_COOKIE_HTTPONLY", "false")
+        response = JSONResponse(content={})
+        set_ui_session_cookie(response, "tok")
+        assert "HttpOnly" not in self._set_cookie_header(response)

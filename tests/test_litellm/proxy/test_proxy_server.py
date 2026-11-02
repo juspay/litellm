@@ -9107,3 +9107,37 @@ def test_update_config_redacts_all_environment_variable_values(
         assert "db.internal" not in data["updated_values"]
     finally:
         restore()
+
+
+class TestRewriteUiFilesForRootPath:
+    def test_rewrites_real_files_and_skips_symlink_escape(self, tmp_path, caplog):
+        from litellm.proxy.proxy_server import _rewrite_ui_files_for_root_path
+
+        ui_dir = tmp_path / "ui"
+        ui_dir.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        inside_file = ui_dir / "app.html"
+        inside_file.write_text('src="/litellm-asset-prefix/bundle.js"', encoding="utf-8")
+        outside_file = outside_dir / "secret.html"
+        outside_file.write_text('src="/litellm-asset-prefix/bundle.js"', encoding="utf-8")
+        (ui_dir / "escape.html").symlink_to(outside_file)
+
+        _rewrite_ui_files_for_root_path(str(ui_dir), "/litellm-asset-prefix", "/custom/root")
+
+        assert inside_file.read_text(encoding="utf-8") == 'src="/custom/root/bundle.js"'
+        assert outside_file.read_text(encoding="utf-8") == 'src="/litellm-asset-prefix/bundle.js"'
+
+    def test_skips_binary_assets_and_survives_undecodable_file(self, tmp_path):
+        from litellm.proxy.proxy_server import _rewrite_ui_files_for_root_path
+
+        ui_dir = tmp_path / "ui"
+        ui_dir.mkdir()
+        (ui_dir / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (ui_dir / "blob.txt").write_bytes(b"\xff\xfe not utf8")
+
+        _rewrite_ui_files_for_root_path(str(ui_dir), "/litellm-asset-prefix", "/custom/root")
+
+        assert (ui_dir / "logo.png").read_bytes() == b"\x89PNG\r\n\x1a\n"
+        assert (ui_dir / "blob.txt").read_bytes() == b"\xff\xfe not utf8"

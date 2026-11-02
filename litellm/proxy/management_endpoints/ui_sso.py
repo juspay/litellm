@@ -703,6 +703,9 @@ def _decode_sso_jwt_unverified(token: str) -> dict:
     return jwt.decode(token, options={"verify_signature": False})
 
 
+_SSO_ID_TOKEN_SIGNATURE_ALGORITHMS = frozenset(JWTHandler.SUPPORTED_JWT_ALGORITHMS)
+
+
 async def _decode_sso_id_token_verified(id_token: str, issuer: str | None, audience: str | None) -> dict:
     """Verify an SSO id_token against the provider's JWKS and claim constraints.
 
@@ -712,7 +715,7 @@ async def _decode_sso_id_token_verified(id_token: str, issuer: str | None, audie
     or an OIDC discovery URL containing jwks_uri); without it this raises so
     callers fail closed rather than trusting unverified claims.
 
-    Checks signature (RS256/ES256/HS256 via the matching JWKS key), exp, and
+    Checks signature (asymmetric algorithms via the matching JWKS key), exp, and
     nbf; iss and aud are checked when the corresponding expected value is
     supplied.
     """
@@ -770,17 +773,20 @@ async def _decode_sso_id_token_verified(id_token: str, issuer: str | None, audie
     alg = header.get("alg")
     if alg in (None, "none"):
         raise jwt.exceptions.DecodeError("Refusing to decode an unsecured JWT (alg=none)")
+    if alg not in _SSO_ID_TOKEN_SIGNATURE_ALGORITHMS:
+        raise jwt.exceptions.DecodeError(
+            f"Unsupported id_token signature algorithm {alg!r}; expected one of "
+            f"{sorted(_SSO_ID_TOKEN_SIGNATURE_ALGORITHMS)}"
+        )
 
     from jwt import PyJWK
 
     keys = jwks.get("keys", [jwks]) if isinstance(jwks, dict) else jwks
-    signing_key: Any | None = None
-    for key in keys:
-        if key.get("kid") == header.get("kid") or (header.get("kid") is None and keys.index(key) == 0):
-            signing_key = PyJWK.from_dict(key).key
-            break
-    if signing_key is None:
-        raise jwt.exceptions.DecodeError(f"No JWKS key matching kid={header.get('kid')} at {jwks_url}")
+    kid = header.get("kid")
+    matching_keys = [key for key in keys if key.get("kid") == kid] if kid is not None else keys[:1]
+    if len(matching_keys) != 1:
+        raise jwt.exceptions.DecodeError(f"No unique JWKS key matching kid={kid} at {jwks_url}")
+    signing_key = PyJWK.from_dict(matching_keys[0]).key
 
     decode_options: dict = {"verify_signature": True, "verify_exp": True, "verify_nbf": True}
     if issuer is not None:

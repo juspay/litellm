@@ -34,6 +34,7 @@ from litellm.constants import (
     LITELLM_PROXY_ADMIN_NAME,
     UI_SESSION_TOKEN_TEAM_ID,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.litellm_core_utils.duration_parser import duration_in_seconds
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.proxy._experimental.mcp_server.db import (
@@ -119,7 +120,6 @@ from litellm.types.proxy.management_endpoints.key_management_endpoints import (
     FailedKeyUpdate,
     SuccessfulKeyUpdate,
 )
-from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.types.router import Deployment
 from litellm.types.utils import (
     BudgetConfig,
@@ -222,11 +222,12 @@ def _is_allowed_to_make_key_request(
     if user_api_key_dict.user_role is not None and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value:
         return True
 
-    if user_id is not None:
-        assert user_id == user_api_key_dict.user_id, (
-            "User can only create keys for themselves. Got user_id={}, Your ID={}".format(
+    if user_id is not None and user_id != user_api_key_dict.user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="User can only create keys for themselves. Got user_id={}, Your ID={}".format(
                 user_id, user_api_key_dict.user_id
-            )
+            ),
         )
 
     if team_id is not None:
@@ -441,10 +442,10 @@ def common_key_access_checks(
             user_id=user_id or data.user_id,
             team_id=data.team_id,
         )
-    except AssertionError as e:
+    except HTTPException as e:
         raise HTTPException(
-            status_code=403,
-            detail=str(e),
+            status_code=e.status_code,
+            detail=e.detail,
         )
     except Exception as e:
         raise HTTPException(
@@ -1090,9 +1091,7 @@ async def _activate_service_account_and_block_previous_keys(
     if user_id is None or prisma_client is None:
         return
 
-    service_account = await prisma_client.db.litellm_serviceaccounttable.find_unique(
-        where={"user_id": user_id}
-    )
+    service_account = await prisma_client.db.litellm_serviceaccounttable.find_unique(where={"user_id": user_id})
     if service_account is None:
         return
 
@@ -3085,7 +3084,9 @@ async def bulk_update_team_keys(
 
         except Exception as e:
             # Log the hashed prefix — `token` may be a raw sk-... and ERROR logs persist.
-            verbose_proxy_logger.exception(f"Failed to update key {db_token[:12]}... in team {data.team_id}: {truncate_error_str(e)}")
+            verbose_proxy_logger.exception(
+                f"Failed to update key {db_token[:12]}... in team {data.team_id}: {truncate_error_str(e)}"
+            )
             failed_updates.append(
                 _build_failed_team_key_update(
                     token=token,
@@ -4286,7 +4287,9 @@ async def _rotate_master_key(
                     },
                 )
             except Exception as e:
-                verbose_proxy_logger.error(f"Failed to re-encrypt credential {cred.credential_name}: {truncate_error_str(e)}")
+                verbose_proxy_logger.error(
+                    f"Failed to re-encrypt credential {cred.credential_name}: {truncate_error_str(e)}"
+                )
                 # Continue with next credential instead of failing entire rotation
                 continue
         verbose_proxy_logger.debug(f"Successfully re-encrypted {len(credentials)} credentials with new master key")

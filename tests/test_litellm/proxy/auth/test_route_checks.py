@@ -3021,6 +3021,16 @@ def test_user_delete_route_gate_defers_to_endpoint_for_non_admin_roles(role):
         "/team/key/bulk_update",
         "/user/bulk_update",
         "/key/service-account/generate",
+        "/team/new",
+        "/team/block",
+        "/team/unblock",
+        "/team/permissions_update",
+        "/team/permissions_bulk_update",
+        "/model/update",
+        "/jwt/key/mapping/new",
+        "/jwt/key/mapping/update",
+        "/jwt/key/mapping/delete",
+        "/key/bulk_update",
     ],
 )
 def test_proxy_admin_viewer_write_routes_blocked_on_get(route):

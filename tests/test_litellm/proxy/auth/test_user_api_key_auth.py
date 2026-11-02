@@ -4578,3 +4578,17 @@ async def test_db_lookup_falls_back_to_legacy_digest_when_pepper_set(monkeypatch
     finally:
         for attr, val in originals.items():
             setattr(_proxy_server_mod, attr, val)
+
+
+def test_team_obj_from_token_rejects_missing_team_id():
+    """Regression: the token-derived team-object fallback must fail closed with
+    a typed ProxyException (403) when team_id is absent, not rely on a Python
+    assert that a stripped -O interpreter would skip."""
+    from litellm.proxy._types import ProxyErrorTypes, ProxyException
+    from litellm.proxy.auth.user_api_key_auth import _team_obj_from_token
+
+    key = UserAPIKeyAuth(token="hashed-token", team_id=None)
+    with pytest.raises(ProxyException) as exc_info:
+        _team_obj_from_token(key)
+    assert int(exc_info.value.code) == 403
+    assert exc_info.value.type == ProxyErrorTypes.auth_error

@@ -238,8 +238,8 @@ from litellm.integrations.custom_guardrail import ModifyResponseException
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.SlackAlerting.slack_alerting import SlackAlerting
 from litellm.litellm_core_utils.core_helpers import (
-    _truncate_str,
     _get_parent_otel_span_from_kwargs,
+    _truncate_str,
     get_litellm_metadata_from_kwargs,
     truncate_error_str,
 )
@@ -300,10 +300,6 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     encrypt_value_helper,
 )
 from litellm.proxy.common_utils.html_forms.ui_login import build_ui_login_form
-from litellm.proxy.common_utils.session_cookie_utils import (
-    decode_ui_session_jwt,
-    encode_ui_session_jwt,
-)
 from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
     _safe_get_request_headers,
@@ -320,6 +316,10 @@ from litellm.proxy.common_utils.openai_endpoint_utils import (
 )
 from litellm.proxy.common_utils.proxy_state import ProxyState
 from litellm.proxy.common_utils.reset_budget_job import ResetBudgetJob
+from litellm.proxy.common_utils.session_cookie_utils import (
+    decode_ui_session_jwt,
+    encode_ui_session_jwt,
+)
 from litellm.proxy.common_utils.swagger_utils import ERROR_RESPONSES
 from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time
 from litellm.proxy.common_utils.user_api_key_cache import (
@@ -359,11 +359,14 @@ from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
 from litellm.proxy.logging_endpoints.callback_logs_endpoints import (
     rust_control_plane_router,
 )
-from litellm.proxy.management_endpoints.budget_management_endpoints import (
-    router as budget_management_router,
-)
 from litellm.proxy.management_endpoints.audit_log_endpoints import (
     router as audit_log_router,
+)
+from litellm.proxy.management_endpoints.bench_run_endpoints import (
+    router as bench_run_router,
+)
+from litellm.proxy.management_endpoints.budget_management_endpoints import (
+    router as budget_management_router,
 )
 from litellm.proxy.management_endpoints.cache_settings_endpoints import (
     router as cache_settings_router,
@@ -378,6 +381,9 @@ from litellm.proxy.management_endpoints.common_utils import (
 )
 from litellm.proxy.management_endpoints.cost_tracking_settings import (
     router as cost_tracking_settings_router,
+)
+from litellm.proxy.management_endpoints.custom_team_endpoints import (
+    router as custom_team_router,
 )
 from litellm.proxy.management_endpoints.customer_endpoints import (
     router as customer_router,
@@ -413,23 +419,17 @@ from litellm.proxy.management_endpoints.model_management_endpoints import (
 from litellm.proxy.management_endpoints.organization_endpoints import (
     router as organization_router,
 )
-from litellm.proxy.management_endpoints.service_account_endpoints import (
-    router as service_account_router,
-)
-from litellm.proxy.management_endpoints.bench_run_endpoints import (
-    router as bench_run_router,
-)
 from litellm.proxy.management_endpoints.router_settings_endpoints import (
     router as router_settings_router,
+)
+from litellm.proxy.management_endpoints.service_account_endpoints import (
+    router as service_account_router,
 )
 from litellm.proxy.management_endpoints.tag_management_endpoints import (
     router as tag_management_router,
 )
 from litellm.proxy.management_endpoints.team_callback_endpoints import (
     router as team_callback_router,
-)
-from litellm.proxy.management_endpoints.custom_team_endpoints import (
-    router as custom_team_router,
 )
 from litellm.proxy.management_endpoints.team_endpoints import router as team_router
 from litellm.proxy.management_endpoints.team_endpoints import (
@@ -451,10 +451,6 @@ from litellm.proxy.management_helpers.audit_logs import (
     create_object_audit_log,
 )
 from litellm.proxy.memory.memory_endpoints import router as memory_router
-from litellm.proxy.plugin_routes import (
-    router as plugin_router,
-    register_plugins_from_config,
-)
 from litellm.proxy.middleware.in_flight_requests_middleware import (
     InFlightRequestsMiddleware,
 )
@@ -474,18 +470,22 @@ from litellm.proxy.openai_files_endpoints.files_endpoints import (
 )
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     passthrough_endpoint_router,
+    vertex_ai_live_websocket_passthrough,
 )
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     router as llm_passthrough_router,
-)
-from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
-    vertex_ai_live_websocket_passthrough,
 )
 from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     initialize_pass_through_endpoints,
 )
 from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     router as pass_through_router,
+)
+from litellm.proxy.plugin_routes import (
+    register_plugins_from_config,
+)
+from litellm.proxy.plugin_routes import (
+    router as plugin_router,
 )
 from litellm.proxy.public_endpoints import router as public_endpoints_router
 from litellm.proxy.rag_endpoints.endpoints import router as rag_router
@@ -565,21 +565,18 @@ from litellm.types.proxy.management_endpoints.ui_sso import (
 from litellm.types.realtime import RealtimeQueryParams
 from litellm.types.router import (
     DeploymentTypedDict,
-)
-from litellm.types.router import ModelInfo as RouterModelInfo
-from litellm.types.router import (
     RouterGeneralSettings,
     SearchToolTypedDict,
     updateDeployment,
 )
+from litellm.types.router import ModelInfo as RouterModelInfo
 from litellm.types.scheduler import DefaultPriorities
 from litellm.types.secret_managers.main import (
     KeyManagementSettings,
     KeyManagementSystem,
 )
-from litellm.types.utils import CredentialItem, CustomHuggingfaceTokenizer
+from litellm.types.utils import CredentialItem, CustomHuggingfaceTokenizer, RawRequestTypedDict, StandardLoggingPayload
 from litellm.types.utils import ModelInfo as ModelMapInfo
-from litellm.types.utils import RawRequestTypedDict, StandardLoggingPayload
 from litellm.utils import _add_custom_logger_callback_to_specific_event
 
 try:
@@ -977,11 +974,11 @@ async def proxy_startup_event(app: FastAPI):
         if is_otel_v2_enabled():
             from opentelemetry import trace as _otel_trace
 
-            from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
             from litellm.integrations.otel.logger import (
                 OpenTelemetryV2,
                 publish_global_otel_v2_provider,
             )
+            from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
 
             registered = open_telemetry_logger if isinstance(open_telemetry_logger, OpenTelemetryV2) else None
             publish_global_otel_v2_provider(
@@ -1434,6 +1431,65 @@ async def otel_unhandled_exception_handler(request: Request, exc: Exception):
 router = APIRouter()
 
 
+def _rewrite_ui_files_for_root_path(ui_path: str, litellm_asset_prefix: str, server_root_path: str) -> None:
+    """
+    Rewrite the packaged dashboard files in place so the asset prefix and the
+    well-known config path honor ``server_root_path``.
+
+    ``followlinks=False`` plus a realpath containment check keep a symlink
+    planted inside the UI directory from making this rewrite touch files
+    outside it.
+    """
+    real_ui_root = os.path.realpath(ui_path)
+    for root, dirs, files in os.walk(ui_path, followlinks=False):
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            real_file_path = os.path.realpath(file_path)
+            if os.path.commonpath((real_file_path, real_ui_root)) != real_ui_root:
+                verbose_proxy_logger.warning(
+                    f"Skipping UI path rewrite for {filename}: resolved path escapes the UI directory"
+                )
+                continue
+            file_path = real_file_path
+            if filename.endswith(
+                (
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".ico",
+                    ".woff",
+                    ".woff2",
+                    ".ttf",
+                    ".eot",
+                )
+            ):
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                modified_content = content.replace(
+                    f"{litellm_asset_prefix}",
+                    f"{server_root_path}",
+                )
+
+                modified_content = modified_content.replace(
+                    "/litellm/.well-known/litellm-ui-config",
+                    f"{server_root_path}/.well-known/litellm-ui-config",
+                )
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(modified_content)
+            except UnicodeDecodeError:
+                continue
+            except (PermissionError, OSError) as rewrite_err:
+                verbose_proxy_logger.warning(
+                    f"Failed to rewrite UI file {file_path} for server_root_path: {rewrite_err}"
+                )
+                continue
+
+
 def _get_cors_config(
     cors_origins_env: Optional[str] = None,
     cors_credentials_env: Optional[str] = None,
@@ -1666,46 +1722,7 @@ try:
                 f"UI files in Dockerfile with custom server_root_path."
             )
         else:
-            # Iterate through files in the UI directory
-            for root, dirs, files in os.walk(ui_path):
-                for filename in files:
-                    file_path = os.path.join(root, filename)
-                    # Skip binary files and files that don't need path replacement
-                    if filename.endswith(
-                        (
-                            ".png",
-                            ".jpg",
-                            ".jpeg",
-                            ".gif",
-                            ".ico",
-                            ".woff",
-                            ".woff2",
-                            ".ttf",
-                            ".eot",
-                        )
-                    ):
-                        continue
-                    try:
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            content = f.read()
-
-                        # Replace the asset prefix with the server root path
-                        modified_content = content.replace(
-                            f"{litellm_asset_prefix}",
-                            f"{server_root_path}",
-                        )
-
-                        # Replace the /.well-known/litellm-ui-config with the server root path
-                        modified_content = modified_content.replace(
-                            "/litellm/.well-known/litellm-ui-config",
-                            f"{server_root_path}/.well-known/litellm-ui-config",
-                        )
-
-                        with open(file_path, "w", encoding="utf-8") as f:
-                            f.write(modified_content)
-                    except (UnicodeDecodeError, PermissionError, OSError):
-                        # Skip binary files or files we can't write to
-                        continue
+            _rewrite_ui_files_for_root_path(ui_path, litellm_asset_prefix, server_root_path)
 
     # # Mount the _next directory at the root level
     app.mount(

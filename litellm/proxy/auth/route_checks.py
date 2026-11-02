@@ -747,33 +747,6 @@ class RouteChecks:
     # write-allowlist below.
     _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-    # Explicit write routes that PROXY_ADMIN_VIEW_ONLY must NEVER call. The
-    # role-principle is "no writes, ever" — the management_routes list is the
-    # authoritative source for which non-llm routes are writes; we just need
-    # to filter out the read endpoints (info / list) that share the prefix.
-    # A cleaner approach is to denylist by HTTP verb (POST/PUT/PATCH/DELETE);
-    # this block stays as a backstop in case a write is implemented as GET.
-    _ADMIN_VIEWER_BLOCKED_WRITE_ROUTES = frozenset(
-        [
-            "/user/new",
-            "/user/bulk_update",
-            "/team/new",
-            "/team/update",
-            "/team/delete",
-            "/model/new",
-            "/model/update",
-            "/model/delete",
-            "/key/generate",
-            "/key/delete",
-            "/key/update",
-            "/key/regenerate",
-            "/key/service-account/generate",
-            "/key/block",
-            "/key/unblock",
-            "/team/key/bulk_update",
-        ]
-    )
-
     # Write routes the Admin Viewer may reach because the endpoint itself
     # performs the authorization (see `self_managed_routes`). `/user/delete`
     # gates on PROXY_ADMIN, USER_DELETE_ALLOWED_USER_IDS, or a scoped
@@ -821,7 +794,9 @@ class RouteChecks:
         # safe-method default-allow fires. The default-allow keys off the verb,
         # so a write exposed on GET (or a method change on an existing write
         # endpoint) would otherwise be auto-granted without review.
-        if route in RouteChecks._ADMIN_VIEWER_BLOCKED_WRITE_ROUTES or (
+        # _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES is the single authoritative
+        # write blocklist for this role; there is no second copy to drift.
+        if route in _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES or (
             route.startswith("/key/") and route.endswith(_PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES)
         ):
             raise HTTPException(
@@ -842,14 +817,6 @@ class RouteChecks:
                                 status_code=status.HTTP_403_FORBIDDEN,
                                 detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route} and updating invalid param: {param}. only user_email and password can be updated",
                             )
-            elif route in _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES or (
-                route.startswith("/key/") and route.endswith(_PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES)
-            ):
-                # Block write operations for PROXY_ADMIN_VIEW_ONLY
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route}",
-                )
             # Allow read operations on management routes (like /user/info, /team/info, /model/info)
         method = request.method.upper() if request is not None else "GET"
         is_safe_method = method in RouteChecks._SAFE_HTTP_METHODS

@@ -95,13 +95,22 @@ def set_ui_session_cookie(response, token: str, request: object | None = None) -
     Secure (unless the request provably arrived over plain HTTP, e.g. local
     dev), SameSite=Lax, and a Max-Age matching LITELLM_UI_SESSION_DURATION.
 
-    HttpOnly is opt-in via LITELLM_UI_SESSION_COOKIE_HTTPONLY=true. It stays
-    off by default because the dashboard's JS must read the token from
-    document.cookie when a reverse proxy (e.g. nginx-ingress) rewrites
-    server-set cookies — the JS fallback path in
-    ui/litellm-dashboard/src/utils/cookieUtils.ts. Deployments where JS
-    never needs the cookie should enable it.
+    HttpOnly is decided by how the response delivers the token:
+
+    - JSON responses carry the token in the body, so the dashboard's JS
+      already has it (and mirrors it into its own non-HttpOnly cookie and
+      sessionStorage). The server-set cookie is a redundant copy that XSS
+      must not be able to steal, so it defaults to HttpOnly.
+    - Redirect responses (SSO callback) deliver the token ONLY through this
+      cookie — the dashboard reads it from document.cookie on landing — so
+      HttpOnly would break SSO login. Those default to JS-readable unless
+      LITELLM_UI_SESSION_COOKIE_HTTPONLY=false is overridden the other way.
+
+    LITELLM_UI_SESSION_COOKIE_HTTPONLY=true forces HttpOnly on both shapes
+    (for deployments whose reverse proxy rewrites cookies and whose dashboard
+    never needs the server-set cookie); "false" forces JS-readable on both.
     """
+    from fastapi.responses import RedirectResponse
     from starlette.datastructures import URL
 
     from litellm.litellm_core_utils.duration_parser import duration_in_seconds
@@ -111,11 +120,15 @@ def set_ui_session_cookie(response, token: str, request: object | None = None) -
     request_url = getattr(request, "url", None)
     if isinstance(request_url, URL):
         secure = request_url.scheme == "https"
+    is_redirect = isinstance(response, RedirectResponse)
+    htt_only = get_secret_bool("LITELLM_UI_SESSION_COOKIE_HTTPONLY")
+    if htt_only is None:
+        htt_only = not is_redirect
     response.set_cookie(
         key="token",
         value=token,
         max_age=duration_in_seconds(str(LITELLM_UI_SESSION_DURATION)),
         secure=secure,
         samesite="lax",
-        httponly=get_secret_bool("LITELLM_UI_SESSION_COOKIE_HTTPONLY"),
+        httponly=htt_only,
     )

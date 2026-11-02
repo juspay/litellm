@@ -11,12 +11,11 @@ import asyncio
 import fnmatch
 import re
 import secrets
-
-import orjson
 from datetime import datetime, timezone
-from typing import Any, Dict, NamedTuple, List, Optional, Protocol, Tuple, Union, cast
+from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple, Union, cast
 
 import fastapi
+import orjson
 from fastapi import HTTPException, Request, WebSocket, status
 from fastapi.security.api_key import APIKeyHeader
 
@@ -54,6 +53,7 @@ from litellm.proxy.auth.auth_checks import (
     resolve_and_validate_end_user_id,
 )
 from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
+from litellm.proxy.auth.auth_method import AuthMethod
 from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
     get_end_user_id_from_request_body,
@@ -66,10 +66,9 @@ from litellm.proxy.auth.auth_utils import (
     route_in_additonal_public_routes,
 )
 from litellm.proxy.auth.handle_jwt import JWTAuthManager, JWTHandler
+from litellm.proxy.auth.network import TrustedProxyConfig, resolve_network_context
 from litellm.proxy.auth.oauth2_check import Oauth2Handler
 from litellm.proxy.auth.oauth2_proxy_hook import handle_oauth2_proxy_request
-from litellm.proxy.auth.auth_method import AuthMethod
-from litellm.proxy.auth.network import TrustedProxyConfig, resolve_network_context
 from litellm.proxy.auth.resolvers import CredentialRef, Principal
 from litellm.proxy.auth.resolvers.store import IdentityStore
 from litellm.proxy.auth.route_checks import RouteChecks
@@ -2119,7 +2118,13 @@ def _team_obj_from_token(valid_token: UserAPIKeyAuth) -> LiteLLM_TeamTableCached
     """Reconstruct a cached team object from the fields already on the
     UserAPIKeyAuth. Only called when valid_token.team_id is known to be
     non-None (the caller gates on it)."""
-    assert valid_token.team_id is not None
+    if valid_token.team_id is None:
+        raise ProxyException(
+            message="Team-bound key has no team_id; refusing to authorize",
+            type=ProxyErrorTypes.auth_error,
+            param="team_id",
+            code=status.HTTP_403_FORBIDDEN,
+        )
     return LiteLLM_TeamTableCachedObj(
         team_id=valid_token.team_id,
         max_budget=valid_token.team_max_budget,
@@ -2339,7 +2344,7 @@ async def _run_centralized_common_checks(
     team_object: Optional[LiteLLM_TeamTableCachedObj]
     if isinstance(team_result, BaseException):
         # Token-derived fallback only valid when a team_id is set;
-        # _team_obj_from_token asserts that precondition.
+        # _team_obj_from_token re-checks that precondition.
         team_object = _team_obj_from_token(user_api_key_auth_obj) if user_api_key_auth_obj.team_id is not None else None
     else:
         team_object = team_result

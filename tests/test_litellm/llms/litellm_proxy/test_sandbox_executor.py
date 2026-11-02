@@ -159,6 +159,16 @@ def test_execute_rejects_unsafe_requirements(monkeypatch):
         "https://evil.example.com/pkg.whl",
         "./local/pkg",
         "/abs/path/pkg",
+        "pkg --index-url https://evil.example.com/simple",
+        "pkg --extra-index-url https://evil.example.com/simple",
+        "pkg --find-links /tmp/wheels",
+        "pkg --trusted-host evil.example.com",
+        "pkg --hash=sha256:deadbeef",
+        "pkg -i https://evil.example.com/simple",
+        "[options]",
+        "[global]",
+        "pkg @ https://evil.example.com/pkg.whl",
+        "-r other-requirements.txt",
     ]:
         result = executor.execute(
             code="print('hello')",

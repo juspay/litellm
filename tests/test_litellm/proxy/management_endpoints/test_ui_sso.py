@@ -7662,3 +7662,91 @@ async def test_debug_sso_callback_drops_unlisted_claims():
     assert "internal_idp_secret" not in body
     assert "should-not-render" not in body
     assert "admin@example.com" in body
+
+
+class TestSsoIdTokenAlgorithmAllowlist:
+    """Regression tests for the id_token signature-algorithm allowlist: the
+    alg must come from an allowlist of asymmetric algorithms (never trusted
+    straight from the attacker-controlled JOSE header), so an HS256 confusion
+    token signed with the provider's own public JWKS material is rejected."""
+
+    @staticmethod
+    def _make_rsa_jwks(kid: str = "key-1") -> tuple:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        public_numbers = private_key.public_key().public_numbers()
+
+        def _b64url_int(value: int) -> str:
+            import base64
+
+            raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        jwks = {
+            "keys": [
+                {
+                    "kty": "RSA",
+                    "kid": kid,
+                    "use": "sig",
+                    "alg": "RS256",
+                    "n": _b64url_int(public_numbers.n),
+                    "e": _b64url_int(public_numbers.e),
+                }
+            ]
+        }
+        pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        return jwks, pem
+
+    def _patch_jwks_fetch(self, jwks: dict):
+        response = MagicMock()
+        response.status_code = 200
+        response.json = MagicMock(return_value=jwks)
+        client = MagicMock()
+        client.get = AsyncMock(return_value=response)
+        return patch(
+            "litellm.proxy.management_endpoints.ui_sso.get_async_httpx_client",
+            return_value=client,
+        )
+
+    @pytest.mark.asyncio
+    async def test_hs256_confusion_token_rejected(self, monkeypatch):
+        import jwt as pyjwt
+
+        from litellm.proxy.management_endpoints.ui_sso import _decode_sso_id_token_verified
+
+        jwks, _ = self._make_rsa_jwks()
+        hs256_token = pyjwt.encode(
+            {"sub": "attacker"}, "attacker-hmac-secret", algorithm="HS256", headers={"kid": "key-1"}
+        )
+
+        monkeypatch.setenv("GENERIC_JWKS_ENDPOINT", "https://idp.example.com/.well-known/jwks.json")
+        with self._patch_jwks_fetch(jwks):
+            with pytest.raises(pyjwt.exceptions.DecodeError, match="[Uu]nsupported id_token signature algorithm"):
+                await _decode_sso_id_token_verified(hs256_token, issuer=None, audience=None)
+
+    @pytest.mark.asyncio
+    async def test_rs256_id_token_verifies(self, monkeypatch):
+        import time
+
+        import jwt as pyjwt
+
+        from litellm.proxy.management_endpoints.ui_sso import _decode_sso_id_token_verified
+
+        jwks, pem = self._make_rsa_jwks()
+        id_token = pyjwt.encode(
+            {"sub": "user-1", "exp": int(time.time()) + 600},
+            pem,
+            algorithm="RS256",
+            headers={"kid": "key-1"},
+        )
+
+        monkeypatch.setenv("GENERIC_JWKS_ENDPOINT", "https://idp.example.com/.well-known/jwks.json")
+        with self._patch_jwks_fetch(jwks):
+            claims = await _decode_sso_id_token_verified(id_token, issuer=None, audience=None)
+        assert claims["sub"] == "user-1"
