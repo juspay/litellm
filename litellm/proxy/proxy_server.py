@@ -62,6 +62,7 @@ from litellm.constants import (
 from litellm.litellm_core_utils.litellm_logging import (
     _init_custom_logger_compatible_class,
 )
+from litellm.litellm_core_utils.asyncify import asyncify
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.proxy._types import (
@@ -10579,7 +10580,7 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
     _tokenizer_used = litellm.utils._select_tokenizer(model=model_to_use, custom_tokenizer=custom_tokenizer)
 
     tokenizer_used = str(_tokenizer_used["type"])
-    total_tokens = token_counter(
+    total_tokens = await asyncify(token_counter)(
         model=model_to_use,
         text=prompt,
         messages=messages,
@@ -10640,7 +10641,9 @@ async def transform_request(request: TransformRequestBody):
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e)})
 
-    return return_raw_request(endpoint=request.call_type, kwargs=request.request_body)
+    return await asyncify(return_raw_request)(
+        endpoint=request.call_type, kwargs=request.request_body
+    )
 
 
 async def _check_if_model_is_user_added(
