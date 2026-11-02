@@ -46,26 +46,17 @@ _SALT_KEY_FALLBACK_ALLOWED_ENV = "LITELLM_ALLOW_SALT_KEY_FALLBACK"
 
 
 def _salt_key_fallback_is_forbidden() -> bool:
-    """The master-key fallback is forbidden on DB-connected (production) proxies.
+    """The master-key fallback is forbidden unless explicitly opted into.
 
-    A proxy with a connected ``prisma_client`` persists at-rest encrypted
-    values (provider keys, MCP credentials, OAuth tokens). Deriving their
-    encryption key from the same ``LITELLM_MASTER_KEY`` that is also a bearer
-    credential means rotating the master key silently strands every stored
-    value, and a leaked master key is also the encryption key. Operators must
-    set ``LITELLM_SALT_KEY`` there. ``LITELLM_ALLOW_SALT_KEY_FALLBACK=1``
-    explicitly opts back into the legacy fallback (e.g. for a migration window
-    where the salt key has not been deployed yet).
+    Deriving the at-rest key from the same ``LITELLM_MASTER_KEY`` that is also
+    a bearer credential means a single leaked master key decrypts every stored
+    provider key / OAuth token, and rotating it silently strands every stored
+    value. ``LITELLM_SALT_KEY`` is required for any at-rest encryption
+    regardless of DB state; ``LITELLM_ALLOW_SALT_KEY_FALLBACK=1`` is the
+    explicitly logged migration window where an operator accepts the fallback
+    while the salt key has not been deployed yet.
     """
-    if os.getenv(_SALT_KEY_FALLBACK_ALLOWED_ENV, "") in ("1", "true", "True"):
-        return False
-    try:
-        from litellm.proxy.proxy_server import prisma_client
-    except ImportError:
-        # proxy_server not importable (e.g. SDK-only use of these helpers):
-        # no DB, so the legacy behavior stands.
-        return False
-    return prisma_client is not None
+    return os.getenv(_SALT_KEY_FALLBACK_ALLOWED_ENV, "") not in ("1", "true", "True")
 
 
 def _get_salt_key():
@@ -76,12 +67,18 @@ def _get_salt_key():
     if salt_key is None:
         if _salt_key_fallback_is_forbidden():
             raise ValueError(
-                "LITELLM_SALT_KEY is not set on a DB-connected proxy; refusing to "
-                "derive the at-rest encryption key from LITELLM_MASTER_KEY. Set "
-                "LITELLM_SALT_KEY (see https://docs.litellm.ai/docs/proxy/prod#5-set-litellm-salt-key) "
+                "LITELLM_SALT_KEY is not set; refusing to derive the at-rest "
+                "encryption key from LITELLM_MASTER_KEY. Set LITELLM_SALT_KEY "
+                "(see https://docs.litellm.ai/docs/proxy/prod#5-set-litellm-salt-key) "
                 f"or set {_SALT_KEY_FALLBACK_ALLOWED_ENV}=1 to explicitly accept the "
                 "master-key fallback during a migration window."
             )
+        verbose_proxy_logger.warning(
+            f"LITELLM_SALT_KEY is not set; using LITELLM_MASTER_KEY as the at-rest "
+            f"encryption key because {_SALT_KEY_FALLBACK_ALLOWED_ENV} is set. A leaked "
+            "master key decrypts every stored credential; deploy LITELLM_SALT_KEY "
+            "and remove the flag."
+        )
         salt_key = master_key
 
     return salt_key

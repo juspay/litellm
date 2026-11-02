@@ -2154,7 +2154,9 @@ def test_proxy_admin_viewer_can_access_settings_read_endpoints(route):
 
 # Routes the user reported as broken in production — they're in disparate
 # corners of the codebase and represent the long tail of GETs we'd otherwise
-# need to enumerate manually. Default-allow makes them all work.
+# need to enumerate manually. Read-parity now derives from the app's route
+# table: any route registered with safe methods only is readable, so these
+# all work without a manual allowlist entry.
 ADMIN_VIEWER_REPORTED_GET_ROUTES = [
     "/health/latest",
     "/credentials",
@@ -2166,10 +2168,42 @@ ADMIN_VIEWER_REPORTED_GET_ROUTES = [
     "/customer/list",
     "/guardrails/list",
     "/policies/attachments/list",
-    # Hypothetical future GETs — must not require an allowlist entry.
-    "/some/future/read/endpoint",
-    "/another/admin-tool/status",
 ]
+
+
+def _warm_lazy_feature(module_path: str) -> None:
+    import asyncio
+
+    from litellm.proxy._lazy_features import LAZY_FEATURES, _force_load
+    from litellm.proxy.proxy_server import app
+
+    for feat in LAZY_FEATURES:
+        if feat.module_path == module_path:
+            asyncio.get_event_loop().run_until_complete(_force_load(app, feat))
+            return
+    raise ValueError(f"no lazy feature for {module_path}")
+
+
+# Lazy-mounted routers are not in the route table until first matching
+# request; warm them here so the read-only derivation sees them.
+@pytest.fixture(autouse=True, scope="module")
+def _warm_lazy_read_routers():
+    import asyncio
+
+    from litellm.proxy._lazy_features import LAZY_FEATURES, _force_load
+    from litellm.proxy.proxy_server import app
+
+    for _feat in LAZY_FEATURES:
+        if _feat.module_path in (
+            "litellm.proxy.management_endpoints.mcp_management_endpoints",
+            "litellm.proxy.anthropic_endpoints.claude_code_endpoints",
+            "litellm.proxy.management_endpoints.policy_endpoints",
+            "litellm.proxy.management_endpoints.jwt_key_mapping_endpoints",
+        ):
+            asyncio.run(_force_load(app, _feat))
+    yield
+    RouteChecks._GET_ONLY_ROUTE_PATHS = None
+    RouteChecks._GET_ONLY_ROUTE_COUNT = -1
 
 
 @pytest.mark.parametrize("route", ADMIN_VIEWER_REPORTED_GET_ROUTES)
@@ -3110,3 +3144,165 @@ def test_proxy_admin_viewer_get_read_route_still_allowed():
         ),
         request_data={},
     )
+
+
+# ── Admin Viewer: safe-method default-allow is now default-deny ──────────────
+#
+# A GET/HEAD/OPTIONS request is allowed only for routes registered as
+# GET-only on the app's route table, or for routes in the explicit read
+# allowlists. A write endpoint that gains a GET alias, or an unregistered
+# path, fails closed instead of being auto-granted.
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/some/future/read/endpoint",
+        "/another/admin-tool/status",
+    ],
+)
+def test_proxy_admin_viewer_get_unknown_route_denied(route):
+    """A GET to a path that is not a registered GET-only route and not in the
+    explicit read allowlists must 403 (default-deny, not default-allow)."""
+    request = MagicMock(spec=Request)
+    request.method = "GET"
+    request.query_params = {}
+
+    with pytest.raises(HTTPException) as exc_info:
+        RouteChecks.non_proxy_admin_allowed_routes_check(
+            user_obj=LiteLLM_UserTable(
+                user_id="viewer_user",
+                user_email="viewer@example.com",
+                user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            ),
+            _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            route=route,
+            request=request,
+            valid_token=UserAPIKeyAuth(
+                user_id="viewer_user",
+                user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+            ),
+            request_data={},
+        )
+    assert exc_info.value.status_code == 403
+
+
+def test_proxy_admin_viewer_get_mixed_method_route_requires_allowlist():
+    """A route registered with both GET and POST handlers is a write surface:
+    the GET must be denied unless the route is in the explicit read
+    allowlist (admin_viewer_routes)."""
+    request = MagicMock(spec=Request)
+    request.method = "GET"
+    request.query_params = {}
+
+    request.scope = {}
+    for route, expect_allowed in [
+        ("/claude-code/plugins", True),
+        ("/user/update", False),
+    ]:
+        if expect_allowed:
+            RouteChecks.non_proxy_admin_allowed_routes_check(
+                user_obj=LiteLLM_UserTable(
+                    user_id="viewer_user",
+                    user_email="viewer@example.com",
+                    user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                ),
+                _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                route=route,
+                request=request,
+                valid_token=UserAPIKeyAuth(
+                    user_id="viewer_user",
+                    user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                ),
+                request_data={},
+            )
+        else:
+            with pytest.raises(HTTPException) as exc_info:
+                RouteChecks.non_proxy_admin_allowed_routes_check(
+                    user_obj=LiteLLM_UserTable(
+                        user_id="viewer_user",
+                        user_email="viewer@example.com",
+                        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                    ),
+                    _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                    route=route,
+                    request=request,
+                    valid_token=UserAPIKeyAuth(
+                        user_id="viewer_user",
+                        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                    ),
+                    request_data={},
+                )
+            assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/team/model/add",
+        "/team/model/delete",
+        "/model/block",
+        "/model/unblock",
+        "/service-account/request-rotation",
+        "/service-account/approve",
+        "/service-account/reject",
+    ],
+)
+def test_proxy_admin_viewer_drifted_write_routes_blocked(route):
+    """Write routes that drifted from the literal blocklist must be denied
+    for Admin Viewer regardless of HTTP method (path-suffix matching).
+
+    /mcp-rest/tools/call is intentionally absent: it is classified as an
+    LLM API route (per-key tool-permission gated in the endpoint) and is
+    allowed for every authenticated role before the viewer check runs."""
+    for method in ("GET", "POST"):
+        request = MagicMock(spec=Request)
+        request.method = method
+        request.query_params = {}
+
+        with pytest.raises(HTTPException) as exc_info:
+            RouteChecks.non_proxy_admin_allowed_routes_check(
+                user_obj=LiteLLM_UserTable(
+                    user_id="viewer_user",
+                    user_email="viewer@example.com",
+                    user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                ),
+                _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                route=route,
+                request=request,
+                valid_token=UserAPIKeyAuth(
+                    user_id="viewer_user",
+                    user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                ),
+                request_data={},
+            )
+        assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_proxy_admin_viewer_dynamic_mcp_token_and_register_blocked():
+    """The dynamic /{mcp_server_name}/token and /{mcp_server_name}/register
+    routes carry resolved server names at request time, so they must be
+    blocked by suffix for Admin Viewer."""
+    request = MagicMock(spec=Request)
+    request.method = "POST"
+    request.query_params = {}
+
+    for route in ("/my-mcp-server/token", "/my-mcp-server/register"):
+        with pytest.raises(HTTPException) as exc_info:
+            RouteChecks.non_proxy_admin_allowed_routes_check(
+                user_obj=LiteLLM_UserTable(
+                    user_id="viewer_user",
+                    user_email="viewer@example.com",
+                    user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                ),
+                _user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                route=route,
+                request=request,
+                valid_token=UserAPIKeyAuth(
+                    user_id="viewer_user",
+                    user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+                ),
+                request_data={},
+            )
+        assert exc_info.value.status_code == 403

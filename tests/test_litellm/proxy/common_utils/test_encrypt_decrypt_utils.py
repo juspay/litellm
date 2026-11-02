@@ -318,8 +318,13 @@ def test_salt_key_fallback_allowed_via_explicit_opt_in(monkeypatch):
     assert _get_salt_key() == "sk-master-fallback"
 
 
-def test_salt_key_fallback_unchanged_without_db(monkeypatch):
-    """Without a DB connection the legacy master-key fallback still applies."""
+def test_salt_key_fallback_refused_without_db(monkeypatch):
+    """Without a DB connection the master-key fallback is still refused:
+    LITELLM_SALT_KEY is required for at-rest encryption regardless of DB
+    state, so a not-yet-connected or SDK-only deployment cannot silently
+    encrypt credentials under the bearer master key."""
+    import pytest as _pytest
+
     from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
 
     monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
@@ -327,7 +332,8 @@ def test_salt_key_fallback_unchanged_without_db(monkeypatch):
     monkeypatch.setattr(proxy_server, "master_key", "sk-master-fallback")
     monkeypatch.setattr(proxy_server, "prisma_client", None)
 
-    assert _get_salt_key() == "sk-master-fallback"
+    with _pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+        _get_salt_key()
 
 
 def test_context_bound_value_round_trips_under_its_context(monkeypatch):

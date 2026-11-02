@@ -36,18 +36,52 @@ def test_hash_token_candidates_unsalted_is_single_legacy_digest(monkeypatch) -> 
     assert hash_token_candidates(token) == (hashlib.sha256(token.encode()).hexdigest(),)
 
 
-def test_hash_token_candidates_salted_includes_both_digests(salt_key) -> None:
+def test_hash_token_candidates_salted_includes_both_digests(salt_key, monkeypatch) -> None:
     from litellm.proxy.common_utils.token_hash_utils import (
         hash_token,
         hash_token_candidates,
         legacy_hash_token,
     )
 
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "true")
     token = "sk-pepered"
     candidates = hash_token_candidates(token)
     assert candidates[0] == hash_token(token)
     assert legacy_hash_token(token) in candidates
     assert len(set(candidates)) == 2
+
+
+def test_hash_token_candidates_salted_fails_closed_by_default(salt_key, monkeypatch) -> None:
+    """With a pepper configured and no explicit migration opt-in, the legacy
+    bare SHA-256 digest must NOT be a lookup candidate: a leaked legacy
+    digest must no longer authenticate its key."""
+    from litellm.proxy.common_utils.token_hash_utils import (
+        hash_token,
+        hash_token_candidates,
+        legacy_hash_token,
+    )
+
+    monkeypatch.delenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", raising=False)
+    token = "sk-pepered"
+    candidates = hash_token_candidates(token)
+    assert candidates == (hash_token(token),)
+    assert legacy_hash_token(token) not in candidates
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE"])
+def test_hash_token_candidates_legacy_opt_in_accepts_truthy(salt_key, monkeypatch, value) -> None:
+    from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates, legacy_hash_token
+
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", value)
+    assert legacy_hash_token("sk-x") in hash_token_candidates("sk-x")
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "no"])
+def test_hash_token_candidates_legacy_opt_in_rejects_falsy(salt_key, monkeypatch, value) -> None:
+    from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates, legacy_hash_token
+
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", value)
+    assert legacy_hash_token("sk-x") not in hash_token_candidates("sk-x")
 
 
 def test_hash_token_stable_across_calls(salt_key) -> None:

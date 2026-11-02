@@ -9,6 +9,7 @@ they did when each site called ``set_cookie(key="token", ...)`` bare.
 """
 
 from litellm.constants import LITELLM_UI_SESSION_DURATION
+from litellm.litellm_core_utils.duration_parser import duration_in_seconds
 
 # HKDF info string binding the derived key to UI-session signing, so the same
 # master key can never produce this HMAC key for another purpose (and vice
@@ -61,11 +62,22 @@ def decode_byok_session_jwt(token: str, master_key: str) -> dict:
     )
 
 
-def encode_ui_session_jwt(payload: dict, master_key: str) -> str:
-    """Sign a UI-session JWT with the HKDF-derived session key (HS256)."""
+def encode_ui_session_jwt(payload: dict[str, object], master_key: str) -> str:
+    """Sign a UI-session JWT with the HKDF-derived session key (HS256).
+
+    An ``exp`` claim (now + LITELLM_UI_SESSION_DURATION) is added to every
+    token that omits one, matching the cookie Max-Age, so the JWT's validity
+    is bounded on the server side and not only by browser cookie expiry.
+    Callers that build short-lived tokens (onboarding, /v3 login exchange)
+    pass their own ``exp`` and keep it.
+    """
+    import time
+
     import jwt as pyjwt
 
-    return pyjwt.encode(payload, _ui_session_signing_key(master_key), algorithm="HS256")
+    exp = int(time.time()) + duration_in_seconds(str(LITELLM_UI_SESSION_DURATION))
+    signed_payload: dict[str, object] = payload if "exp" in payload else {**payload, "exp": exp}
+    return pyjwt.encode(signed_payload, _ui_session_signing_key(master_key), algorithm="HS256")
 
 
 def decode_ui_session_jwt(token: str, master_key: str, verify_exp: bool = True, require_exp: bool = False) -> dict:

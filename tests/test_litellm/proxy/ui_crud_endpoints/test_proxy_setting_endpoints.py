@@ -2419,13 +2419,22 @@ class TestUploadLogo:
         yield
         app.dependency_overrides.pop(user_api_key_auth, None)
 
+    @staticmethod
+    def _real_png_bytes() -> bytes:
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (4, 4), color=(255, 0, 0)).save(buf, format="PNG")
+        return buf.getvalue()
+
     @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
     def test_upload_logo_png_success(self, _role_auth, tmp_path, monkeypatch):
         monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
-        png_magic = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + b"rest-of-png"
         response = client.post(
             "/upload/logo",
-            files={"file": ("logo.png", png_magic, "image/png")},
+            files={"file": ("logo.png", self._real_png_bytes(), "image/png")},
         )
         assert response.status_code == 200
         body = response.json()
@@ -2447,10 +2456,9 @@ class TestUploadLogo:
     )
     def test_upload_logo_non_admin_forbidden(self, _role_auth, tmp_path, monkeypatch):
         monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
-        png_magic = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
         response = client.post(
             "/upload/logo",
-            files={"file": ("logo.png", png_magic, "image/png")},
+            files={"file": ("logo.png", self._real_png_bytes(), "image/png")},
         )
         assert response.status_code == 403
 
@@ -2466,16 +2474,40 @@ class TestUploadLogo:
         assert not (tmp_path / "uploads").exists() or not os.listdir(tmp_path / "uploads")
 
     @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
-    def test_upload_logo_rejects_html_renamed_to_png(self, _role_auth, tmp_path, monkeypatch):
+    def test_upload_logo_rejects_undecodable_image_header(self, _role_auth, tmp_path, monkeypatch):
+        """A payload whose magic bytes say PNG but which cannot be decoded
+        (e.g. a polyglot with garbage after the header) must be rejected:
+        only re-encoded pixel data is ever stored."""
         monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
         response = client.post(
             "/upload/logo",
             files={"file": ("logo.png", b"\x89PNG\r\n\x1a\n<html><script>alert(1)</script>", "image/png")},
         )
-        # magic bytes say PNG, so it is accepted as an image; the served path
-        # re-validates via resolve_validated_local_image_path on read too
-        if response.status_code == 200:
-            assert open(response.json()["file_path"], "rb").read(8) == bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        assert response.status_code == 400
+        assert "could not be decoded" in str(response.json()["detail"])
+        assert not (tmp_path / "uploads").exists() or not os.listdir(tmp_path / "uploads")
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_strips_polyglot_trailing_content(self, _role_auth, tmp_path, monkeypatch):
+        """A real PNG with attacker-controlled bytes appended after the image
+        data is accepted, but the stored file is the Pillow re-encode: it
+        decodes to the same pixels and no longer contains the trailing
+        payload."""
+        import io
+
+        from PIL import Image
+
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        payload = self._real_png_bytes() + b"<script>alert(1)</script>"
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", payload, "image/png")},
+        )
+        assert response.status_code == 200
+        stored = open(response.json()["file_path"], "rb").read()
+        assert b"<script>" not in stored
+        with Image.open(io.BytesIO(stored)) as img:
+            assert img.size == (4, 4)
 
     @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
     def test_upload_logo_rejects_oversized_file(self, _role_auth, tmp_path, monkeypatch):

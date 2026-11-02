@@ -847,6 +847,10 @@ class LiteLLMRoutes(enum.Enum):
             # Model cost map maintenance views (read-only status / source).
             "/schedule/model_cost_map_reload/status",
             "/model/cost_map/source",
+            # Claude Code marketplace plugin listing. The route also has a
+            # POST handler (mixed methods), so the GET-only derivation fails
+            # closed; the read is explicitly allowlisted here.
+            "/claude-code/plugins",
         ]
         # Spend tracking reads (/spend/logs, /spend/logs/ui, /spend/keys,
         # /spend/users, /spend/tags, /spend/calculate, /cost/estimate). Admin

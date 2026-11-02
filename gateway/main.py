@@ -25,6 +25,7 @@ DatabaseURLSettings.from_env().apply_to_env()
 
 from litellm.proxy.proxy_server import app
 
+from component_route_match import path_matches_any
 from gateway.routes.allowlist import GATEWAY_EXACT_PATHS, GATEWAY_PATH_PREFIXES
 
 
@@ -38,7 +39,7 @@ def _is_gateway_route(route) -> bool:
         return False
     if path in GATEWAY_EXACT_PATHS:
         return True
-    return any(path.startswith(prefix) for prefix in GATEWAY_PATH_PREFIXES)
+    return path_matches_any(path, GATEWAY_PATH_PREFIXES)
 
 
 # Wrap proxy_server's existing lifespan so the route trim runs *after* its

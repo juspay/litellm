@@ -472,3 +472,67 @@ async def test_apply_guardrail_enforces_execution_timeout(monkeypatch):
     guardrail = _compile(slow_code)
     with pytest.raises(CustomCodeExecutionTimeoutError):
         await guardrail.apply_guardrail({}, {}, "pre_call")
+
+
+# ── Regex / JSON primitive input size caps ───────────────────────────────────
+#
+# A pathological pattern (catastrophic backtracking) or a multi-megabyte
+# document must be refused before the regex engine starts work instead of
+# pinning a worker for the full guardrail deadline.
+
+
+def test_regex_primitives_refuse_oversized_text():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big = "a" * (primitives._MAX_REGEX_TEXT_CHARS + 1)
+
+    assert primitives.regex_match(big, "a") is False
+    assert primitives.regex_match_all(big, "a+") is False
+    assert primitives.regex_replace(big, "a", "b") == big
+    assert primitives.regex_find_all(big, "a") == []
+
+
+def test_regex_primitives_refuse_oversized_pattern():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big_pattern = "a" * (primitives._MAX_REGEX_PATTERN_CHARS + 1)
+
+    assert primitives.regex_match("text", big_pattern) is False
+    assert primitives.regex_match_all("text", big_pattern) is False
+    assert primitives.regex_replace("text", big_pattern, "b") == "text"
+    assert primitives.regex_find_all("text", big_pattern) == []
+
+
+def test_regex_primitives_accept_inputs_at_the_cap():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    at_cap_text = "hello world " * 100
+    assert len(at_cap_text) <= primitives._MAX_REGEX_TEXT_CHARS
+    assert primitives.regex_match(at_cap_text, r"world") is True
+    assert primitives.regex_find_all(at_cap_text, r"world") == ["world"] * 100
+
+
+def test_regex_primitives_still_backtracking_safe_on_capped_input():
+    """The cap alone does not make every pattern fast, but the classic
+    catastrophic-backtracking payload must at least be refused when it is
+    also oversized (text+pattern beyond the caps), and the cap keeps the
+    engine's work bounded."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    evil = "(a+)+$"[: primitives._MAX_REGEX_PATTERN_CHARS] + "a" * 32
+    assert len(evil) <= primitives._MAX_REGEX_PATTERN_CHARS
+    assert isinstance(primitives.regex_match("aaaaab", evil), bool)
+
+
+def test_json_parse_refuses_oversized_input():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big = '{"k":"' + "a" * primitives._MAX_JSON_CHARS + '"}'
+    assert len(big) > primitives._MAX_JSON_CHARS
+    assert primitives.json_parse(big) is None
+
+
+def test_json_parse_accepts_input_at_the_cap():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    assert primitives.json_parse('{"a": 1}') == {"a": 1}

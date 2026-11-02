@@ -272,3 +272,32 @@ def test_execute_generic_error_does_not_leak_host_paths(monkeypatch):
     assert result["success"] is False
     assert result["error"] == "Sandbox execution failed"
     assert "/Users" not in result["error"]
+
+
+def test_execute_drops_unsafe_skill_file_paths(monkeypatch):
+    _install_fake_sandbox(monkeypatch)
+    executor = SkillsSandboxExecutor()
+    monkeypatch.setattr(
+        executor, "_collect_generated_files", lambda *args, **kwargs: []
+    )
+
+    result = executor.execute(
+        code="print('hello')",
+        skill_files={
+            "main.py": b"print('x')",
+            "pkg/helpers.py": b"h = 1",
+            "../escape.py": b"bad",
+            "pkg/../escape.py": b"bad",
+            "/etc/passwd": b"bad",
+            "C:\\\\windows\\\\evil.py": b"bad",
+            "": b"bad",
+        },
+    )
+
+    assert result["success"] is True
+    copied_paths = {
+        sandbox_path for _, sandbox_path in _FakeSandboxSession.last_instance.copy_to_runtime_calls
+    }
+    assert copied_paths == {"/sandbox/main.py", "/sandbox/pkg/helpers.py"}
+    assert _FakeSandboxSession.last_instance.copied_contents["/sandbox/main.py"] == b"print('x')"
+    assert _FakeSandboxSession.last_instance.copied_contents["/sandbox/pkg/helpers.py"] == b"h = 1"

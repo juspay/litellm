@@ -329,3 +329,52 @@ async def test_plugin_claim_rejected_when_user_removed_or_deactivated(monkeypatc
         _patch_live_role(monkeypatch, gone_role)
         with _pytest.raises(ValueError, match="unknown, disabled, or removed"):
             await verify_plugin_session_claim("chat-ui", claim)
+
+
+async def test_plugin_cannot_forge_claim_with_own_key(monkeypatch) -> None:
+    """A plugin holds only its per-plugin Fernet key. It must not be able to
+    mint a claim naming a different user: the issuer MAC is computed with a
+    proxy-side key the plugin cannot derive, so verification fails closed."""
+    import json
+
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import (
+        _plugin_fernet,
+        issue_plugin_session_claim,
+        verify_plugin_session_claim,
+    )
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    _patch_live_role(monkeypatch, "proxy_admin")
+
+    forged_payload = json.dumps(
+        {
+            "plugin": "chat-ui",
+            "user_id": "victim-admin",
+            "user_role": "proxy_admin",
+            "exp": __import__("time").time() + 30,
+        }
+    ).encode()
+    plugin_only_token = _plugin_fernet("chat-ui").encrypt(forged_payload).decode()
+
+    with _pytest.raises(ValueError, match="not proxy-issued"):
+        await verify_plugin_session_claim("chat-ui", plugin_only_token)
+
+
+async def test_plugin_claim_tampered_issuer_mac_rejected(monkeypatch) -> None:
+    """Flipping the issuer MAC (or dropping it) must reject the claim."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    _patch_live_role(monkeypatch, "proxy_admin")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+
+    ciphertext, _, mac = claim.rpartition(".")
+    tampered = f"{ciphertext}.{mac[:-1]}{'A' if mac[-1] != 'A' else 'B'}"
+    with _pytest.raises(ValueError, match="not proxy-issued"):
+        await verify_plugin_session_claim("chat-ui", tampered)
+    with _pytest.raises(ValueError, match="not proxy-issued"):
+        await verify_plugin_session_claim("chat-ui", ciphertext)

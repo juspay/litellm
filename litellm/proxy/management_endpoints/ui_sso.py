@@ -3412,7 +3412,7 @@ class SSOAuthenticationHandler:
             server_root_path=get_server_root_path(),
         )
 
-        jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), master_key or "")
+        jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), master_key or "")
 
         # Control-plane cross-origin: store JWT behind a single-use opaque
         # code (60s TTL) so the token never appears in browser history / logs.
@@ -4382,7 +4382,7 @@ def _require_sso_debug_access(request: Request) -> None:
     if not session_cookie or not master_key:
         raise HTTPException(status_code=401, detail={"error": "Admin session required for SSO debug endpoints."})
     try:
-        session_claims = decode_ui_session_jwt(session_cookie, master_key, verify_exp=False)
+        session_claims = decode_ui_session_jwt(session_cookie, master_key, verify_exp=True, require_exp=True)
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail={"error": "Admin session required for SSO debug endpoints."})
     if session_claims.get("user_role") != LitellmUserRoles.PROXY_ADMIN.value:

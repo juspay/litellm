@@ -109,9 +109,32 @@ def test_ui_session_jwt_verify_exp_false_accepts_expired() -> None:
 def test_ui_session_jwt_require_exp_rejects_missing_expiry() -> None:
     from litellm.proxy.common_utils.session_cookie_utils import decode_ui_session_jwt
 
-    token = _encode_ui_session(dict(UI_PAYLOAD))
+    import litellm.proxy.common_utils.session_cookie_utils as scu
+
+    payload = dict(UI_PAYLOAD)
+    token = pyjwt.encode(
+        payload, scu._ui_session_signing_key(MASTER_KEY), algorithm="HS256"
+    )
     with pytest.raises(pyjwt.MissingRequiredClaimError):
         decode_ui_session_jwt(token, MASTER_KEY, require_exp=True)
+
+
+def test_ui_session_jwt_encode_adds_exp_when_missing() -> None:
+    from litellm.proxy.common_utils.session_cookie_utils import decode_ui_session_jwt
+
+    token = _encode_ui_session(dict(UI_PAYLOAD))
+    claims = decode_ui_session_jwt(token, MASTER_KEY, require_exp=True)
+    assert claims["user_id"] == "u1"
+    assert claims["exp"] > int(time.time())
+
+
+def test_ui_session_jwt_encode_respects_caller_supplied_exp() -> None:
+    from litellm.proxy.common_utils.session_cookie_utils import decode_ui_session_jwt
+
+    caller_exp = int(time.time()) + 60
+    token = _encode_ui_session({**UI_PAYLOAD, "exp": caller_exp})
+    claims = decode_ui_session_jwt(token, MASTER_KEY, require_exp=True)
+    assert claims["exp"] == caller_exp
 
 
 def test_byok_session_jwt_cannot_verify_ui_session_jwt() -> None:

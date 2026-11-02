@@ -1440,14 +1440,28 @@ async def upload_logo(
             status_code=400,
             detail="Invalid file type. Upload a PNG, JPG, GIF, WEBP, or ICO image.",
         )
-    extension_by_media_type = {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-        "image/x-icon": ".ico",
-    }
-    file_extension = extension_by_media_type[media_type]
+
+    # Re-encode through Pillow so only decoded pixel data is stored: a
+    # polyglot payload (valid image header followed by arbitrary content)
+    # passes the magic-byte check but is stripped by the decode/re-encode
+    # round-trip. The output is always PNG regardless of input format.
+    import io
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(io.BytesIO(file_content)) as img:
+            img.load()
+            reencoded = io.BytesIO()
+            img.save(reencoded, format="PNG")
+            file_content = reencoded.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid image file: it could not be decoded as an image.",
+        ) from e
+    media_type = "image/png"
+    file_extension = ".png"
 
     # Write outside the importable proxy package: the old location (a
     # directory inside litellm/proxy, on sys.path) turned any upload into a

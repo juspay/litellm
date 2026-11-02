@@ -1480,8 +1480,7 @@ if MCP_AVAILABLE:
             token_cookie = request.cookies.get("token")
             if token_cookie and master_key:
                 try:
-                    # UI session cookies may omit exp; don't require it.
-                    decoded = decode_ui_session_jwt(token_cookie, master_key, verify_exp=False)
+                    decoded = decode_ui_session_jwt(token_cookie, master_key, require_exp=True)
                     if decoded.get("login_method") in ("sso", "username_password"):
                         cookie_key = decoded.get("key", "")
                         if cookie_key:

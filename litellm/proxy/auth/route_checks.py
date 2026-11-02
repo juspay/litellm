@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterable
 from typing import List, Optional
 
 from fastapi import HTTPException, Request, status
@@ -50,7 +51,26 @@ _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES = frozenset(
         KeyManagementRoutes.KEY_UNBLOCK.value,
         KeyManagementRoutes.KEY_BULK_UPDATE.value,
         KeyManagementRoutes.TEAM_KEY_BULK_UPDATE.value,
+        # team/model membership writes
+        "/team/model/add",
+        "/team/model/delete",
+        # model-level blocking
+        "/model/block",
+        "/model/unblock",
     ]
+)
+
+# Path-parameterized write routes the blocklist above cannot match literally.
+# The request route carries resolved ids, so these are matched by suffix.
+_PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTE_SUFFIXES = (
+    # /service-account/request-rotation, /service-account/approve, /service-account/reject
+    "/service-account/request-rotation",
+    "/service-account/approve",
+    "/service-account/reject",
+    # /{mcp_server_name}/token and /{mcp_server_name}/register (dynamic MCP
+    # server OAuth registration)
+    "/token",
+    "/register",
 )
 
 # Suffixes for `/key/{key_id}/...` path-parameterized write routes that the
@@ -747,6 +767,44 @@ class RouteChecks:
     # write-allowlist below.
     _SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
+    # Cache for the GET-only route set derived from the app's route table.
+    # Keyed alongside the route count so lazily-mounted routers (which add
+    # routes on first matching request) invalidate the snapshot.
+    _GET_ONLY_ROUTE_PATHS: frozenset[str] | None = None
+    _GET_ONLY_ROUTE_COUNT: int = -1
+
+    @classmethod
+    def _route_is_read_only(cls, route: str) -> bool:
+        """True if the app registers ``route`` with safe methods only.
+
+        Derived from the live route table so it cannot drift: any path with a
+        POST/PUT/PATCH/DELETE handler is a write surface, and a GET request to
+        it must not be auto-granted to PROXY_ADMIN_VIEW_ONLY. The snapshot is
+        rebuilt whenever the app's route count changes (lazy feature mounting
+        adds routers at request time). If the proxy app cannot be imported
+        (SDK-only use of these helpers), the set is empty and every
+        safe-method request falls through to the explicit read allowlists —
+        fail closed.
+        """
+        try:
+            from litellm.proxy.proxy_server import app  # noqa: PLC0415
+        except ImportError:
+            return False
+        if cls._GET_ONLY_ROUTE_PATHS is None or cls._GET_ONLY_ROUTE_COUNT != len(app.router.routes):
+            write_verbs = {"POST", "PUT", "PATCH", "DELETE"}
+            paths: set[str] = set()
+            for r in app.router.routes:
+                path: str | None = getattr(r, "path", None)
+                methods: Iterable[str] | None = getattr(r, "methods", None)
+                if path is None or not methods:
+                    continue
+                if write_verbs & {m.upper() for m in methods}:
+                    continue
+                paths.add(path)
+            cls._GET_ONLY_ROUTE_PATHS = frozenset(paths)
+            cls._GET_ONLY_ROUTE_COUNT = len(app.router.routes)
+        return route in cls._GET_ONLY_ROUTE_PATHS
+
     # Write routes the Admin Viewer may reach because the endpoint itself
     # performs the authorization (see `self_managed_routes`). `/user/delete`
     # gates on PROXY_ADMIN, USER_DELETE_ALLOWED_USER_IDS, or a scoped
@@ -772,10 +830,13 @@ class RouteChecks:
 
         Implementation:
           1. LLM/inference routes → 403 (cost-incurring).
-          2. Safe HTTP method (GET/HEAD/OPTIONS) → allow by default. This is
-             the read-parity guarantee — every new GET endpoint added anywhere
-             in the codebase is automatically readable by Admin Viewer
-             without needing to remember to add it to an allowlist.
+          2. Safe HTTP method (GET/HEAD/OPTIONS) → allowed only for routes
+             the app registers as GET-only (no mutating verb on the same
+             path), or for routes in admin_viewer_routes /
+             global_spend_tracking_routes. This keeps read-parity for every
+             genuinely new read endpoint (GET-only registration needs no
+             allowlist entry) while failing closed for a write endpoint that
+             gains a GET alias.
           3. Unsafe HTTP method (POST/PUT/PATCH/DELETE):
              - Allow `/user/update` only when restricted to user_email/password.
              - Block all explicit writes in `_ADMIN_VIEWER_BLOCKED_WRITE_ROUTES`.
@@ -796,8 +857,10 @@ class RouteChecks:
         # endpoint) would otherwise be auto-granted without review.
         # _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES is the single authoritative
         # write blocklist for this role; there is no second copy to drift.
-        if route in _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES or (
-            route.startswith("/key/") and route.endswith(_PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES)
+        if (
+            route in _PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTES
+            or (route.startswith("/key/") and route.endswith(_PROXY_ADMIN_VIEW_ONLY_BLOCKED_KEY_SUFFIXES))
+            or route.endswith(_PROXY_ADMIN_VIEW_ONLY_BLOCKED_ROUTE_SUFFIXES)
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -821,9 +884,31 @@ class RouteChecks:
         method = request.method.upper() if request is not None else "GET"
         is_safe_method = method in RouteChecks._SAFE_HTTP_METHODS
 
-        # ── Safe HTTP method: default-allow ──────────────────────────────
+        # ── Safe HTTP method: read-only routes only ────────────────────────
+        # A GET/HEAD/OPTIONS request is allowed only for routes the app
+        # registers as GET-only (no POST/PUT/PATCH/DELETE handler exists for
+        # the same path), or for routes in the explicit read allowlist. A
+        # write endpoint that gains a GET alias — or any new route registered
+        # with mixed methods — therefore fails closed instead of being
+        # auto-granted to the read-only admin role.
         if is_safe_method:
-            return
+            from .auth_utils import get_request_route_template  # noqa: PLC0415
+
+            route_template = get_request_route_template(request) if request is not None else None
+            if RouteChecks._route_is_read_only(route) or (
+                route_template is not None and RouteChecks._route_is_read_only(route_template)
+            ):
+                return
+            if RouteChecks.check_route_access(route=route, allowed_routes=LiteLLMRoutes.admin_viewer_routes.value):
+                return
+            if RouteChecks.check_route_access(
+                route=route, allowed_routes=LiteLLMRoutes.global_spend_tracking_routes.value
+            ):
+                return
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"user not allowed to access this route, role= {_user_role}. Trying to access: {route}",
+            )
 
         # ── Unsafe HTTP method: explicit checks ──────────────────────────
         # Allow `/user/update` for self-service email / password change.

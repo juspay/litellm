@@ -79,6 +79,28 @@ def modify(
 # Regex Primitives
 # =============================================================================
 
+# Size caps for regex inputs. A pathological pattern (catastrophic
+# backtracking) or a multi-megabyte document can otherwise pin a worker for
+# the full guardrail deadline even though the caller enforces a 5s timeout:
+# the cap bounds the work before it starts instead of relying on the
+# deadline to interrupt it.
+_MAX_REGEX_TEXT_CHARS = 1_000_000
+_MAX_REGEX_PATTERN_CHARS = 1_000
+
+
+def _regex_inputs_within_limits(text: str, pattern: str) -> bool:
+    if len(text) > _MAX_REGEX_TEXT_CHARS:
+        verbose_proxy_logger.warning(
+            f"Custom code regex primitive refused text of {len(text)} chars (limit {_MAX_REGEX_TEXT_CHARS})"
+        )
+        return False
+    if len(pattern) > _MAX_REGEX_PATTERN_CHARS:
+        verbose_proxy_logger.warning(
+            f"Custom code regex primitive refused pattern of {len(pattern)} chars (limit {_MAX_REGEX_PATTERN_CHARS})"
+        )
+        return False
+    return True
+
 
 def regex_match(text: str, pattern: str, flags: int = 0) -> bool:
     """
@@ -93,6 +115,8 @@ def regex_match(text: str, pattern: str, flags: int = 0) -> bool:
         True if pattern matches, False otherwise
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return False
         return bool(re.search(pattern, text, flags))
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_match error: {e}")
@@ -112,6 +136,8 @@ def regex_match_all(text: str, pattern: str, flags: int = 0) -> bool:
         True if pattern matches entire text, False otherwise
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return False
         return bool(re.fullmatch(pattern, text, flags))
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_match_all error: {e}")
@@ -132,6 +158,8 @@ def regex_replace(text: str, pattern: str, replacement: str, flags: int = 0) -> 
         The text with replacements applied
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return text
         return re.sub(pattern, replacement, text, flags=flags)
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_replace error: {e}")
@@ -151,6 +179,8 @@ def regex_find_all(text: str, pattern: str, flags: int = 0) -> List[str]:
         List of all matches
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return []
         return re.findall(pattern, text, flags)
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_find_all error: {e}")
@@ -160,6 +190,11 @@ def regex_find_all(text: str, pattern: str, flags: int = 0) -> List[str]:
 # =============================================================================
 # JSON Primitives
 # =============================================================================
+
+# Size cap for JSON inputs: a multi-megabyte or deeply nested document makes
+# json.loads (and jsonschema validation over the parsed value) expensive
+# enough to pin a worker for the full guardrail deadline.
+_MAX_JSON_CHARS = 1_000_000
 
 
 def json_parse(text: str) -> Optional[Any]:
@@ -173,6 +208,11 @@ def json_parse(text: str) -> Optional[Any]:
         Parsed Python object, or None if parsing fails
     """
     try:
+        if len(text) > _MAX_JSON_CHARS:
+            verbose_proxy_logger.warning(
+                f"Custom code json_parse refused input of {len(text)} chars (limit {_MAX_JSON_CHARS})"
+            )
+            return None
         return json.loads(text)
     except (json.JSONDecodeError, TypeError) as e:
         verbose_proxy_logger.debug(f"Starlark json_parse error: {e}")

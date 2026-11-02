@@ -17,7 +17,10 @@ Plugin iframe auth:
   derived as HMAC-SHA256(LITELLM_SALT_KEY, plugin_name).  The claim carries no
   litellm bearer token, so a compromised plugin learns only the caller's
   identity, never their credential.  LITELLM_SALT_KEY itself is never shared
-  with plugins — each plugin holds only its own derived key.
+  with plugins — each plugin holds only its own derived key.  On top of the
+  encryption, the proxy signs each claim with an issuer key the plugin
+  cannot derive, so a plugin can read claims but never mint one naming a
+  different user.
 """
 
 import base64
@@ -144,6 +147,40 @@ def _plugin_fernet(plugin_name: str) -> Fernet:
 
 _CLAIM_TTL_SECONDS = 30  # identity claims expire after 30 s
 
+# Purpose string for the proxy-side issuer key. The per-plugin Fernet key
+# above is shared with the plugin, so alone it proves nothing about who
+# minted a claim: a plugin could re-encrypt any {user_id, ...} payload it
+# likes. Claims are additionally signed with a key derived from a distinct
+# purpose string that never leaves the proxy, so only the proxy can issue
+# claims the proxy will accept.
+_CLAIM_ISSUER_PURPOSE = "litellm-plugin-claim-issuer-v1:"
+
+
+def _claim_issuer_key(plugin_name: str) -> bytes:
+    """Proxy-side HMAC key for signing issued claims. Distinct from the
+    per-plugin Fernet key and never shared with the plugin."""
+    salt = os.getenv("LITELLM_SALT_KEY")
+    if not salt:
+        raise ValueError("LITELLM_SALT_KEY is not configured; plugin session claims are unavailable")
+    return _hmac.new(salt.encode(), (_CLAIM_ISSUER_PURPOSE + plugin_name).encode(), hashlib.sha256).digest()
+
+
+def _sign_claim(plugin_name: str, ciphertext: str) -> str:
+    mac = _hmac.new(_claim_issuer_key(plugin_name), ciphertext.encode(), hashlib.sha256).digest()
+    return f"{ciphertext}.{base64.urlsafe_b64encode(mac).decode().rstrip('=')}"
+
+
+def _claim_signature_is_valid(plugin_name: str, token: str) -> bool:
+    ciphertext, sep, mac_b64 = token.rpartition(".")
+    if not sep or not mac_b64 or "." in mac_b64:
+        return False
+    try:
+        mac = base64.urlsafe_b64decode(mac_b64 + "=" * (-len(mac_b64) % 4))
+    except (ValueError, TypeError):
+        return False
+    expected = _hmac.new(_claim_issuer_key(plugin_name), ciphertext.encode(), hashlib.sha256).digest()
+    return _hmac.compare_digest(mac, expected)
+
 
 def issue_plugin_session_claim(plugin_name: str, user_id: str | None, user_role: str | None) -> str:
     """Issue a short-lived, audience-scoped identity claim for the plugin.
@@ -151,6 +188,12 @@ def issue_plugin_session_claim(plugin_name: str, user_id: str | None, user_role:
     The claim contains {user_id, user_role, plugin, exp}.  Crucially it
     contains NO litellm bearer token — the plugin can only derive the
     caller's identity, not act as them against the proxy.
+
+    The token is <fernet-ciphertext>.<issuer-mac>: the Fernet layer is
+    decryptable by the plugin (it holds the per-plugin key), while the
+    issuer MAC is verifiable only by the proxy. A plugin can therefore read
+    claims but cannot mint one naming a different user, because it cannot
+    compute the issuer MAC.
     """
     claim = {
         "plugin": plugin_name,
@@ -158,7 +201,8 @@ def issue_plugin_session_claim(plugin_name: str, user_id: str | None, user_role:
         "user_role": user_role or "",
         "exp": int(time.time()) + _CLAIM_TTL_SECONDS,
     }
-    return _plugin_fernet(plugin_name).encrypt(json.dumps(claim).encode()).decode()
+    ciphertext = _plugin_fernet(plugin_name).encrypt(json.dumps(claim).encode()).decode()
+    return _sign_claim(plugin_name, ciphertext)
 
 
 async def _resolve_live_user_role(user_id: str) -> str | None:
@@ -198,14 +242,19 @@ async def _resolve_live_user_role(user_id: str) -> str | None:
     return getattr(row, "user_role", None)
 
 
-async def verify_plugin_session_claim(plugin_name: str, ciphertext: str) -> dict:
+async def verify_plugin_session_claim(plugin_name: str, token: str) -> dict:
     """Verify and decode a plugin session claim.
 
-    Raises ValueError if the HMAC is invalid, the audience is wrong, the
-    claim is expired, or the caller's role changed since issuance (demotion
-    and deactivation take effect immediately rather than at claim expiry).
-    Returns the decoded claim dict with the freshly resolved user_role.
+    Raises ValueError if the issuer signature is missing or invalid (the
+    token was not minted by the proxy), the Fernet layer is invalid, the
+    audience is wrong, the claim is expired, or the caller's role changed
+    since issuance (demotion and deactivation take effect immediately rather
+    than at claim expiry). Returns the decoded claim dict with the freshly
+    resolved user_role.
     """
+    if not _claim_signature_is_valid(plugin_name, token):
+        raise ValueError("Plugin session claim is not proxy-issued")
+    ciphertext = token.rpartition(".")[0]
     try:
         raw = _plugin_fernet(plugin_name).decrypt(ciphertext.encode(), ttl=_CLAIM_TTL_SECONDS)
         claim = json.loads(raw)

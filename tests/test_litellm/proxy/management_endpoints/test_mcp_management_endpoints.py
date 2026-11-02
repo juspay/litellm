@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import json
+import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import List, Optional
@@ -1850,15 +1851,19 @@ class TestTemporaryMCPSessionEndpoints:
 
         master_key = "test-master-key"
         api_key_in_cookie = "sk-test-cookie-key"
-        token_cookie = jwt.encode(
+        from litellm.proxy.common_utils.session_cookie_utils import (
+            encode_ui_session_jwt,
+        )
+
+        token_cookie = encode_ui_session_jwt(
             {
                 "user_id": "user@example.com",
                 "key": api_key_in_cookie,
                 "user_role": "proxy_admin",
                 "login_method": "sso",
+                "exp": int(time.time()) + 60,
             },
             master_key,
-            algorithm="HS256",
         )
 
         mock_request = MagicMock()

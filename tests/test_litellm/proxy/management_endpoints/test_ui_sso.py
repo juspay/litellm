@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7604,6 +7605,72 @@ async def test_debug_sso_callback_rejects_non_admin_session(monkeypatch):
             await debug_sso_callback(mock_request)
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_debug_sso_callback_rejects_expired_admin_session(monkeypatch):
+    """An expired admin session cookie must be rejected with 401: cookie
+    Max-Age must not be the only thing bounding a debug session's validity."""
+    from litellm.proxy.common_utils.session_cookie_utils import encode_ui_session_jwt
+    from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
+
+    monkeypatch.setenv("ENABLE_SSO_DEBUG", "true")
+    token = encode_ui_session_jwt(
+        {
+            "user_id": "admin-1",
+            "user_role": "proxy_admin",
+            "login_method": "username_password",
+            "exp": int(time.time()) - 60,
+        },
+        "sk-debug-test-key",
+    )
+    mock_request = MagicMock(spec=Request)
+    mock_request.base_url = "http://proxy.example.com/"
+    mock_request.cookies = {"token": token}
+    mock_request.query_params = {}
+
+    with (
+        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await debug_sso_callback(mock_request)
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_debug_sso_callback_rejects_session_without_exp(monkeypatch):
+    """A session JWT with no exp claim must be rejected: the debug gate must
+    not treat a never-expiring token as a valid admin session."""
+    import jwt as pyjwt
+
+    from litellm.proxy.common_utils.session_cookie_utils import _ui_session_signing_key
+    from litellm.proxy.management_endpoints.ui_sso import debug_sso_callback
+
+    monkeypatch.setenv("ENABLE_SSO_DEBUG", "true")
+    token = pyjwt.encode(
+        {
+            "user_id": "admin-1",
+            "user_role": "proxy_admin",
+            "login_method": "username_password",
+        },
+        _ui_session_signing_key("sk-debug-test-key"),
+        algorithm="HS256",
+    )
+    mock_request = MagicMock(spec=Request)
+    mock_request.base_url = "http://proxy.example.com/"
+    mock_request.cookies = {"token": token}
+    mock_request.query_params = {}
+
+    with (
+        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch("litellm.proxy.proxy_server.master_key", "sk-debug-test-key"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await debug_sso_callback(mock_request)
+
+    assert exc_info.value.status_code == 401
 
 
 @pytest.mark.asyncio

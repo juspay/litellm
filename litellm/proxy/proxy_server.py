@@ -319,6 +319,7 @@ from litellm.proxy.common_utils.reset_budget_job import ResetBudgetJob
 from litellm.proxy.common_utils.session_cookie_utils import (
     decode_ui_session_jwt,
     encode_ui_session_jwt,
+    set_ui_session_cookie,
 )
 from litellm.proxy.common_utils.swagger_utils import ERROR_RESPONSES
 from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time
@@ -13297,7 +13298,7 @@ async def login(request: Request):
     )
 
     # Generate JWT token
-    jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), cast(str, master_key))
+    jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), cast(str, master_key))
 
     # Build redirect URL
     litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
@@ -13338,7 +13339,7 @@ async def login_v2(request: Request):
             premium_user=premium_user,
         )
 
-        jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), cast(str, master_key))
+        jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), cast(str, master_key))
 
         litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
@@ -13414,7 +13415,7 @@ async def login_v3(request: Request):
             premium_user=premium_user,
         )
 
-        jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), cast(str, master_key))
+        jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), cast(str, master_key))
 
         litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
@@ -13600,7 +13601,7 @@ async def onboarding(invite_link: str, request: Request):
         disabled_non_admin_personal_key_creation=disabled_non_admin_personal_key_creation,
         server_root_path=get_server_root_path(),
     )
-    jwt_token = encode_ui_session_jwt(cast(dict, returned_ui_token_object), master_key)
+    jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), master_key)
 
     litellm_dashboard_ui += "?token={}&user_email={}".format(jwt_token, user_email)
     return {
@@ -13633,7 +13634,7 @@ def _get_onboarding_claims_from_request(request: Request) -> dict:
         onboarding_token = onboarding_token.split(" ", 1)[1]
 
     try:
-        return decode_ui_session_jwt(onboarding_token, master_key, verify_exp=False)
+        return decode_ui_session_jwt(onboarding_token, master_key, require_exp=True)
     except Exception:
         raise HTTPException(
             status_code=401,
@@ -13698,7 +13699,7 @@ async def _generate_onboarding_ui_session_token(user_obj: Any) -> str:
         server_root_path=get_server_root_path(),
     )
     assert master_key is not None
-    return encode_ui_session_jwt(cast(dict, returned_ui_token_object), master_key)
+    return encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), master_key)
 
 
 @app.post("/onboarding/claim_token", include_in_schema=False)
@@ -13889,7 +13890,15 @@ async def get_image():
         safe_logo = resolve_validated_local_image_path(logo_path)
         if safe_logo is not None:
             safe_logo_path, media_type = safe_logo
-            return FileResponse(safe_logo_path, media_type=media_type)
+            # Admin-uploaded bytes are served unauthenticated from the proxy
+            # origin; Content-Disposition: attachment keeps a polyglot from
+            # being rendered as a document on direct navigation (the <img>
+            # embed in the dashboard is unaffected).
+            return FileResponse(
+                safe_logo_path,
+                media_type=media_type,
+                headers={"Content-Disposition": "attachment"},
+            )
         verbose_proxy_logger.warning(
             "UI_LOGO_PATH %r is not a supported image file or does not exist, falling back to default logo",
             logo_path,
@@ -13932,7 +13941,11 @@ async def get_favicon():
         safe_favicon = resolve_validated_local_image_path(favicon_url)
         if safe_favicon is not None:
             safe_favicon_path, media_type = safe_favicon
-            return FileResponse(safe_favicon_path, media_type=media_type)
+            return FileResponse(
+                safe_favicon_path,
+                media_type=media_type,
+                headers={"Content-Disposition": "attachment"},
+            )
         verbose_proxy_logger.warning(
             "LITELLM_FAVICON_URL %r is not a supported image file or does not exist, falling back to default favicon",
             favicon_url,
