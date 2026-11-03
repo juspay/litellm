@@ -311,6 +311,7 @@ async def test_token_endpoint_forwards_code_verifier():
         "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client"
     ) as mock_get_client:
         mock_async_client = MagicMock()
+        mock_async_client.client = mock_async_client
         # Use AsyncMock for the async post method
         mock_async_client.post = AsyncMock(return_value=mock_response)
         mock_get_client.return_value = mock_async_client
@@ -486,6 +487,7 @@ async def test_register_client_remote_registration_success():
     }
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     try:
@@ -570,6 +572,7 @@ async def test_register_client_persists_dcr_client_identity():
     }
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     mock_update = AsyncMock(return_value=MagicMock())
@@ -654,6 +657,7 @@ async def test_register_client_does_not_clobber_token_url_when_absent():
     mock_response.json.return_value = {"client_id": "generated-client"}
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     mock_update = AsyncMock(return_value=MagicMock())
@@ -727,6 +731,7 @@ async def test_register_client_reuses_persisted_client_id_for_non_admin_when_reg
     mock_update_mcp_server = AsyncMock()
     mock_update_server = AsyncMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock()
 
     with (
@@ -807,6 +812,7 @@ async def test_register_client_reuse_refreshes_request_server_when_manager_updat
     }
     mock_get_mcp_server = AsyncMock(return_value=persisted_server)
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock()
     mock_update_server = AsyncMock(side_effect=RuntimeError("registry update failed"))
 
@@ -881,6 +887,7 @@ async def test_register_client_returns_reused_client_when_concurrent_persist_win
     mock_response.json.return_value = {"client_id": "generated-client"}
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     persisted_server = MagicMock()
@@ -972,6 +979,8 @@ async def test_register_client_reuses_existing_client_id_without_re_dcr():
     }
 
     mock_async_client = MagicMock()
+
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock()
 
     try:
@@ -1050,6 +1059,7 @@ async def test_public_register_route_does_not_persist_client_credentials():
     }
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     mock_update = AsyncMock(return_value=MagicMock())
@@ -1196,6 +1206,7 @@ async def test_token_endpoint_respects_x_forwarded_proto():
 
     # Mock the async httpx client
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     with patch(
@@ -1493,6 +1504,7 @@ async def test_token_endpoint_respects_x_forwarded_host():
 
     # Mock the async httpx client
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     with patch(
@@ -2278,6 +2290,8 @@ async def test_token_root_resolves_single_oauth2_server():
     mock_response.raise_for_status = MagicMock()
 
     mock_async_client = MagicMock()
+
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     try:
@@ -2814,6 +2828,8 @@ async def test_token_endpoint_refresh_token_grant():
     mock_response.raise_for_status = MagicMock()
 
     mock_async_client = MagicMock()
+
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     with patch(
@@ -3115,6 +3131,7 @@ async def test_token_endpoint_sets_no_store_cache_control():
     }
     fake_http_response.raise_for_status = MagicMock()
     fake_http_client = MagicMock()
+    fake_http_client.client = fake_http_client
     fake_http_client.post = AsyncMock(return_value=fake_http_response)
 
     with patch(
@@ -3166,6 +3183,7 @@ async def _exchange_with_upstream_token_response(upstream_body):
     fake_http_response.json.return_value = upstream_body
     fake_http_response.raise_for_status = MagicMock()
     fake_http_client = MagicMock()
+    fake_http_client.client = fake_http_client
     fake_http_client.post = AsyncMock(return_value=fake_http_response)
 
     with patch(
@@ -3521,10 +3539,14 @@ async def test_token_endpoint_uses_client_secret_basic_when_configured():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch(
-        "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client"
-    ) as mock_get_client, patch.object(litellm, "user_url_validation", False):
+    with (
+        patch(
+            "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client"
+        ) as mock_get_client,
+        patch.object(litellm, "user_url_validation", False),
+    ):
         mock_async_client = MagicMock()
+        mock_async_client.client = mock_async_client
         mock_async_client.post = AsyncMock(return_value=mock_response)
         mock_get_client.return_value = mock_async_client
 
@@ -3951,9 +3973,9 @@ class TestMcpOutboundFetchesUseSsrfValidation:
         monkeypatch.setattr(discoverable_endpoints, "async_safe_get", _boom)
         metadata = await discoverable_endpoints.fetch_upstream_oauth_protected_resource(server)
         assert metadata is None
-        assert any(
-            "async_safe_get must be used" in record.getMessage() for record in caplog.records
-        ), "well-known fetch must go through async_safe_get"
+        assert any("async_safe_get must be used" in record.getMessage() for record in caplog.records), (
+            "well-known fetch must go through async_safe_get"
+        )
 
     @pytest.mark.asyncio
     async def test_well_known_fetch_blocks_link_local_via_safe_get(self, server, monkeypatch):

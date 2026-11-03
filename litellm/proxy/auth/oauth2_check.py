@@ -207,7 +207,10 @@ class Oauth2Handler:
             # variant (GET, unauthenticated introspection) previously skipped
             # this check entirely; RFC 7662 responses default to inactive
             # when the field is absent, and so do permissive token-info IdPs.
-            if not data.get("active"):
+            # The check is an identity comparison, not Python truthiness: a
+            # non-boolean JSON value (e.g. the string "false") must not pass
+            # as an affirmative activity claim.
+            if data.get("active") is not True:
                 raise ValueError("Token is not active")
 
             # Extract user information from response

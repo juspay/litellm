@@ -137,6 +137,20 @@ async def test_check_oauth2_token_info_get_path_enforces_active(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("non_boolean_active", ["false", "true", "yes", 1, "active"])
+async def test_check_oauth2_token_rejects_non_boolean_active_claim(_oauth_env, non_boolean_active):
+    """Regression: the activity check was Python truthiness, so an endpoint
+    returning the string "false" (with a valid role) passed as an active
+    token. Only a JSON boolean true is an affirmative activity claim."""
+    mock_client = MagicMock()
+    mock_client.post = AsyncMock(return_value=_mock_http_response(_introspection_payload(active=non_boolean_active)))
+
+    with patch("litellm.proxy.auth.oauth2_check.get_async_httpx_client", return_value=mock_client):
+        with pytest.raises(ValueError, match="Token is not active"):
+            await Oauth2Handler.check_oauth2_token(token="tok-1")
+
+
+@pytest.mark.asyncio
 async def test_check_oauth2_token_validates_role_on_get_path(monkeypatch):
     monkeypatch.setattr("litellm.proxy.proxy_server.premium_user", True, raising=False)
     monkeypatch.setenv("OAUTH_TOKEN_INFO_ENDPOINT", "https://idp.example.com/tokeninfo")

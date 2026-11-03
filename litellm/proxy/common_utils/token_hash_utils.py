@@ -96,3 +96,18 @@ def hash_token_candidates(token: str) -> tuple[str, ...]:
     if _legacy_digests_allowed():
         return (hash_token(token), legacy_hash_token(token))
     return (hash_token(token),)
+
+
+def hash_token_candidates_if_raw(token: str) -> tuple[str, ...]:
+    """Lookup candidates for a management-endpoint ``key`` value.
+
+    Callers accept either a raw ``sk-`` key or an already-hashed digest. A raw
+    key must resolve to every digest a stored row may carry (the same
+    candidates authentication uses), so management operations (block, unblock,
+    regenerate) can act on pre-pepper rows during the
+    ``LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS`` migration window; a pre-supplied
+    digest is passed through as-is.
+    """
+    if token.startswith("sk-"):
+        return hash_token_candidates(token)
+    return (token,)

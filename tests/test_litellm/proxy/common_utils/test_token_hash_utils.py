@@ -150,3 +150,23 @@ def test_legacy_mode_warns_once(monkeypatch, caplog) -> None:
         thu.hash_token_candidates("sk-c")
     warnings = [r for r in caplog.records if "LITELLM_SALT_KEY" in r.getMessage()]
     assert len(warnings) == 1
+
+
+def test_hash_token_candidates_if_raw_covers_migration_window(monkeypatch) -> None:
+    """Regression: management endpoints must resolve a raw sk- key under every
+    digest a stored row may carry (same candidates as authentication), while
+    a pre-supplied digest passes through untouched."""
+    import litellm.proxy.common_utils.token_hash_utils as thu
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "test-pepper")
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
+
+    raw = "sk-migration-window"
+    candidates = thu.hash_token_candidates_if_raw(raw)
+    assert candidates == (
+        thu.hash_token(raw),
+        thu.legacy_hash_token(raw),
+    )
+
+    digest = "a1b2c3d4" * 8
+    assert thu.hash_token_candidates_if_raw(digest) == (digest,)

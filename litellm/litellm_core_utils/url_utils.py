@@ -471,22 +471,28 @@ async def async_safe_post(client: Any, url: str, **kwargs: Any) -> Any:
     answers with a redirect is surfaced to the caller instead of being
     auto-followed, so every hop the proxy talks to has been validated.
 
+    Accepts either an httpx.AsyncClient or a LiteLLM AsyncHTTPHandler (whose
+    ``post`` method does not accept ``follow_redirects``); a handler is
+    unwrapped to its underlying httpx.AsyncClient so the no-redirect policy
+    is always enforced.
+
     Args:
-        client: An httpx.AsyncClient.
+        client: An httpx.AsyncClient or AsyncHTTPHandler.
         url: The URL to POST to.
         **kwargs: Additional kwargs passed to client.post().
 
     Returns:
         The httpx.Response.
     """
+    http_client = getattr(client, "client", client)
     if not getattr(litellm, "user_url_validation", True):
         _warn_validation_bypass_once()
         kwargs.pop("follow_redirects", None)
-        return await client.post(url, follow_redirects=False, **kwargs)
+        return await http_client.post(url, follow_redirects=False, **kwargs)
     kwargs.pop("follow_redirects", None)
     caller_headers = kwargs.pop("headers", {})
     validated_url, original_host = validate_url(url)
-    return await client.post(
+    return await http_client.post(
         validated_url,
         headers={**caller_headers, "Host": original_host},
         follow_redirects=False,

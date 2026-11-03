@@ -26,7 +26,14 @@ def is_safe_skill_file_path(path: str) -> bool:
 
 
 def _validated_skill_file_paths(skill_files: dict[str, bytes]) -> dict[str, bytes]:
-    return {path: content for path, content in skill_files.items() if is_safe_skill_file_path(path)}
+    safe_files = {path: content for path, content in skill_files.items() if is_safe_skill_file_path(path)}
+    normalized_paths: set[str] = set()
+    for path in safe_files:
+        normalized = str(PurePosixPath(path))
+        if normalized in normalized_paths:
+            raise ValueError(f"Duplicate skill file path after normalization: {normalized}")
+        normalized_paths.add(normalized)
+    return safe_files
 
 
 def _validate_requirements(requirements: str) -> None:
@@ -122,7 +129,11 @@ class SkillsSandboxExecutor:
         # created: a rejected install must not spin up a container at all,
         # and the caller gets the specific disallowed token instead of the
         # generic failure (the message contains only the offending line's
-        # first token, never host paths).
+        # first token, never host paths). The validated bytes are the ONLY
+        # bytes pip ever sees: the install step reads the staged
+        # .litellm_requirements.txt copy below, never a skill-supplied
+        # requirements.txt, so a skill cannot swap contents after validation
+        # via path variants like ./requirements.txt.
         _requirements_to_validate = requirements or (
             skill_files.get("requirements.txt", b"").decode("utf-8", errors="replace")
             if "requirements.txt" in skill_files
@@ -140,7 +151,16 @@ class SkillsSandboxExecutor:
                     "files": [],
                 }
 
-        skill_files = _validated_skill_file_paths(skill_files)
+        try:
+            skill_files = _validated_skill_file_paths(skill_files)
+        except ValueError as _dup_err:
+            verbose_logger.error(f"SkillsSandboxExecutor: {_dup_err}")
+            return {
+                "success": False,
+                "output": "",
+                "error": str(_dup_err),
+                "files": [],
+            }
 
         try:
             # Create sandbox session
@@ -155,12 +175,19 @@ class SkillsSandboxExecutor:
             # Network isolation: model-generated code runs with no outbound
             # network by default. Requirements installation is the only step
             # that legitimately needs the network (to reach the package
-            # index), so it opts back in explicitly via runtime configs when
-            # present. Operators can override with LITELLM_SANDBOX_NETWORK_MODE
-            # (e.g. for allow-listed egress proxies).
-            _default_network_mode = os.getenv("LITELLM_SANDBOX_NETWORK_MODE", "none")
-            _needs_network = bool(requirements) or "requirements.txt" in skill_files
-            _network_mode = "bridge" if _needs_network and _default_network_mode == "none" else _default_network_mode
+            # index), so it opts back in via runtime configs when the
+            # operator has not picked a mode explicitly. An explicit
+            # LITELLM_SANDBOX_NETWORK_MODE is authoritative and is never
+            # silently widened, and an empty requirements file (nothing for
+            # pip to install) never widens the mode either.
+            _operator_network_mode = os.getenv("LITELLM_SANDBOX_NETWORK_MODE")
+            _has_installable_requirements = bool(_requirements_to_validate)
+            if _operator_network_mode is not None:
+                _network_mode = _operator_network_mode
+            elif _has_installable_requirements:
+                _network_mode = "bridge"
+            else:
+                _network_mode = "none"
             session_kwargs["runtime_configs"] = {"network_mode": _network_mode}
 
             with SandboxSession(**session_kwargs) as session:
@@ -186,34 +213,29 @@ class SkillsSandboxExecutor:
 
                 verbose_logger.debug(f"SkillsSandboxExecutor: Copied {len(skill_files)} files to sandbox")
 
-                # 2. Install requirements if present. The file is parsed on the
-                # host first (_validate_requirements) so nothing that
-                # redirects the package source (-e, VCS URLs, alternate
-                # indexes) reaches pip inside the sandbox.
-                requirements_filename: Optional[str] = None
-                if requirements:
+                # 2. Install requirements if present. The bytes that passed
+                # host-side validation are staged to a single canonical path
+                # that pip reads; a skill-supplied requirements.txt (which
+                # the skill controls and could differ from the validated
+                # bytes via path variants) is never handed to pip directly.
+                if _requirements_to_validate:
                     with tempfile.NamedTemporaryFile(
                         mode="w",
                         encoding="utf-8",
                         delete=False,
                     ) as f:
-                        f.write(requirements)
+                        f.write(_requirements_to_validate)
                         local_requirements_path = f.name
                     session.copy_to_runtime(
                         local_requirements_path,
                         "/sandbox/.litellm_requirements.txt",
                     )
                     os.unlink(local_requirements_path)
-                    requirements_filename = ".litellm_requirements.txt"
-                elif "requirements.txt" in skill_files:
-                    requirements_filename = "requirements.txt"
-
-                if requirements_filename:
-                    pip_code = f"""
+                    pip_code = """
 import subprocess
 import sys
 subprocess.run(
-    [sys.executable, '-m', 'pip', 'install', '-r', '{requirements_filename}'],
+    [sys.executable, '-m', 'pip', 'install', '-r', '.litellm_requirements.txt'],
     check=True,
     cwd='/sandbox',
 )

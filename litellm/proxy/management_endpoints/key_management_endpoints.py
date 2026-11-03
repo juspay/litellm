@@ -5850,6 +5850,33 @@ def _get_condition_to_filter_out_ui_session_tokens() -> Dict[str, Any]:
     }
 
 
+async def _resolve_stored_key_row(
+    key: str,
+    prisma_client: Any,
+) -> Optional[Any]:
+    """
+    Resolve a management-request ``key`` (raw sk- value or already-hashed
+    digest) to the LiteLLM_VerificationTokenTable row it authenticates.
+
+    A raw key is looked up under every digest a stored row may carry (the
+    same candidates authentication uses), so rows written before
+    LITELLM_SALT_KEY was configured remain manageable via
+    /key/block and /key/unblock during the
+    LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS migration window.
+
+    Returns the stored row, or None when no row matches any candidate.
+    """
+    from litellm.proxy.common_utils.token_hash_utils import (
+        hash_token_candidates_if_raw,
+    )
+
+    for candidate in hash_token_candidates_if_raw(key):
+        row = await VerificationTokenRepository(prisma_client).table.find_unique(where={"token": candidate})
+        if row is not None:
+            return row
+    return None
+
+
 async def _check_key_admin_access(
     user_api_key_dict: UserAPIKeyAuth,
     hashed_token: str,
@@ -5937,7 +5964,6 @@ async def block_key(
     )
     from litellm.proxy.proxy_server import (
         create_audit_log_for_update,
-        hash_token,
         litellm_proxy_admin_name,
         prisma_client,
         proxy_logging_obj,
@@ -5954,10 +5980,15 @@ async def block_key(
             param="key",
             code=status.HTTP_400_BAD_REQUEST,
         )
-    if data.key.startswith("sk-"):
-        hashed_token = hash_token(token=data.key)
-    else:
-        hashed_token = data.key
+    existing_record = await _resolve_stored_key_row(key=data.key, prisma_client=prisma_client)
+    if existing_record is None:
+        raise ProxyException(
+            message="Key not found.",
+            type=ProxyErrorTypes.not_found_error,
+            param="key",
+            code=status.HTTP_404_NOT_FOUND,
+        )
+    hashed_token = existing_record.token
 
     # Admin-only: only proxy admins, team admins, or org admins can block keys
     await _check_key_admin_access(
@@ -5967,16 +5998,6 @@ async def block_key(
         user_api_key_cache=user_api_key_cache,
         route="/key/block",
     )
-
-    # Check if the key exists before trying to block it
-    existing_record = await VerificationTokenRepository(prisma_client).table.find_unique(where={"token": hashed_token})
-    if existing_record is None:
-        raise ProxyException(
-            message="Key not found.",
-            type=ProxyErrorTypes.not_found_error,
-            param="key",
-            code=status.HTTP_404_NOT_FOUND,
-        )
 
     if audit_logs_enabled() is True:
         asyncio.create_task(
@@ -6049,7 +6070,6 @@ async def unblock_key(
     )
     from litellm.proxy.proxy_server import (
         create_audit_log_for_update,
-        hash_token,
         litellm_proxy_admin_name,
         prisma_client,
         proxy_logging_obj,
@@ -6066,10 +6086,15 @@ async def unblock_key(
             param="key",
             code=status.HTTP_400_BAD_REQUEST,
         )
-    if data.key.startswith("sk-"):
-        hashed_token = hash_token(token=data.key)
-    else:
-        hashed_token = data.key
+    existing_record = await _resolve_stored_key_row(key=data.key, prisma_client=prisma_client)
+    if existing_record is None:
+        raise ProxyException(
+            message="Key not found.",
+            type=ProxyErrorTypes.not_found_error,
+            param="key",
+            code=status.HTTP_404_NOT_FOUND,
+        )
+    hashed_token = existing_record.token
 
     # Admin-only: only proxy admins, team admins, or org admins can unblock keys
     await _check_key_admin_access(
@@ -6079,16 +6104,6 @@ async def unblock_key(
         user_api_key_cache=user_api_key_cache,
         route="/key/unblock",
     )
-
-    # Check if the key exists before trying to unblock it
-    existing_record = await VerificationTokenRepository(prisma_client).table.find_unique(where={"token": hashed_token})
-    if existing_record is None:
-        raise ProxyException(
-            message="Key not found.",
-            type=ProxyErrorTypes.not_found_error,
-            param="key",
-            code=status.HTTP_404_NOT_FOUND,
-        )
 
     if audit_logs_enabled() is True:
         asyncio.create_task(
