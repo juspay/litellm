@@ -4618,7 +4618,6 @@ async def regenerate_key_fn(
     """
     try:
         from litellm.proxy.proxy_server import (
-            hash_token,
             master_key,
             premium_user,
             prisma_client,
@@ -4713,19 +4712,13 @@ async def regenerate_key_fn(
                 expires=None,
             )
 
-        if "sk" not in key:
-            hashed_api_key = key
-        else:
-            hashed_api_key = hash_token(key)
-
-        _key_in_db = await VerificationTokenRepository(prisma_client).table.find_unique(
-            where={"token": hashed_api_key},
-        )
+        _key_in_db = await _resolve_stored_key_row(key=key, prisma_client=prisma_client)
         if _key_in_db is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": f"Key {key} not found."},
             )
+        hashed_api_key = _key_in_db.token
 
         # check if user has permission to regenerate key
         await TeamMemberPermissionChecks.can_team_member_execute_key_management_endpoint(
@@ -4905,7 +4898,6 @@ async def reset_key_spend_fn(
 ) -> Dict[str, Any]:
     try:
         from litellm.proxy.proxy_server import (
-            hash_token,
             prisma_client,
             proxy_logging_obj,
             user_api_key_cache,
@@ -4917,13 +4909,9 @@ async def reset_key_spend_fn(
                 detail={"error": "DB not connected. prisma_client is None"},
             )
 
-        if "sk" not in key:
-            hashed_api_key = key
-        else:
-            hashed_api_key = hash_token(key)
-
-        _key_in_db = await VerificationTokenRepository(prisma_client).table.find_unique(
-            where={"token": hashed_api_key},
+        _key_in_db = await _resolve_stored_key_row(
+            key=key,
+            prisma_client=prisma_client,
             include={"litellm_budget_table": True},
         )
         if _key_in_db is None:
@@ -4931,6 +4919,7 @@ async def reset_key_spend_fn(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"error": f"Key {key} not found."},
             )
+        hashed_api_key = _key_in_db.token
 
         current_spend = _key_in_db.spend or 0.0
         reset_to = _validate_reset_spend_value(data.reset_to, _key_in_db)
@@ -5853,6 +5842,7 @@ def _get_condition_to_filter_out_ui_session_tokens() -> Dict[str, Any]:
 async def _resolve_stored_key_row(
     key: str,
     prisma_client: Any,
+    include: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
     """
     Resolve a management-request ``key`` (raw sk- value or already-hashed
@@ -5861,8 +5851,9 @@ async def _resolve_stored_key_row(
     A raw key is looked up under every digest a stored row may carry (the
     same candidates authentication uses), so rows written before
     LITELLM_SALT_KEY was configured remain manageable via
-    /key/block and /key/unblock during the
-    LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS migration window.
+    /key/block, /key/unblock, /key/regenerate, and
+    /key/reset_spend during the LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS
+    migration window.
 
     Returns the stored row, or None when no row matches any candidate.
     """
@@ -5871,7 +5862,10 @@ async def _resolve_stored_key_row(
     )
 
     for candidate in hash_token_candidates_if_raw(key):
-        row = await VerificationTokenRepository(prisma_client).table.find_unique(where={"token": candidate})
+        row = await VerificationTokenRepository(prisma_client).table.find_unique(
+            where={"token": candidate},
+            include=include,
+        )
         if row is not None:
             return row
     return None

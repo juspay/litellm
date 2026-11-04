@@ -25,10 +25,10 @@ jobs:
 
       - name: Install Helm Unit Test Plugin
         run: |
-          helm plugin install https://github.com/helm-unittest/helm-unittest --version v0.4.4
+          helm plugin install https://github.com/helm-unittest/helm-unittest --version v0.7.2
       - name: Verify Helm Unit Test Plugin integrity
         run: |
-          EXPECTED_SHA="e251ba198448629678ff2168e1a469249d998155"
+          EXPECTED_SHA="35e4158fa5862f17fb65739da748aedc2f01692d"
           PLUGIN_DIR="$(helm env HELM_PLUGINS)/helm-unittest"
           ACTUAL_SHA="$(git -C "$PLUGIN_DIR" rev-parse HEAD)"
           if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then

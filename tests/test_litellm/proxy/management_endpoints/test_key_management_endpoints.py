@@ -1925,7 +1925,7 @@ async def test_unblock_key_supports_both_sk_and_hashed_tokens(monkeypatch):
     mock_key_record.model_dump_json.return_value = f'{{"token": "{test_hashed_token}", "blocked": false}}'
 
     # Mock database operations
-    async def fake_find_unique(where=None):
+    async def fake_find_unique(where=None, include=None):
         if where and where.get("token") == test_hashed_token:
             return mock_key_record
         return None
@@ -2149,7 +2149,7 @@ async def test_block_key_resolves_legacy_digest_during_migration(monkeypatch):
     mock_key_record.blocked = False
     mock_key_record.model_dump_json.return_value = f'{{"token": "{legacy_digest}", "blocked": false}}'
 
-    async def fake_find_unique(where=None):
+    async def fake_find_unique(where=None, include=None):
         if where and where.get("token") == legacy_digest:
             return mock_key_record
         return None
@@ -2256,7 +2256,7 @@ async def test_block_key_existing_key_succeeds(monkeypatch):
     mock_key_record.blocked = False
     mock_key_record.model_dump_json.return_value = f'{{"token": "{test_hashed_token}", "blocked": false}}'
 
-    async def fake_find_unique(where=None):
+    async def fake_find_unique(where=None, include=None):
         if where and where.get("token") == test_hashed_token:
             return mock_key_record
         return None
@@ -2295,7 +2295,7 @@ async def test_block_key_existing_key_succeeds(monkeypatch):
 
     # Verify the key was found and updated
     mock_prisma_client.db.litellm_verificationtoken.find_unique.assert_called_once_with(
-        where={"token": test_hashed_token}
+        where={"token": test_hashed_token}, include=None
     )
     mock_prisma_client.db.litellm_verificationtoken.update.assert_called_once_with(
         where={"token": test_hashed_token}, data={"blocked": True}
@@ -7061,6 +7061,84 @@ async def test_reset_key_spend_hashed_key(monkeypatch):
         mock_prisma_client.db.litellm_verificationtoken.find_unique.assert_called_once_with(
             where={"token": hashed_key}, include={"litellm_budget_table": True}
         )
+
+
+@pytest.mark.asyncio
+async def test_reset_key_spend_resolves_legacy_digest_during_migration(monkeypatch):
+    """Regression: during the LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS migration
+    window, a pre-pepper row stores the legacy bare-SHA-256 digest while
+    authentication accepts both digests. Resetting spend on a raw sk- key
+    must resolve the stored row under the same candidates authentication
+    uses, or the operator gets a 404 for a key that still authenticates."""
+    from litellm.proxy.common_utils.token_hash_utils import hash_token, legacy_hash_token
+
+    raw_key = "sk-legacy-key-that-still-authenticates"
+    legacy_digest = legacy_hash_token(raw_key)
+    peppered_digest = hash_token(raw_key)
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "test-salt")
+    monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
+
+    mock_prisma_client = MagicMock()
+    mock_user_api_key_cache = MagicMock()
+    mock_proxy_logging_obj = MagicMock()
+
+    key_in_db = LiteLLM_VerificationToken(
+        token=legacy_digest,
+        user_id="test-user",
+        spend=100.0,
+        max_budget=None,
+        litellm_budget_table=None,
+    )
+    updated_key = LiteLLM_VerificationToken(
+        token=legacy_digest,
+        user_id="test-user",
+        spend=50.0,
+        max_budget=None,
+        budget_reset_at=None,
+    )
+
+    async def fake_find_unique(where=None, include=None):
+        if where and where.get("token") == legacy_digest:
+            return key_in_db
+        return None
+
+    mock_prisma_client.db.litellm_verificationtoken.find_unique = AsyncMock(side_effect=fake_find_unique)
+    mock_prisma_client.db.litellm_verificationtoken.update = AsyncMock(return_value=updated_key)
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr("litellm.proxy.proxy_server.user_api_key_cache", mock_user_api_key_cache)
+    monkeypatch.setattr("litellm.proxy.proxy_server.proxy_logging_obj", mock_proxy_logging_obj)
+
+    with (
+        patch(
+            "litellm.proxy.management_endpoints.key_management_endpoints._check_proxy_or_team_admin_for_key"
+        ) as mock_check_admin,
+        patch(
+            "litellm.proxy.management_endpoints.key_management_endpoints._delete_cache_key_object"
+        ) as mock_delete_cache,
+    ):
+        mock_check_admin.return_value = None
+        mock_delete_cache.return_value = None
+
+        user_api_key_dict = UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            api_key="sk-admin",
+            user_id="admin-user",
+        )
+
+        response = await reset_key_spend_fn(
+            key=raw_key,
+            data=ResetSpendRequest(reset_to=50.0),
+            user_api_key_dict=user_api_key_dict,
+            litellm_changed_by=None,
+        )
+
+    assert response["spend"] == 50.0
+    mock_prisma_client.db.litellm_verificationtoken.update.assert_called_once_with(
+        where={"token": legacy_digest}, data={"spend": 50.0}
+    )
+    assert peppered_digest != legacy_digest
 
 
 @pytest.mark.asyncio
