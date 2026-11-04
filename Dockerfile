@@ -105,8 +105,7 @@ RUN prisma generate --schema=./schema.prisma
 COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
 RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
-RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh && \
-    sed -i 's/\r$//' docker/prod_entrypoint.sh && chmod +x docker/prod_entrypoint.sh
+RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
 
 # Runtime stage
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
@@ -158,5 +157,5 @@ RUN find /app/.venv -type f -path "*/tornado/test/*" -delete && \
 
 EXPOSE 4000/tcp
 
-ENTRYPOINT ["docker/prod_entrypoint.sh"]
+ENTRYPOINT ["python3", "docker/prod_entrypoint.py"]
 CMD ["--port", "4000"]

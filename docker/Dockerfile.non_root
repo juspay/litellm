@@ -123,8 +123,7 @@ RUN prisma generate --schema=./schema.prisma
 COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
 RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
-RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh && \
-    sed -i 's/\r$//' docker/prod_entrypoint.sh && chmod +x docker/prod_entrypoint.sh
+RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
 
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 ARG PROXY_EXTRAS_SOURCE
@@ -137,7 +136,6 @@ RUN for i in 1 2 3; do \
     for i in 1 2 3; do \
       apk add --no-cache \
         python3 \
-        bash \
         openssl \
         tzdata \
         libsndfile \
@@ -216,5 +214,5 @@ RUN prisma generate --schema=./schema.prisma
 
 EXPOSE 4000/tcp
 
-ENTRYPOINT ["/app/docker/prod_entrypoint.sh"]
+ENTRYPOINT ["python3", "/app/docker/prod_entrypoint.py"]
 CMD ["--port", "4000"]
