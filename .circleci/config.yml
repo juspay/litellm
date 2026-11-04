@@ -297,11 +297,10 @@ jobs:
             - ~/.cache/uv
           key: v1-uv-cache-{{ checksum "uv.lock" }}
       - run:
-          name: Run prisma ./docker/entrypoint.sh
+          name: Run prisma ./docker/entrypoint.py
           command: |
             set +e
-            chmod +x docker/entrypoint.sh
-            ./docker/entrypoint.sh
+            python3 docker/entrypoint.py
             set -e
       # Run pytest and generate JUnit XML report
       - run:
@@ -369,11 +368,10 @@ jobs:
             - ~/.cache/uv
           key: v1-uv-cache-{{ checksum "uv.lock" }}
       - run:
-          name: Run prisma ./docker/entrypoint.sh
+          name: Run prisma ./docker/entrypoint.py
           command: |
             set +e
-            chmod +x docker/entrypoint.sh
-            ./docker/entrypoint.sh
+            python3 docker/entrypoint.py
             set -e
       # Run pytest and generate JUnit XML report
       - run:
@@ -442,11 +440,10 @@ jobs:
             - ~/.cache/uv
           key: v1-uv-cache-{{ checksum "uv.lock" }}
       - run:
-          name: Run prisma ./docker/entrypoint.sh
+          name: Run prisma ./docker/entrypoint.py
           command: |
             set +e
-            chmod +x docker/entrypoint.sh
-            ./docker/entrypoint.sh
+            python3 docker/entrypoint.py
             set -e
 
       # Run pytest and generate JUnit XML report

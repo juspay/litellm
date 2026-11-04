@@ -105,7 +105,6 @@ RUN prisma generate --schema=./schema.prisma
 COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
 RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
-RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
 
 # Runtime stage
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
@@ -115,7 +114,6 @@ USER root
 # node (without npm) is required by the prisma CLI at runtime.
 # ca-certificates / nodejs floors: eMudra CA remediation (emSign G3 / AAA roots).
 RUN apk add --no-cache \
-    bash \
     openssl \
     tzdata \
     'ca-certificates>=20260909-r3' \
@@ -129,7 +127,7 @@ ENV PATH="/app/.venv/bin:${PATH}"
 # Copy only what runtime needs. The application is installed inside the venv;
 # the rest of the builder's /app is source and build metadata that must not
 # ship (manifest-scanning tools attribute everything in it to this image).
-# entrypoint.sh invokes litellm/proxy/prisma_migration.py by source path.
+# entrypoint.py invokes litellm/proxy/prisma_migration.py by source path.
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/docker /app/docker
 COPY --from=builder /app/schema.prisma /app/schema.prisma
@@ -157,5 +155,5 @@ RUN find /app/.venv -type f -path "*/tornado/test/*" -delete && \
 
 EXPOSE 4000/tcp
 
-ENTRYPOINT ["python3", "docker/prod_entrypoint.py"]
+ENTRYPOINT ["python3", "-I", "docker/prod_entrypoint.py"]
 CMD ["--port", "4000"]

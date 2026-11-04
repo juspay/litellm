@@ -123,8 +123,6 @@ RUN prisma generate --schema=./schema.prisma
 COPY docker/strip_distrusted_cas.py /usr/local/bin/strip_distrusted_cas.py
 RUN python3 /usr/local/bin/strip_distrusted_cas.py
 
-RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
-
 FROM $LITELLM_RUNTIME_IMAGE AS runtime
 ARG PROXY_EXTRAS_SOURCE
 WORKDIR /app
@@ -146,7 +144,7 @@ RUN for i in 1 2 3; do \
 # Copy only what runtime needs. The application is installed inside the venv;
 # the rest of the builder's /app is source and build metadata that must not
 # ship (manifest-scanning tools attribute everything in it to this image).
-# entrypoint.sh invokes litellm/proxy/prisma_migration.py by source path.
+# entrypoint.py invokes litellm/proxy/prisma_migration.py by source path.
 # Prisma caches live under /app/.cache here (XDG_CACHE_HOME /
 # PRISMA_BINARY_CACHE_DIR) so the runtime prisma generate finds them.
 COPY --from=builder /app/.venv /app/.venv
@@ -214,5 +212,5 @@ RUN prisma generate --schema=./schema.prisma
 
 EXPOSE 4000/tcp
 
-ENTRYPOINT ["python3", "/app/docker/prod_entrypoint.py"]
+ENTRYPOINT ["python3", "-I", "/app/docker/prod_entrypoint.py"]
 CMD ["--port", "4000"]

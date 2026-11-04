@@ -1,18 +1,21 @@
 schemaVersion: 2.0.0
 
 metadataTest:
-  entrypoint: ["python3", "docker/prod_entrypoint.py"]
+  entrypoint: ["python3", "-I", "/app/docker/prod_entrypoint.py"]
   user: "65534"
   workdir: "/app"
 
 fileExistenceTests:
   - name: "Prisma Folder"
-    path: "/usr/local/lib/python3.13/site-packages/prisma/"
+    path: "/app/.venv/lib/python3.13/site-packages/prisma/"
     shouldExist: true
     uid: 65534
     gid: 65534
   - name: "Prisma Schema"
-    path: "/usr/local/lib/python3.13/site-packages/prisma/schema.prisma"
+    path: "/app/.venv/lib/python3.13/site-packages/prisma/schema.prisma"
     shouldExist: true
     uid: 65534
     gid: 65534
+  - name: "Shell-free runtime: bash absent"
+    path: "/bin/bash"
+    shouldExist: false
