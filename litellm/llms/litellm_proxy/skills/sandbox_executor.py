@@ -312,28 +312,31 @@ sys.path.insert(0, '/sandbox/.litellm_site')
 """
                     result = session.run(wrapped_code)
 
-                success = result.exit_code == 0
-                output = result.stdout or ""
-                error = result.stderr or ""
+                    success = result.exit_code == 0
+                    output = result.stdout or ""
+                    error = result.stderr or ""
 
-                if success:
-                    verbose_logger.debug("SkillsSandboxExecutor: Code execution succeeded")
-                else:
-                    verbose_logger.debug(
-                        f"SkillsSandboxExecutor: Code execution failed with exit code {result.exit_code}"
-                    )
-                    verbose_logger.debug(f"SkillsSandboxExecutor: stderr: {error[:500] if error else 'No stderr'}")
-                    verbose_logger.debug(f"SkillsSandboxExecutor: stdout: {output[:500] if output else 'No stdout'}")
+                    if success:
+                        verbose_logger.debug("SkillsSandboxExecutor: Code execution succeeded")
+                    else:
+                        verbose_logger.debug(
+                            f"SkillsSandboxExecutor: Code execution failed with exit code {result.exit_code}"
+                        )
+                        verbose_logger.debug(f"SkillsSandboxExecutor: stderr: {error[:500] if error else 'No stderr'}")
+                        verbose_logger.debug(
+                            f"SkillsSandboxExecutor: stdout: {output[:500] if output else 'No stdout'}"
+                        )
 
-                # 4. Collect generated files
-                generated_files = self._collect_generated_files(session, skill_files)
+                    # 4. Collect generated files while the session is still
+                    # open: copy_from_runtime needs the live container.
+                    generated_files = self._collect_generated_files(session, skill_files)
 
-                return {
-                    "success": success,
-                    "output": output,
-                    "error": error,
-                    "files": generated_files,
-                }
+                    return {
+                        "success": success,
+                        "output": output,
+                        "error": error,
+                        "files": generated_files,
+                    }
 
         except Exception as e:
             # Log the full error server-side, but return a generic message:

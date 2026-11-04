@@ -4642,3 +4642,28 @@ def test_ui_view_spend_logs_debug_log_contains_no_row_data(client, monkeypatch, 
         assert "secret prompt text" not in record.getMessage()
         assert "sk-test-key" not in record.getMessage()
         assert "rows_returned=1" in record.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_global_spend_report_wraps_hashed_key_for_any_param(monkeypatch):
+    """Regression: an already-hashed api_key must reach query_raw as a list so
+    ANY($3) receives an array. A bare string makes the array parameter a scalar
+    and the query errors."""
+    mock_query_raw = AsyncMock(return_value=[{"api_key": "hashed-abc", "total_cost": 1.0}])
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db.query_raw = mock_query_raw
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr("litellm.proxy.proxy_server.premium_user", True)
+
+    response = await spend_management_endpoints.get_global_spend_report(
+        start_date="2024-01-01",
+        end_date="2024-01-02",
+        group_by="api_key",
+        api_key="88f7ac46e2a34c1688e4fe2f9d3d0fa738302955c1abb939c26f5096836dbd0",
+    )
+
+    assert response == [{"api_key": "hashed-abc", "total_cost": 1.0}]
+    sql_query, start_param, end_param, key_param = mock_query_raw.call_args[0][:4]
+    assert "ANY($3)" in sql_query
+    assert key_param == ["88f7ac46e2a34c1688e4fe2f9d3d0fa738302955c1abb939c26f5096836dbd0"]
+    assert isinstance(key_param, list)

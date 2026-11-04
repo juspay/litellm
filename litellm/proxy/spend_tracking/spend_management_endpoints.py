@@ -1088,8 +1088,7 @@ async def get_global_spend_report(
             raise ValueError("/spend/report endpoint " + CommonProxyErrors.not_premium_user.value)
         if api_key is not None:
             verbose_proxy_logger.debug("Getting /spend for api_key: [set=%s]", api_key is not None)
-            if api_key.startswith("sk-"):
-                api_key = list(hash_token_candidates(api_key))  # type: ignore
+            api_key_filter: list[str] = list(hash_token_candidates(api_key)) if api_key.startswith("sk-") else [api_key]
             sql_query = """
                 WITH SpendByModelApiKey AS (
                     SELECT
@@ -1126,7 +1125,7 @@ async def get_global_spend_report(
                 ORDER BY
                     total_cost DESC;
             """
-            db_response = await prisma_client.db.query_raw(sql_query, start_date_obj, end_date_obj, api_key)
+            db_response = await prisma_client.db.query_raw(sql_query, start_date_obj, end_date_obj, api_key_filter)
             if db_response is None:
                 return []
 

@@ -169,3 +169,21 @@ async def test_wrong_audience_yields_no_roles(monkeypatch, entra_env):
 
     roles = await MicrosoftSSOHandler.get_app_roles_from_id_token(token)
     assert roles == []
+
+
+@pytest.mark.asyncio
+async def test_extracts_roles_without_generic_jwks_endpoint(monkeypatch):
+    """Regression: Microsoft app-role extraction must resolve the tenant's JWKS
+    itself; it must not require GENERIC_JWKS_ENDPOINT (a Microsoft-only
+    configuration that never sets the generic SSO vars would otherwise fail
+    verification and silently receive no roles)."""
+    monkeypatch.setenv("MICROSOFT_TENANT", _TENANT)
+    monkeypatch.setenv("MICROSOFT_CLIENT_ID", _CLIENT_ID)
+    monkeypatch.delenv("GENERIC_JWKS_ENDPOINT", raising=False)
+
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    _patch_jwks(monkeypatch, private_key.public_key(), "key-1")
+    token = _mint(private_key, _payload(["proxy_admin"]), "key-1")
+
+    roles = await MicrosoftSSOHandler.get_app_roles_from_id_token(token)
+    assert roles == ["proxy_admin"]

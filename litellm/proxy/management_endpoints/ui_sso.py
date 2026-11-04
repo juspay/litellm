@@ -706,20 +706,27 @@ def _decode_sso_jwt_unverified(token: str) -> dict:
 _SSO_ID_TOKEN_SIGNATURE_ALGORITHMS = frozenset(JWTHandler.SUPPORTED_JWT_ALGORITHMS)
 
 
-async def _decode_sso_id_token_verified(id_token: str, issuer: str | None, audience: str | None) -> dict:
+async def _decode_sso_id_token_verified(
+    id_token: str,
+    issuer: str | None,
+    audience: str | None,
+    jwks_url: str | None = None,
+) -> dict:
     """Verify an SSO id_token against the provider's JWKS and claim constraints.
 
     Used for identity-bearing id_tokens (the userinfo fallback path and any
     other place the token's claims alone resolve or auto-provision the
-    logged-in user). Verification requires GENERIC_JWKS_ENDPOINT (a JWKS URL
-    or an OIDC discovery URL containing jwks_uri); without it this raises so
-    callers fail closed rather than trusting unverified claims.
+    logged-in user). Verification requires a JWKS URL (a JWKS URL or an OIDC
+    discovery URL containing jwks_uri): an explicit ``jwks_url`` argument
+    (the Microsoft path resolves the tenant's own JWKS), otherwise
+    GENERIC_JWKS_ENDPOINT; without either this raises so callers fail
+    closed rather than trusting unverified claims.
 
     Checks signature (asymmetric algorithms via the matching JWKS key), exp, and
     nbf; iss and aud are checked when the corresponding expected value is
     supplied.
     """
-    jwks_url = os.getenv("GENERIC_JWKS_ENDPOINT")
+    jwks_url = jwks_url or os.getenv("GENERIC_JWKS_ENDPOINT")
     if not jwks_url:
         raise ProxyException(
             message=(
@@ -4115,6 +4122,7 @@ class MicrosoftSSOHandler:
                 id_token,
                 issuer=f"https://login.microsoftonline.com/{microsoft_tenant}/v2.0",
                 audience=os.getenv("MICROSOFT_CLIENT_ID"),
+                jwks_url=f"https://login.microsoftonline.com/{microsoft_tenant}/discovery/v2.0/keys",
             )
 
             # Extract app_roles claim from the token
