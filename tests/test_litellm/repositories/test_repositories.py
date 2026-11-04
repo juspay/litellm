@@ -323,21 +323,17 @@ class TestModelRepository:
         (LiteLLM_ProxyModelTable:litellm_params.<key>). Reading such a value
         without the matching context fails closed and returns the ciphertext.
         The repository reader must pass the same context the writer used."""
-        import os as _os
+        monkeypatch.setenv("LITELLM_SALT_KEY", "test-salt-model-repo")
 
-        _os.environ["LITELLM_SALT_KEY"] = "test-salt-model-repo"
-        try:
-            encrypted = encrypt_value_helper(
-                "sk-model-secret", context="LiteLLM_ProxyModelTable:litellm_params.api_key"
-            )
-            repo = ModelRepository(MockPrismaClient())
+        encrypted = encrypt_value_helper(
+            "sk-model-secret", context="LiteLLM_ProxyModelTable:litellm_params.api_key"
+        )
+        repo = ModelRepository(MockPrismaClient())
 
-            decrypted = repo._decrypt_litellm_params({"api_key": encrypted, "timeout": 30})
+        decrypted = repo._decrypt_litellm_params({"api_key": encrypted, "timeout": 30})
 
-            assert decrypted["api_key"] == "sk-model-secret"
-            assert decrypted["timeout"] == 30
-        finally:
-            _os.environ.pop("LITELLM_SALT_KEY", None)
+        assert decrypted["api_key"] == "sk-model-secret"
+        assert decrypted["timeout"] == 30
 
     @pytest.mark.asyncio
     @patch(
