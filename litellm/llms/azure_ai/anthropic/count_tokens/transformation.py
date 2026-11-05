@@ -5,8 +5,10 @@ Extends the base Anthropic CountTokens transformation with Azure authentication.
 """
 
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse, urlunparse
 
 from litellm.constants import ANTHROPIC_TOKEN_COUNTING_BETA_VERSION
+from litellm.llms.anthropic.common_utils import AnthropicError
 from litellm.llms.anthropic.count_tokens.transformation import (
     AnthropicCountTokensConfig,
 )
@@ -74,15 +76,25 @@ class AzureAIAnthropicCountTokensConfig(AnthropicCountTokensConfig):
 
         Returns:
             The endpoint URL for the CountTokens API
+
+        Raises:
+            AnthropicError: If api_base is not a parsable http(s) URL
         """
         # Azure AI Anthropic endpoint format:
         # https://<resource>.services.ai.azure.com/anthropic/v1/messages/count_tokens
-        api_base = api_base.rstrip("/")
+        parsed = urlparse(api_base)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise AnthropicError(
+                status_code=400,
+                message=f"Invalid api_base for Azure AI Anthropic count_tokens: {api_base}",
+            )
 
-        # Ensure the URL has /anthropic path
-        if not api_base.endswith("/anthropic"):
-            if "/anthropic" not in api_base:
-                api_base = f"{api_base}/anthropic"
+        # Rebuild origin + path without query/fragment; ensure the path ends
+        # with the /anthropic segment exactly once, appended (not substring-
+        # matched, so https://host/x/anthropic/../ or embedded query strings
+        # can't smuggle a different path).
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/anthropic"):
+            path = f"{path}/anthropic"
 
-        # Add the count_tokens path
-        return f"{api_base}/v1/messages/count_tokens"
+        return urlunparse((parsed.scheme, parsed.netloc, path, "", "", "")) + "/v1/messages/count_tokens"

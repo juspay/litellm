@@ -339,7 +339,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_decrypt_and_set_db_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         response = client.get("/get/sso_settings")
@@ -409,7 +409,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         # New SSO settings to update
@@ -491,7 +491,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         create_config_audit_log = AsyncMock()
@@ -559,7 +559,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         # Set some initial environment variables for runtime testing
@@ -638,7 +638,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         # Set some initial environment variables for runtime testing
@@ -709,7 +709,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         # Set some initial environment variables
@@ -777,7 +777,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         # Test setting ui_access_mode
@@ -1363,7 +1363,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma)
 
         # Mock the decryption method to return decrypted values
-        def mock_decrypt_and_set(environment_variables):
+        def mock_decrypt_and_set(environment_variables, context_prefix=None):
             return {
                 "google_client_id": "decrypted_google_id",
                 "google_client_secret": "decrypted_google_secret",
@@ -1423,7 +1423,7 @@ class TestProxySettingEndpoints:
         # Track what was encrypted
         encrypted_data = {}
 
-        def mock_encrypt(environment_variables):
+        def mock_encrypt(environment_variables, context_prefix=None):
             # Simulate encryption by adding prefix
             encrypted = {
                 k: f"encrypted_{v}" if v else v
@@ -1514,7 +1514,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         response = client.patch(
@@ -1563,7 +1563,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         response = client.patch(
@@ -1590,7 +1590,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma)
 
         # Mock the decryption method
-        def mock_decrypt_and_set(environment_variables):
+        def mock_decrypt_and_set(environment_variables, context_prefix=None):
             # Should receive empty dict
             return environment_variables
 
@@ -1676,7 +1676,7 @@ class TestProxySettingEndpoints:
         # Mock decryption to return the values as-is (role_mappings should not be passed to decryption)
         from litellm.proxy.proxy_server import proxy_config
 
-        def mock_decrypt(environment_variables):
+        def mock_decrypt(environment_variables, context_prefix=None):
             # role_mappings should not be in environment_variables since it's extracted before decryption
             assert "role_mappings" not in environment_variables
             return environment_variables
@@ -1728,7 +1728,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_encrypt_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         # SSO settings with role_mappings
@@ -1780,7 +1780,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_decrypt_and_set_db_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         get_response = client.get("/get/sso_settings")
@@ -1902,7 +1902,7 @@ class TestProxySettingEndpoints:
         monkeypatch.setattr(
             proxy_config,
             "_decrypt_and_set_db_env_variables",
-            lambda environment_variables: environment_variables,
+            lambda environment_variables, context_prefix=None: environment_variables,
         )
 
         response = client.get("/get/sso_settings")
@@ -2052,7 +2052,7 @@ def test_update_sso_settings_writes_redacted_audit_log(mock_proxy_config, monkey
     monkeypatch.setattr(
         proxy_server_module.proxy_config,
         "_encrypt_env_variables",
-        lambda environment_variables: environment_variables,
+        lambda environment_variables, context_prefix=None: environment_variables,
     )
 
     async def _admin_auth():
@@ -2124,7 +2124,7 @@ def test_update_sso_settings_audit_captures_redacted_before_snapshot(
     monkeypatch.setattr(
         proxy_server_module.proxy_config,
         "_encrypt_env_variables",
-        lambda environment_variables: environment_variables,
+        lambda environment_variables, context_prefix=None: environment_variables,
     )
     # Pretend the stored value is already plaintext for the test (production
     # decrypts via Fernet); the audit helper still has to redact it.
@@ -2295,7 +2295,7 @@ def test_update_ui_theme_settings_writes_audit_log(mock_proxy_config, monkeypatc
     monkeypatch.setattr(
         proxy_server_module.proxy_config,
         "_encrypt_env_variables",
-        lambda environment_variables: environment_variables,
+        lambda environment_variables, context_prefix=None: environment_variables,
     )
 
     async def _admin_auth():
@@ -2393,3 +2393,129 @@ def test_update_mcp_semantic_filter_settings_requires_proxy_admin(monkeypatch):
         assert "proxy admin" in resp.json()["detail"].lower()
     finally:
         app.dependency_overrides.pop(user_api_key_auth, None)
+
+
+class TestUploadLogo:
+    @pytest.fixture
+    def _role_auth(self, request):
+        # Use the module-level `app` (bound at import time), not a fresh import:
+        # the autouse module-scoped conftest fixture reloads
+        # litellm.proxy.proxy_server in single-process mode, which rebinds
+        # proxy_server.app after this test module captured its reference. The
+        # module-level TestClient serves the pre-reload app, so the override
+        # must be registered there.
+        from litellm.proxy._types import UserAPIKeyAuth
+        from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+
+        user_api_key_dict = UserAPIKeyAuth(
+            user_id="test_user",
+            user_role=request.param,
+        )
+
+        async def mock_user_api_key_auth():
+            return user_api_key_dict
+
+        app.dependency_overrides[user_api_key_auth] = mock_user_api_key_auth
+        yield
+        app.dependency_overrides.pop(user_api_key_auth, None)
+
+    @staticmethod
+    def _real_png_bytes() -> bytes:
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (4, 4), color=(255, 0, 0)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_png_success(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", self._real_png_bytes(), "image/png")},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "success"
+        assert body["filename"].startswith("logo_")
+        assert body["filename"].endswith(".png")
+        assert body["file_path"].startswith(str(tmp_path / "uploads"))
+        assert os.path.exists(body["file_path"])
+
+    @pytest.mark.parametrize(
+        "_role_auth",
+        [
+            LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+            LitellmUserRoles.INTERNAL_USER,
+            LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+            LitellmUserRoles.ORG_ADMIN,
+        ],
+        indirect=True,
+    )
+    def test_upload_logo_non_admin_forbidden(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", self._real_png_bytes(), "image/png")},
+        )
+        assert response.status_code == 403
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_rejects_non_image_content(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", b"<svg onload=alert(1)></svg>", "image/png")},
+        )
+        assert response.status_code == 400
+        assert "Invalid file type" in str(response.json()["detail"])
+        assert not (tmp_path / "uploads").exists() or not os.listdir(tmp_path / "uploads")
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_rejects_undecodable_image_header(self, _role_auth, tmp_path, monkeypatch):
+        """A payload whose magic bytes say PNG but which cannot be decoded
+        (e.g. a polyglot with garbage after the header) must be rejected:
+        only re-encoded pixel data is ever stored."""
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", b"\x89PNG\r\n\x1a\n<html><script>alert(1)</script>", "image/png")},
+        )
+        assert response.status_code == 400
+        assert "could not be decoded" in str(response.json()["detail"])
+        assert not (tmp_path / "uploads").exists() or not os.listdir(tmp_path / "uploads")
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_strips_polyglot_trailing_content(self, _role_auth, tmp_path, monkeypatch):
+        """A real PNG with attacker-controlled bytes appended after the image
+        data is accepted, but the stored file is the Pillow re-encode: it
+        decodes to the same pixels and no longer contains the trailing
+        payload."""
+        import io
+
+        from PIL import Image
+
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        payload = self._real_png_bytes() + b"<script>alert(1)</script>"
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", payload, "image/png")},
+        )
+        assert response.status_code == 200
+        stored = open(response.json()["file_path"], "rb").read()
+        assert b"<script>" not in stored
+        with Image.open(io.BytesIO(stored)) as img:
+            assert img.size == (4, 4)
+
+    @pytest.mark.parametrize("_role_auth", [LitellmUserRoles.PROXY_ADMIN], indirect=True)
+    def test_upload_logo_rejects_oversized_file(self, _role_auth, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_UPLOADS_DIR", str(tmp_path / "uploads"))
+        big = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + b"0" * (5 * 1024 * 1024 + 1)
+        response = client.post(
+            "/upload/logo",
+            files={"file": ("logo.png", big, "image/png")},
+        )
+        assert response.status_code == 400
+        assert "File size too large" in str(response.json()["detail"])

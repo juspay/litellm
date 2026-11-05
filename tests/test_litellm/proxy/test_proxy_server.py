@@ -4757,7 +4757,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     assert enc1["LANGFUSE_PUBLIC_KEY"] != plaintext
     assert (
         decrypt_value_helper(
-            value=enc1["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+            value=enc1["LANGFUSE_PUBLIC_KEY"],
+            key="LANGFUSE_PUBLIC_KEY",
+            context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
         )
         == plaintext
     )
@@ -4766,7 +4768,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     enc2 = proxy_config._encrypt_env_variables_for_db(enc1)
     assert (
         decrypt_value_helper(
-            value=enc2["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+            value=enc2["LANGFUSE_PUBLIC_KEY"],
+            key="LANGFUSE_PUBLIC_KEY",
+            context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
         )
         == plaintext
     )
@@ -4778,7 +4782,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     for stacked in (enc3, enc4):
         assert (
             decrypt_value_helper(
-                value=stacked["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+                value=stacked["LANGFUSE_PUBLIC_KEY"],
+                key="LANGFUSE_PUBLIC_KEY",
+                context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
             )
             == plaintext
         )
@@ -7781,7 +7787,7 @@ def test_update_config_env_var_round_trip_not_double_encrypted(
     """
 
     def _fake_decrypt(
-        value, key=None, exception_type="error", return_original_value=False
+        value, key=None, context=None, exception_type="error", return_original_value=False
     ):
         if isinstance(value, str) and value.startswith("enc:"):
             return value[len("enc:") :]
@@ -9101,3 +9107,64 @@ def test_update_config_redacts_all_environment_variable_values(
         assert "db.internal" not in data["updated_values"]
     finally:
         restore()
+
+
+class TestRewriteUiFilesForRootPath:
+    def test_rewrites_real_files_and_skips_symlink_escape(self, tmp_path, caplog):
+        from litellm.proxy.proxy_server import _rewrite_ui_files_for_root_path
+
+        ui_dir = tmp_path / "ui"
+        ui_dir.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        inside_file = ui_dir / "app.html"
+        inside_file.write_text('src="/litellm-asset-prefix/bundle.js"', encoding="utf-8")
+        outside_file = outside_dir / "secret.html"
+        outside_file.write_text('src="/litellm-asset-prefix/bundle.js"', encoding="utf-8")
+        (ui_dir / "escape.html").symlink_to(outside_file)
+
+        _rewrite_ui_files_for_root_path(str(ui_dir), "/litellm-asset-prefix", "/custom/root")
+
+        assert inside_file.read_text(encoding="utf-8") == 'src="/custom/root/bundle.js"'
+        assert outside_file.read_text(encoding="utf-8") == 'src="/litellm-asset-prefix/bundle.js"'
+
+    def test_skips_binary_assets_and_survives_undecodable_file(self, tmp_path):
+        from litellm.proxy.proxy_server import _rewrite_ui_files_for_root_path
+
+        ui_dir = tmp_path / "ui"
+        ui_dir.mkdir()
+        (ui_dir / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (ui_dir / "blob.txt").write_bytes(b"\xff\xfe not utf8")
+
+        _rewrite_ui_files_for_root_path(str(ui_dir), "/litellm-asset-prefix", "/custom/root")
+
+        assert (ui_dir / "logo.png").read_bytes() == b"\x89PNG\r\n\x1a\n"
+        assert (ui_dir / "blob.txt").read_bytes() == b"\xff\xfe not utf8"
+
+
+class TestTokenPepperStartupCheck:
+    def test_missing_pepper_fails_startup(self, monkeypatch) -> None:
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+        monkeypatch.delenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", raising=False)
+        with pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+            ProxyStartupEvent._check_token_pepper_configured()
+
+    def test_pepper_configured_passes(self, monkeypatch) -> None:
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.setenv("LITELLM_SALT_KEY", "test-pepper")
+        ProxyStartupEvent._check_token_pepper_configured()
+
+    def test_legacy_opt_in_warns_but_passes(self, monkeypatch, caplog) -> None:
+        import logging
+
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+        monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            ProxyStartupEvent._check_token_pepper_configured()
+        assert any("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS" in r.getMessage() for r in caplog.records)

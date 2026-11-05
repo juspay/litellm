@@ -9,7 +9,7 @@ markdown report with provider-specific breakdowns and test statistics.
 import os
 import sys
 import subprocess
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path

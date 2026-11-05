@@ -3845,6 +3845,105 @@ async def test_ghsa_wvg4_proxy_admin_can_update_user_budget(mocker):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "privileged_payload",
+    [
+        {"models": ["gpt-4o"]},
+        {"tpm_limit": 999999},
+        {"rpm_limit": 999999},
+        {"max_parallel_requests": 999999},
+        {"budget_duration": "30d"},
+        {"guardrails": ["custom-guardrail"]},
+        {"policies": ["policy-1"]},
+        {"blocked": True},
+        {"aliases": {"gpt-4o": "gpt-4o-2024"}},
+    ],
+)
+async def test_non_admin_cannot_self_assign_privileged_fields(mocker, privileged_payload):
+    """A non-admin self-update may only touch display fields and metadata.
+    Everything else on UpdateUserRequest (teams, models, limits, org,
+    guardrails, ...) grants access or budget and must be admin-only."""
+    from fastapi import HTTPException
+
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        _update_single_user_helper,
+    )
+
+    mock_prisma_client = mocker.MagicMock()
+    existing_user = mocker.MagicMock()
+    existing_user.model_dump.return_value = {"user_id": "user-1"}
+    existing_user.user_id = "user-1"
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(return_value=existing_user)
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    user_request = UpdateUserRequest(user_id="user-1", **privileged_payload)
+    caller = UserAPIKeyAuth(user_id="user-1", user_role=LitellmUserRoles.INTERNAL_USER)
+
+    with pytest.raises(HTTPException) as exc:
+        await _update_single_user_helper(user_request=user_request, user_api_key_dict=caller)
+    assert exc.value.status_code == 403
+    assert sorted(privileged_payload.keys())[0] in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_non_admin_can_update_own_display_fields_and_metadata(mocker):
+    """Self-service updates of user_alias/user_email/password/metadata must
+    keep working for non-admins; the allowlist may not over-block."""
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        _update_single_user_helper,
+    )
+
+    mock_prisma_client = mocker.MagicMock()
+    existing_user = mocker.MagicMock()
+    existing_user.model_dump.return_value = {"user_id": "user-1", "metadata": {}}
+    existing_user.user_id = "user-1"
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(return_value=existing_user)
+    mock_prisma_client.update_data = mocker.AsyncMock(
+        return_value={"user_id": "user-1", "user_alias": "new-alias"}
+    )
+    mock_prisma_client.jsonify_object = mocker.MagicMock(side_effect=lambda x: x)
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch("litellm.proxy.proxy_server.litellm_proxy_admin_name", "admin")
+
+    user_request = UpdateUserRequest(
+        user_id="user-1",
+        user_alias="new-alias",
+        metadata={"theme": "dark"},
+    )
+    caller = UserAPIKeyAuth(user_id="user-1", user_role=LitellmUserRoles.INTERNAL_USER)
+
+    result = await _update_single_user_helper(user_request=user_request, user_api_key_dict=caller)
+    assert result is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_can_still_assign_teams_and_limits_to_any_user(mocker):
+    """PROXY_ADMIN updating another user's teams/limits must be unaffected by
+    the self-service allowlist."""
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        _update_single_user_helper,
+    )
+
+    mock_prisma_client = mocker.MagicMock()
+    existing_user = mocker.MagicMock()
+    existing_user.model_dump.return_value = {"user_id": "target-user", "metadata": {}}
+    existing_user.user_id = "target-user"
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(return_value=existing_user)
+    mock_prisma_client.update_data = mocker.AsyncMock(
+        return_value={"user_id": "target-user", "teams": ["team-1"]}
+    )
+    mock_prisma_client.jsonify_object = mocker.MagicMock(side_effect=lambda x: x)
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch("litellm.proxy.proxy_server.litellm_proxy_admin_name", "admin")
+
+    user_request = UpdateUserRequest(user_id="target-user", teams=["team-1"], tpm_limit=100)
+    admin_caller = UserAPIKeyAuth(user_id="admin-1", user_role=LitellmUserRoles.PROXY_ADMIN)
+
+    result = await _update_single_user_helper(user_request=user_request, user_api_key_dict=admin_caller)
+    assert result is not None
+
+
+@pytest.mark.asyncio
 async def test_admin_user_update_spend_invalidates_counter(mocker):
     """A direct /user/update spend change must invalidate the cross-pod
     spend counter so enforcement re-reads the new DB value."""

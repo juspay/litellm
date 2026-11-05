@@ -99,8 +99,7 @@ GATEWAY_PATH_PREFIXES: tuple[str, ...] = (
     "/cursor/",
     "/milvus/",
     "/openai_passthrough/",
-    # Dynamic provider / toolset passthrough (path templates)
-    "/{provider}/",
+    # Toolset-namespaced MCP data plane
     "/toolset/",
     # Realtime / streaming
     "/v1/realtime",
@@ -120,5 +119,14 @@ GATEWAY_EXACT_PATHS: frozenset[str] = frozenset(
         "/docs/oauth2-redirect",
         "/redoc",
         "/test",
+        # Dynamic provider passthrough — the only concrete route templates
+        # under /{provider}/ on the app (batches + files), enumerated
+        # explicitly instead of a catch-all /{provider}/ prefix.
+        "/{provider}/v1/batches",
+        "/{provider}/v1/batches/{batch_id:path}",
+        "/{provider}/v1/batches/{batch_id:path}/cancel",
+        "/{provider}/v1/files",
+        "/{provider}/v1/files/{file_id:path}",
+        "/{provider}/v1/files/{file_id:path}/content",
     }
 )

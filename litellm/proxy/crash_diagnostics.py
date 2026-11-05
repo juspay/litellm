@@ -45,11 +45,9 @@ Implementation notes
 """
 
 import os
-import os
 import signal
 import sys
 import threading
-from typing import Optional
 
 # Recent-activity buffer lives in a dependency-free leaf module so that hot
 # paths in lower layers (litellm_core_utils, caching, router_strategy) can
@@ -68,10 +66,7 @@ _FATAL_SIGNALS = [
     signal.SIGILL,
 ]
 
-_SIGNAL_NAMES = {
-    getattr(signal, name, None): name
-    for name in ("SIGABRT", "SIGSEGV", "SIGFPE", "SIGBUS", "SIGILL")
-}
+_SIGNAL_NAMES = {getattr(signal, name, None): name for name in ("SIGABRT", "SIGSEGV", "SIGFPE", "SIGBUS", "SIGILL")}
 
 _ENV_FLAG = "LITELLM_CRASH_DIAGNOSTICS"
 
@@ -119,8 +114,8 @@ def _dump_context(signum: int, frame) -> None:
         current = threading.current_thread()
         _write_err("\n-- threads --\n")
         # sys._current_frames() gives the C-level current frame per thread.
-        frames = sys._current_frames()  # noqa: SLF001
-        for ident, t in sorted(threading._active.items()):  # noqa: SLF001
+        frames = sys._current_frames()
+        for ident, t in sorted(threading._active.items()):
             flag = " <= FAULTING" if t is current else ""
             _write_err(
                 f"  name={t.name!r} ident={ident} native_id={getattr(t, 'native_id', '?')}"
@@ -133,9 +128,7 @@ def _dump_context(signum: int, frame) -> None:
                 depth = 0
                 f = fr
                 while f is not None and depth < 8:
-                    _walk.append(
-                        f"      {f.f_code.co_filename}:{f.f_lineno} in {f.f_code.co_name}"
-                    )
+                    _walk.append(f"      {f.f_code.co_filename}:{f.f_lineno} in {f.f_code.co_name}")
                     f = f.f_back
                     depth += 1
                 _write_err("\n".join(_walk) + "\n")
@@ -170,10 +163,7 @@ def _dump_context(signum: int, frame) -> None:
             try:
                 frame = coro.cr_frame  # type: ignore[union-attr]
                 if frame is not None:
-                    _write_err(
-                        f" suspended at {frame.f_code.co_filename}:{frame.f_lineno}"
-                        f" in {frame.f_code.co_name}\n"
-                    )
+                    _write_err(f" suspended at {frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}\n")
                 else:
                     _write_err("\n")
             except Exception:
@@ -193,8 +183,7 @@ def _dump_context(signum: int, frame) -> None:
     except Exception as e:
         _write_err(f"  <recent activity dump failed: {e}>\n")
 
-    _write_err("\n==== END CRASH DIAGNOSTICS "
-               "(faulthandler trace follows) ====\n\n")
+    _write_err("\n==== END CRASH DIAGNOSTICS (faulthandler trace follows) ====\n\n")
 
 
 def _signal_handler(signum, frame):
@@ -233,9 +222,7 @@ def install() -> None:
             # Some signals cannot be hooked (e.g. not on this platform) — skip.
             pass
 
-    _write_err(
-        f"[litellm] crash diagnostics installed for {[ _SIGNAL_NAMES.get(s, s) for s in _FATAL_SIGNALS ]}\n"
-    )
+    _write_err(f"[litellm] crash diagnostics installed for {[_SIGNAL_NAMES.get(s, s) for s in _FATAL_SIGNALS]}\n")
 
 
 def _self_test() -> None:
@@ -247,7 +234,7 @@ def _self_test() -> None:
     os.environ[_ENV_FLAG] = "1"
     install()
     _dump_context(signal.SIGABRT, None)
-    print("\n[self-test] diagnostics dump written to stderr above", file=sys.stderr)
+    print("\n[self-test] diagnostics dump written to stderr above", file=sys.stderr)  # noqa: T201
 
 
 if __name__ == "__main__":

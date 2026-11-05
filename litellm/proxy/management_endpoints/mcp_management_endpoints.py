@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Literal, Optional, Set
 
+import jwt
 from fastapi import (
     APIRouter,
     Depends,
@@ -46,11 +47,12 @@ import litellm
 from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.constants import LITELLM_PROXY_ADMIN_NAME
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.proxy._experimental.mcp_server.utils import (
-    build_env_var_setup_url,
-    collect_env_var_references,
     LITELLM_MCP_SERVER_DESCRIPTION,
     LITELLM_MCP_SERVER_NAME,
+    build_env_var_setup_url,
+    collect_env_var_references,
     get_server_prefix,
     parse_admin_env_vars,
 )
@@ -66,7 +68,6 @@ from litellm.repositories.table_repositories import (
     MCPServerRepository,
     MCPUserCredentialsRepository,
 )
-from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 router = APIRouter(prefix="/v1/mcp", tags=["mcp"])
 
@@ -358,9 +359,11 @@ if MCP_AVAILABLE:
         payload: Dict[str, Any] = server.model_dump(mode="json")
         payload_json = json.dumps(payload)
         try:
-            encrypted_payload = encrypt_value_helper(payload_json)
+            encrypted_payload = encrypt_value_helper(payload_json, context="temporary_mcp_server:redis_payload")
         except Exception as e:
-            verbose_proxy_logger.debug(f"Failed to encrypt temporary MCP server payload for Redis cache: {truncate_error_str(e)}")
+            verbose_proxy_logger.debug(
+                f"Failed to encrypt temporary MCP server payload for Redis cache: {truncate_error_str(e)}"
+            )
             return
 
         if not isinstance(encrypted_payload, str):
@@ -409,13 +412,16 @@ if MCP_AVAILABLE:
             value=cached_server,
             key="temporary_mcp_server",
             exception_type="debug",
+            context="temporary_mcp_server:redis_payload",
         )
         if decrypted_json is None:
             return None
         try:
             loaded = json.loads(decrypted_json)
         except Exception as e:
-            verbose_proxy_logger.debug(f"Invalid decrypted temporary MCP payload in Redis cache: {truncate_error_str(e)}")
+            verbose_proxy_logger.debug(
+                f"Invalid decrypted temporary MCP payload in Redis cache: {truncate_error_str(e)}"
+            )
             return None
         if not isinstance(loaded, dict):
             return None
@@ -1074,7 +1080,7 @@ if MCP_AVAILABLE:
             verbose_proxy_logger.exception(f"Error registering mcp server: {truncate_error_str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": f"Error registering mcp server: {str(e)}"},
+                detail={"error": "Error registering mcp server."},
             )
         # Do NOT add to runtime registry — pending servers are not active
         return _redact_mcp_credentials(new_mcp_server)
@@ -1373,7 +1379,7 @@ if MCP_AVAILABLE:
             verbose_proxy_logger.exception(f"Error creating mcp server: {truncate_error_str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": f"Error creating mcp server: {str(e)}"},
+                detail={"error": "Error creating mcp server."},
             )
 
         # Registry refresh is best-effort: the row is already committed, so a
@@ -1448,7 +1454,7 @@ if MCP_AVAILABLE:
             verbose_proxy_logger.exception(f"Error caching temporary mcp server: {truncate_error_str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={"error": f"Error caching temporary mcp server: {str(e)}"},
+                detail={"error": "Error caching temporary mcp server."},
             )
 
         return _redact_mcp_credentials(temp_record)
@@ -1462,8 +1468,9 @@ if MCP_AVAILABLE:
         allows browser-based OAuth redirects to work without an explicit
         Authorization header.
         """
-        import jwt as _jwt
-
+        from litellm.proxy.common_utils.session_cookie_utils import (
+            decode_ui_session_jwt,
+        )
         from litellm.proxy.proxy_server import master_key
 
         auth_header = request.headers.get("Authorization", "")
@@ -1473,18 +1480,12 @@ if MCP_AVAILABLE:
             token_cookie = request.cookies.get("token")
             if token_cookie and master_key:
                 try:
-                    decoded = _jwt.decode(
-                        token_cookie,
-                        master_key,
-                        algorithms=["HS256"],
-                        # UI session cookies may omit exp; don't require it.
-                        options={"verify_exp": False, "verify_aud": False},
-                    )
+                    decoded = decode_ui_session_jwt(token_cookie, master_key, require_exp=True)
                     if decoded.get("login_method") in ("sso", "username_password"):
                         cookie_key = decoded.get("key", "")
                         if cookie_key:
                             api_key = f"Bearer {cookie_key}"
-                except _jwt.InvalidTokenError:
+                except jwt.InvalidTokenError:
                     pass
 
         # For delegate_auth_to_upstream servers the entire PKCE handshake
@@ -2363,7 +2364,7 @@ if MCP_AVAILABLE:
             raise
         except Exception as e:
             verbose_proxy_logger.exception(f"Error making agent public: {truncate_error_str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Error making agent public.")
 
     # --- MCP Discovery ---
 
@@ -2383,7 +2384,9 @@ if MCP_AVAILABLE:
             with open(_MCP_REGISTRY_PATH, "r") as f:
                 data: Dict[str, Any] = json.load(f)
         except Exception as e:
-            verbose_proxy_logger.warning(f"Failed to load MCP registry from {_MCP_REGISTRY_PATH}: {truncate_error_str(e)}")
+            verbose_proxy_logger.warning(
+                f"Failed to load MCP registry from {_MCP_REGISTRY_PATH}: {truncate_error_str(e)}"
+            )
             data = {"servers": []}
         _mcp_registry_cache = data
         return data
@@ -2474,7 +2477,9 @@ if MCP_AVAILABLE:
         try:
             return _load_openapi_registry()
         except Exception as e:
-            verbose_proxy_logger.warning(f"Failed to load OpenAPI registry from {_OPENAPI_REGISTRY_PATH}: {truncate_error_str(e)}")
+            verbose_proxy_logger.warning(
+                f"Failed to load OpenAPI registry from {_OPENAPI_REGISTRY_PATH}: {truncate_error_str(e)}"
+            )
             return {"apis": []}
 
     # ---------------------------------------------------------------------------

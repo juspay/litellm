@@ -320,10 +320,11 @@ postgresql:
     username: litellm
     database: litellm
 
-    # You should override these on the helm command line with
+    # Override these on the helm command line with
     #  `--set postgresql.auth.postgres-password=<some good password>,postgresql.auth.password=<some good password>`
-    password: NoTaGrEaTpAsSwOrD
-    postgres-password: NoTaGrEaTpAsSwOrD
+    # No default: the chart refuses to render when these are unset.
+    password: ""
+    postgres-password: ""
 
     # A secret is created by this chart (litellm-helm) with the credentials that
     #  the new Postgres instance should use.

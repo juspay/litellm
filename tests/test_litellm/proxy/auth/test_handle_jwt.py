@@ -3089,16 +3089,45 @@ def _reset_unscoped_warning_flag():
     JWTHandler._unscoped_jwt_warning_emitted = False
 
 
-def test_build_decode_kwargs_no_env_disables_both_verifications(
+def test_build_decode_kwargs_no_env_fails_closed(
+    monkeypatch, _reset_unscoped_warning_flag
+):
+    """Neither JWT_AUDIENCE nor JWT_ISSUER configured: the global decode path
+    must refuse unscoped tokens instead of silently disabling verification."""
+    monkeypatch.delenv("JWT_AUDIENCE", raising=False)
+    monkeypatch.delenv("JWT_ISSUER", raising=False)
+    monkeypatch.delenv("LITELLM_JWT_ALLOW_UNSCOPED", raising=False)
+
+    with pytest.raises(ProxyException) as exc_info:
+        JWTHandler._build_decode_kwargs()
+
+    assert "neither JWT_AUDIENCE nor JWT_ISSUER" in exc_info.value.message
+    assert "LITELLM_JWT_ALLOW_UNSCOPED" in exc_info.value.message
+
+
+def test_build_decode_kwargs_no_env_opt_out_restores_legacy_behavior(
     monkeypatch, _reset_unscoped_warning_flag
 ):
     monkeypatch.delenv("JWT_AUDIENCE", raising=False)
     monkeypatch.delenv("JWT_ISSUER", raising=False)
+    monkeypatch.setenv("LITELLM_JWT_ALLOW_UNSCOPED", "true")
 
     kwargs = JWTHandler._build_decode_kwargs()
 
     assert kwargs["audience"] is None
     assert kwargs["issuer"] is None
+    assert kwargs["options"] == {"verify_aud": False, "verify_iss": False}
+
+
+def test_build_decode_kwargs_opt_out_case_insensitive(
+    monkeypatch, _reset_unscoped_warning_flag
+):
+    monkeypatch.delenv("JWT_AUDIENCE", raising=False)
+    monkeypatch.delenv("JWT_ISSUER", raising=False)
+    monkeypatch.setenv("LITELLM_JWT_ALLOW_UNSCOPED", "TRUE")
+
+    kwargs = JWTHandler._build_decode_kwargs()
+
     assert kwargs["options"] == {"verify_aud": False, "verify_iss": False}
 
 
@@ -3146,12 +3175,14 @@ def test_build_decode_kwargs_both_set_enables_full_verification(
 def test_build_decode_kwargs_warns_once_when_unscoped(
     monkeypatch, _reset_unscoped_warning_flag, caplog
 ):
-    """The warning about unscoped JWT auth should fire on the first call but
-    not on every subsequent decode."""
+    """Under the LITELLM_JWT_ALLOW_UNSCOPED opt-out, the warning about
+    unscoped JWT auth should fire on the first call but not on every
+    subsequent decode."""
     import logging
 
     monkeypatch.delenv("JWT_AUDIENCE", raising=False)
     monkeypatch.delenv("JWT_ISSUER", raising=False)
+    monkeypatch.setenv("LITELLM_JWT_ALLOW_UNSCOPED", "true")
     caplog.set_level(logging.WARNING)
 
     JWTHandler._build_decode_kwargs()
@@ -3161,8 +3192,8 @@ def test_build_decode_kwargs_warns_once_when_unscoped(
     matching = [
         r
         for r in caplog.records
-        if "JWT auth is enabled" in r.getMessage()
-        and "neither JWT_AUDIENCE nor JWT_ISSUER" in r.getMessage()
+        if "LITELLM_JWT_ALLOW_UNSCOPED=true" in r.getMessage()
+        and "unscoped tokens" in r.getMessage()
     ]
     assert (
         len(matching) == 1
@@ -3553,13 +3584,14 @@ def test_canonical_user_id_no_change_when_db_user_id_falsy():
 
 
 @pytest.mark.asyncio
-async def test_auth_jwt_expired_token_raises_401_jwk_path():
+async def test_auth_jwt_expired_token_raises_401_jwk_path(monkeypatch):
     """An expired JWT (access token) decoded via the JWK/dict public-key path
     must raise a ProxyException carrying a 401 status code so the status is
     preserved end-to-end (client response + OTel traces).
     """
     import jwt as jwt_lib
 
+    monkeypatch.setenv("JWT_AUDIENCE", "test-audience")
     jwt_handler = JWTHandler()
     jwt_handler.litellm_jwtauth = LiteLLM_JWTAuth()
 
@@ -3591,10 +3623,11 @@ async def test_auth_jwt_expired_token_raises_401_jwk_path():
 
 
 @pytest.mark.asyncio
-async def test_auth_jwt_expired_token_raises_401_pem_cert_path():
+async def test_auth_jwt_expired_token_raises_401_pem_cert_path(monkeypatch):
     """Same as above but for the PEM-certificate (string public-key) decode path."""
     import jwt as jwt_lib
 
+    monkeypatch.setenv("JWT_AUDIENCE", "test-audience")
     jwt_handler = JWTHandler()
     jwt_handler.litellm_jwtauth = LiteLLM_JWTAuth()
 
@@ -3986,7 +4019,7 @@ async def test_multi_issuer_jwt_unknown_issuer_falls_back_to_global_jwks(monkeyp
     minted by non-configured IdPs. With no global JWKS configured, the legacy
     path surfaces a ``Missing JWT Public Key URL from environment.`` error.
     """
-    monkeypatch.delenv("JWT_AUDIENCE", raising=False)
+    monkeypatch.setenv("JWT_AUDIENCE", "expected-audience")
     monkeypatch.delenv("JWT_PUBLIC_KEY_URL", raising=False)
 
     configured_issuer = "https://issuer.example.com"
@@ -4175,7 +4208,7 @@ def test_multi_issuer_jwt_rejects_audience_with_disable_audience_validation():
 async def test_global_jwt_ignores_user_supplied_internal_claims(monkeypatch):
     from litellm.caching.dual_cache import DualCache
 
-    monkeypatch.delenv("JWT_AUDIENCE", raising=False)
+    monkeypatch.setenv("JWT_AUDIENCE", "some-other-client")
     monkeypatch.delenv("JWT_ISSUER", raising=False)
 
     jwks_url = "https://global-issuer.example.com/keys"
@@ -4318,24 +4351,18 @@ async def test_multi_issuer_jwt_does_not_emit_unscoped_global_warning(
     assert JWTHandler._unscoped_jwt_warning_emitted is False
 
 
-def test_build_decode_kwargs_warns_for_unscoped_global_fallback_in_mixed_deployment(
-    monkeypatch, _reset_unscoped_warning_flag, caplog
+def test_build_decode_kwargs_fails_closed_for_unscoped_global_fallback_in_mixed_deployment(
+    monkeypatch, _reset_unscoped_warning_flag
 ):
-    """The unscoped-fallback warning must fire even when per-issuer configs
+    """The fail-closed unscoped guard must fire even when per-issuer configs
     are set. In mixed deployments, tokens whose ``iss`` does not match any
     configured issuer fall through to the global path; if env-var scoping is
-    absent that fallback IS unscoped, and the operator needs to be told."""
-    import logging
-
+    absent that fallback IS unscoped, and it must refuse rather than warn."""
     monkeypatch.delenv("JWT_AUDIENCE", raising=False)
     monkeypatch.delenv("JWT_ISSUER", raising=False)
-    caplog.set_level(logging.WARNING)
+    monkeypatch.delenv("LITELLM_JWT_ALLOW_UNSCOPED", raising=False)
 
-    JWTHandler._build_decode_kwargs()
+    with pytest.raises(ProxyException) as exc_info:
+        JWTHandler._build_decode_kwargs()
 
-    matching = [
-        r
-        for r in caplog.records
-        if "neither JWT_AUDIENCE nor JWT_ISSUER" in r.getMessage()
-    ]
-    assert len(matching) == 1
+    assert "neither JWT_AUDIENCE nor JWT_ISSUER" in exc_info.value.message

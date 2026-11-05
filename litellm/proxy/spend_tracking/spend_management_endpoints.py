@@ -33,13 +33,13 @@ from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.spend_tracking.spend_tracking_utils import (
     get_spend_by_team_and_customer,
 )
-from litellm.proxy.utils import handle_exception_on_proxy, hash_token
+from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates
+from litellm.proxy.utils import handle_exception_on_proxy
 from litellm.repositories.table_repositories import SpendLogsRepository
 from litellm.repositories.team_repository import TeamRepository
 from litellm.repositories.verification_token_repository import (
     VerificationTokenRepository,
 )
-from litellm.router_strategy.budget_limiter import RouterBudgetLimiting
 
 if TYPE_CHECKING:
     from litellm.proxy.proxy_server import PrismaClient
@@ -48,6 +48,22 @@ else:
     PrismaClient = Any
 
 router = APIRouter()
+
+_SORT_COLUMN_TO_ORDER_BY_EXPR: dict[str, str] = {
+    "spend": "spend",
+    "total_tokens": "total_tokens",
+    "startTime": '"startTime"',
+    "endTime": '"endTime"',
+    "request_duration_ms": (
+        'COALESCE(request_duration_ms, (EXTRACT(EPOCH FROM ("endTime" - "startTime")) * 1000)::INTEGER)'
+    ),
+    "model": "model",
+    "ttft_ms": (
+        'CASE WHEN "completionStartTime" IS NULL '
+        'OR "completionStartTime" = "endTime" THEN NULL '
+        'ELSE (EXTRACT(EPOCH FROM ("completionStartTime" - "startTime")) * 1000) END'
+    ),
+}
 
 
 def _get_read_prisma_client():
@@ -1072,8 +1088,7 @@ async def get_global_spend_report(
             raise ValueError("/spend/report endpoint " + CommonProxyErrors.not_premium_user.value)
         if api_key is not None:
             verbose_proxy_logger.debug("Getting /spend for api_key: [set=%s]", api_key is not None)
-            if api_key.startswith("sk-"):
-                api_key = hash_token(token=api_key)
+            api_key_filter: list[str] = list(hash_token_candidates(api_key)) if api_key.startswith("sk-") else [api_key]
             sql_query = """
                 WITH SpendByModelApiKey AS (
                     SELECT
@@ -1087,7 +1102,7 @@ async def get_global_spend_report(
                     WHERE
                         sl."startTime" >= ($1::timestamptz AT TIME ZONE 'UTC')
                         AND sl."startTime" <  (($2::timestamptz + INTERVAL '1 day') AT TIME ZONE 'UTC')
-                        AND sl.api_key = $3
+                        AND sl.api_key = ANY($3)
                     GROUP BY
                         sl.api_key,
                         sl.model
@@ -1110,7 +1125,7 @@ async def get_global_spend_report(
                 ORDER BY
                     total_cost DESC;
             """
-            db_response = await prisma_client.db.query_raw(sql_query, start_date_obj, end_date_obj, api_key)
+            db_response = await prisma_client.db.query_raw(sql_query, start_date_obj, end_date_obj, api_key_filter)
             if db_response is None:
                 return []
 
@@ -1781,16 +1796,11 @@ async def ui_view_spend_logs(
             code=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Validate sort_by and sort_order
-    valid_sort_fields = {
-        "spend",
-        "total_tokens",
-        "startTime",
-        "endTime",
-        "request_duration_ms",
-        "model",
-        "ttft_ms",
-    }
+    # Validate sort_by and sort_order. _SORT_COLUMN_TO_ORDER_BY_EXPR is the
+    # single source of truth for both validation and the raw ORDER BY
+    # interpolation below: an allowed sort_by always maps to a known SQL
+    # expression, so the two can never drift apart.
+    valid_sort_fields = _SORT_COLUMN_TO_ORDER_BY_EXPR.keys()
     if sort_by not in valid_sort_fields:
         raise ProxyException(
             message=f"Invalid sort_by: {sort_by}. Must be one of: {', '.join(sorted(valid_sort_fields))}",
@@ -2021,26 +2031,18 @@ async def ui_view_spend_logs(
             sql_params.append(f"%{error_message}%")
             p += 1
 
-        # Build the ORDER BY expression. ttft_ms is computed from
-        # completionStartTime - startTime; non-streaming rows (where
+        # Build the ORDER BY expression. The expression comes exclusively from
+        # _SORT_COLUMN_TO_ORDER_BY_EXPR — the same map that validated sort_by —
+        # so nothing request-supplied is interpolated raw. ttft_ms is computed
+        # from completionStartTime - startTime; non-streaming rows (where
         # completionStartTime is null or equals endTime) yield NULL, so we
         # append NULLS LAST in that case to keep them at the bottom regardless
         # of direction. The other sort columns are non-null in the result set,
         # so we leave the NULLS clause off and preserve their existing DESC
         # semantics.
         _sql_dir = "ASC" if order_direction == "asc" else "DESC"
-        _nulls_clause = ""
-        if order_column == "ttft_ms":
-            _order_expr = (
-                'CASE WHEN "completionStartTime" IS NULL '
-                'OR "completionStartTime" = "endTime" THEN NULL '
-                'ELSE (EXTRACT(EPOCH FROM ("completionStartTime" - "startTime")) * 1000) END'
-            )
-            _nulls_clause = " NULLS LAST"
-        elif order_column in ("startTime", "endTime"):
-            _order_expr = f'"{order_column}"'
-        else:
-            _order_expr = order_column
+        _order_expr = _SORT_COLUMN_TO_ORDER_BY_EXPR[order_column]
+        _nulls_clause = " NULLS LAST" if order_column == "ttft_ms" else ""
 
         sql_query = f"""
             SELECT
@@ -2100,7 +2102,13 @@ async def ui_view_spend_logs(
         # Calculate total pages
         total_pages = (total_records + page_size - 1) // page_size
 
-        verbose_proxy_logger.debug("data= %s", json.dumps(data, indent=4, default=str))
+        verbose_proxy_logger.debug(
+            "spend logs ui page=%s page_size=%s total_records=%s rows_returned=%s",
+            page,
+            page_size,
+            total_records,
+            len(data),
+        )
 
         return await _build_ui_spend_logs_response(
             prisma_client,
@@ -2320,24 +2328,14 @@ async def ui_view_error_stats(
         default=None,
         description="Filter by end user",
     ),
-    status_filter: Optional[str] = fastapi.Query(
-        default=None, description="Filter by status (e.g., success, failure)"
-    ),
-    model: Optional[str] = fastapi.Query(
-        default=None, description="Filter by model"
-    ),
+    status_filter: Optional[str] = fastapi.Query(default=None, description="Filter by status (e.g., success, failure)"),
+    model: Optional[str] = fastapi.Query(default=None, description="Filter by model"),
     model_id: Optional[str] = fastapi.Query(
         default=None, description="Filter by model ID (litellm model deployment id)"
     ),
-    key_alias: Optional[str] = fastapi.Query(
-        default=None, description="Filter by key alias"
-    ),
-    error_code: Optional[str] = fastapi.Query(
-        default=None, description="Filter by error code"
-    ),
-    error_message: Optional[str] = fastapi.Query(
-        default=None, description="Filter by error message (partial match)"
-    ),
+    key_alias: Optional[str] = fastapi.Query(default=None, description="Filter by key alias"),
+    error_code: Optional[str] = fastapi.Query(default=None, description="Filter by error code"),
+    error_message: Optional[str] = fastapi.Query(default=None, description="Filter by error message (partial match)"),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -2368,12 +2366,8 @@ async def ui_view_error_stats(
         )
 
     try:
-        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
-        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
+        start_date_obj = datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
 
         start_date_iso = start_date_obj.isoformat()
         end_date_iso = end_date_obj.isoformat()
@@ -2430,11 +2424,7 @@ async def ui_view_error_stats(
                 if not can_view_team:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail={
-                            "error": "Not authorized to view team spend for team_id={}".format(
-                                team_id
-                            )
-                        },
+                        detail={"error": "Not authorized to view team spend for team_id={}".format(team_id)},
                     )
                 where_conditions["team_id"] = team_id
             else:
@@ -2500,10 +2490,10 @@ async def ui_view_error_stats(
         param_index = 1
 
         if "startTime" in where_conditions:
-            sql_query += f" AND \"startTime\" >= ${param_index}::timestamp"
+            sql_query += f' AND "startTime" >= ${param_index}::timestamp'
             params.append(where_conditions["startTime"]["gte"])
             param_index += 1
-            sql_query += f" AND \"startTime\" <= ${param_index}::timestamp"
+            sql_query += f' AND "startTime" <= ${param_index}::timestamp'
             params.append(where_conditions["startTime"]["lte"])
             param_index += 1
 
@@ -2523,7 +2513,7 @@ async def ui_view_error_stats(
             param_index += 1
 
         if "user" in where_conditions:
-            sql_query += f" AND \"user\" = ${param_index}"
+            sql_query += f' AND "user" = ${param_index}'
             params.append(where_conditions["user"])
             param_index += 1
 
@@ -2544,7 +2534,7 @@ async def ui_view_error_stats(
 
         if "metadata" in where_conditions:
             sql_query += f" AND metadata::text LIKE ${param_index}"
-            params.append(f'%{where_conditions["metadata"]["string_contains"]}%')
+            params.append(f"%{where_conditions['metadata']['string_contains']}%")
             param_index += 1
 
         if "error_code" in where_conditions:
@@ -2554,7 +2544,7 @@ async def ui_view_error_stats(
 
         if "error_message" in where_conditions:
             sql_query += f" AND (metadata::jsonb)->'error_information'->>'error_message' LIKE ${param_index}"
-            params.append(f'%{where_conditions["error_message"]}%')
+            params.append(f"%{where_conditions['error_message']}%")
             param_index += 1
 
         if status_filter is not None:
@@ -2573,23 +2563,19 @@ async def ui_view_error_stats(
         )
 
         if db_response is None:
-            return {
-                "time_bucket_size": time_bucket_display,
-                "data": []
-            }
+            return {"time_bucket_size": time_bucket_display, "data": []}
 
         result = []
         for row in db_response:
-            result.append({
-                "time_bucket": row.get("time_bucket"),
-                "extracted_error": row.get("extracted_error", "Unknown Error"),
-                "count": row.get("count", 0)
-            })
+            result.append(
+                {
+                    "time_bucket": row.get("time_bucket"),
+                    "extracted_error": row.get("extracted_error", "Unknown Error"),
+                    "count": row.get("count", 0),
+                }
+            )
 
-        return {
-            "time_bucket_size": time_bucket_display,
-            "data": result
-        }
+        return {"time_bucket_size": time_bucket_display, "data": result}
 
     except Exception as e:
         verbose_proxy_logger.exception(f"Error in ui_view_error_stats: {e}")
@@ -2634,21 +2620,13 @@ async def ui_view_failure_logs_analytics_paginated(
         default=None,
         description="Filter by end user",
     ),
-    model: Optional[str] = fastapi.Query(
-        default=None, description="Filter by model"
-    ),
+    model: Optional[str] = fastapi.Query(default=None, description="Filter by model"),
     model_id: Optional[str] = fastapi.Query(
         default=None, description="Filter by model ID (litellm model deployment id)"
     ),
-    key_alias: Optional[str] = fastapi.Query(
-        default=None, description="Filter by key alias"
-    ),
-    error_code: Optional[str] = fastapi.Query(
-        default=None, description="Filter by error code"
-    ),
-    error_message: Optional[str] = fastapi.Query(
-        default=None, description="Filter by error message (partial match)"
-    ),
+    key_alias: Optional[str] = fastapi.Query(default=None, description="Filter by key alias"),
+    error_code: Optional[str] = fastapi.Query(default=None, description="Filter by error code"),
+    error_message: Optional[str] = fastapi.Query(default=None, description="Filter by error message (partial match)"),
     error_classes: Optional[str] = fastapi.Query(
         default=None,
         description="Comma-separated list of error classes to filter by",
@@ -2684,22 +2662,14 @@ async def ui_view_failure_logs_analytics_paginated(
     try:
         # Parse date strings - supports "YYYY-MM-DD HH:MM:SS" and "YYYY-MM-DDTHH:MM"
         try:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         except ValueError:
-            start_date_obj = datetime.strptime(start_date, "%Y-%m-%dT%H:%M").replace(
-                tzinfo=timezone.utc
-            )
+            start_date_obj = datetime.strptime(start_date, "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
 
         try:
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc
-            )
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
         except ValueError:
-            end_date_obj = datetime.strptime(end_date, "%Y-%m-%dT%H:%M").replace(
-                tzinfo=timezone.utc
-            )
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%dT%H:%M").replace(tzinfo=timezone.utc)
 
         time_diff_hours = (end_date_obj - start_date_obj).total_seconds() / 3600
         if time_diff_hours > 240:
@@ -2766,11 +2736,7 @@ async def ui_view_failure_logs_analytics_paginated(
                 if not can_view_team:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail={
-                            "error": "Not authorized to view team spend for team_id={}".format(
-                                team_id
-                            )
-                        },
+                        detail={"error": "Not authorized to view team spend for team_id={}".format(team_id)},
                     )
                 where_conditions["team_id"] = team_id
             else:
@@ -2780,9 +2746,7 @@ async def ui_view_failure_logs_analytics_paginated(
                 else:
                     raise HTTPException(
                         status_code=status.HTTP_403_FORBIDDEN,
-                        detail={
-                            "error": "Not authorized to view spend logs"
-                        },
+                        detail={"error": "Not authorized to view spend logs"},
                     )
 
         # Build SQL query for failure logs with error class filter
@@ -2797,10 +2761,10 @@ async def ui_view_failure_logs_analytics_paginated(
         param_index = 1
 
         if "startTime" in where_conditions:
-            sql_query += f" AND \"startTime\" >= ${param_index}::timestamp"
+            sql_query += f' AND "startTime" >= ${param_index}::timestamp'
             params.append(where_conditions["startTime"]["gte"])
             param_index += 1
-            sql_query += f" AND \"startTime\" <= ${param_index}::timestamp"
+            sql_query += f' AND "startTime" <= ${param_index}::timestamp'
             params.append(where_conditions["startTime"]["lte"])
             param_index += 1
 
@@ -2820,7 +2784,7 @@ async def ui_view_failure_logs_analytics_paginated(
             param_index += 1
 
         if "user" in where_conditions:
-            sql_query += f" AND \"user\" = ${param_index}"
+            sql_query += f' AND "user" = ${param_index}'
             params.append(where_conditions["user"])
             param_index += 1
 
@@ -2841,7 +2805,7 @@ async def ui_view_failure_logs_analytics_paginated(
 
         if "metadata" in where_conditions:
             sql_query += f" AND metadata::text LIKE ${param_index}"
-            params.append(f'%{where_conditions["metadata"]["string_contains"]}%')
+            params.append(f"%{where_conditions['metadata']['string_contains']}%")
             param_index += 1
 
         if "error_code" in where_conditions:
@@ -2851,7 +2815,7 @@ async def ui_view_failure_logs_analytics_paginated(
 
         if "error_message" in where_conditions:
             sql_query += f" AND (metadata::jsonb)->'error_information'->>'error_message' LIKE ${param_index}"
-            params.append(f'%{where_conditions["error_message"]}%')
+            params.append(f"%{where_conditions['error_message']}%")
             param_index += 1
 
         # Filter by selected error classes
@@ -2875,7 +2839,7 @@ async def ui_view_failure_logs_analytics_paginated(
         total_pages = (total + page_size - 1) // page_size if total > 0 else 0
 
         # Add ordering and pagination
-        sql_query += f" ORDER BY \"startTime\" DESC LIMIT ${param_index} OFFSET ${param_index + 1}"
+        sql_query += f' ORDER BY "startTime" DESC LIMIT ${param_index} OFFSET ${param_index + 1}'
         params.append(page_size)
         param_index += 1
         params.append((page - 1) * page_size)
@@ -3026,7 +2990,11 @@ async def view_spend_logs(
 
             if api_key is not None and isinstance(api_key, str):
                 if api_key.startswith("sk-"):
-                    filter_query["api_key"] = prisma_client.hash_token(token=api_key)  # type: ignore
+                    # Match digests from both the peppered scheme and the
+                    # legacy bare SHA-256 so pre-pepper spend rows still show.
+                    filter_query["api_key"] = {  # type: ignore
+                        "in": hash_token_candidates(api_key),
+                    }
                 else:
                     filter_query["api_key"] = api_key  # type: ignore
             if request_id is not None and isinstance(request_id, str):
@@ -3102,10 +3070,11 @@ async def view_spend_logs(
             scoped_filter: Dict[str, Any] = {}
             if api_key is not None and isinstance(api_key, str):
                 if api_key.startswith("sk-"):
-                    hashed_token = prisma_client.hash_token(token=api_key)
+                    scoped_filter["api_key"] = {  # type: ignore
+                        "in": hash_token_candidates(api_key),
+                    }
                 else:
-                    hashed_token = api_key
-                scoped_filter["api_key"] = hashed_token
+                    scoped_filter["api_key"] = api_key
             if request_id is not None and isinstance(request_id, str):
                 scoped_filter["request_id"] = request_id
             if user_id is not None and isinstance(user_id, str):
@@ -4287,6 +4256,44 @@ async def _assert_user_can_view_request_id(
     )
 
 
+async def _assert_user_can_view_token_rows(
+    prisma_client,
+    user_api_key_dict: UserAPIKeyAuth,
+    token_rows: list,
+) -> None:
+    """Verify the caller may view analytics for the resolved verification-token rows.
+
+    Admin roles (proxy admin / org admin / admin viewer) see every key. Any
+    other authenticated caller must own every resolved token (same user_id) or
+    belong to a team the token belongs to with spend-log visibility (team
+    admin or /spend/logs permission). Raises HTTP 403 otherwise, so naming
+    another user's masked key or alias does not expose its concurrency data.
+    """
+    if user_api_key_dict.user_role in (
+        LitellmUserRoles.PROXY_ADMIN.value,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
+        LitellmUserRoles.ORG_ADMIN.value,
+    ):
+        return
+
+    caller_user_id = user_api_key_dict.user_id
+    for row in token_rows:
+        if row.user_id is not None and caller_user_id is not None and row.user_id == caller_user_id:
+            continue
+        if row.team_id is not None:
+            can_view = await _can_team_member_view_log(
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+                team_id=row.team_id,
+            )
+            if can_view:
+                continue
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "Not authorized to view concurrency analytics for this key."},
+        )
+
+
 @router.get(
     "/concurrent_request_logs",
     tags=["Budget & Spend Tracking"],
@@ -4294,9 +4301,7 @@ async def _assert_user_can_view_request_id(
     include_in_schema=False,
 )
 async def concurrent_request_logs(
-    timestamp: str = fastapi.Query(
-        description="Target timestamp in ISO 8601 format (e.g., 2026-03-27T15:30:00.123Z)"
-    ),
+    timestamp: str = fastapi.Query(description="Target timestamp in ISO 8601 format (e.g., 2026-03-27T15:30:00.123Z)"),
     api_key: Optional[str] = fastapi.Query(
         default=None,
         description="Optional API key filter (e.g., sk-...gQxg)",
@@ -4330,9 +4335,7 @@ async def concurrent_request_logs(
             get_concurrent_requests_from_gcp_logs,
         )
     except Exception as import_err:
-        verbose_proxy_logger.error(
-            f"[concurrent_request_logs] Failed to import GCP logging helpers: {import_err}"
-        )
+        verbose_proxy_logger.error(f"[concurrent_request_logs] Failed to import GCP logging helpers: {import_err}")
         return {"data": [], "total": 0, "error": f"Import error: {str(import_err)}"}
 
     prisma_client = _get_read_prisma_client()
@@ -4451,10 +4454,10 @@ async def concurrent_request_logs(
         return {"data": all_data, "total": len(all_data)}
 
     except Exception as e:
-        verbose_proxy_logger.error(f"[concurrent_request_logs] Error: {str(e)}")
+        verbose_proxy_logger.exception(f"[concurrent_request_logs] Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(e)},
+            detail={"error": "Internal error querying concurrent request logs."},
         )
 
 
@@ -4493,15 +4496,10 @@ async def reset_mpr_counter(
            - lease ZSET:            `{api_key:<token>}:max_parallel_requests_leases`
     """
     # Restrict to PROXY_ADMIN — this mutates shared Redis rate-limit state.
-    if (
-        user_api_key_dict.user_role is None
-        or user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value
-    ):
+    if user_api_key_dict.user_role is None or user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={
-                "error": "Only proxy admins can reset the max_parallel_requests counter."
-            },
+            detail={"error": "Only proxy admins can reset the max_parallel_requests counter."},
         )
 
     from litellm.proxy.hooks.parallel_request_limiter_v3 import (
@@ -4531,9 +4529,7 @@ async def reset_mpr_counter(
                     await redis_cache.async_delete_cache(key=key)
                     deleted_keys.append(key)
                 except Exception as del_err:
-                    verbose_proxy_logger.warning(
-                        f"[reset_mpr] Failed to delete Redis key {key}: {del_err}"
-                    )
+                    verbose_proxy_logger.warning(f"[reset_mpr] Failed to delete Redis key {key}: {del_err}")
 
         verbose_proxy_logger.info(
             f"[reset_mpr] Reset by user_id={user_api_key_dict.user_id} "
@@ -4550,10 +4546,10 @@ async def reset_mpr_counter(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"[reset_mpr] Error: {str(e)}")
+        verbose_proxy_logger.exception(f"[reset_mpr] Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": str(e)},
+            detail={"error": "Internal error resetting MPR counters."},
         )
 
 
@@ -4607,9 +4603,7 @@ def _parse_spend_log_datetime(value: str) -> datetime:
     trailing 'Z'). The returned datetime is always timezone-aware (UTC).
     """
     try:
-        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     except ValueError:
         pass
     try:
@@ -4632,9 +4626,7 @@ async def concurrent_request_rate_limit_hits(
     start_date: str = fastapi.Query(
         description="Start of the time range (UTC), e.g. '2026-05-20 06:00:00' or ISO 8601"
     ),
-    end_date: str = fastapi.Query(
-        description="End of the time range (UTC), e.g. '2026-05-20 07:00:00' or ISO 8601"
-    ),
+    end_date: str = fastapi.Query(description="End of the time range (UTC), e.g. '2026-05-20 07:00:00' or ISO 8601"),
     api_key: Optional[str] = fastapi.Query(
         default=None,
         description="API key to look up (raw key or hashed token). Provide either this or key_alias, not both.",
@@ -4643,10 +4635,9 @@ async def concurrent_request_rate_limit_hits(
         default=None,
         description="Key alias to look up. Provide either this or api_key, not both.",
     ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
     page: int = fastapi.Query(default=1, ge=1, description="Page number for pagination"),
-    page_size: int = fastapi.Query(
-        default=10, ge=1, le=100, description="Number of items per page"
-    ),
+    page_size: int = fastapi.Query(default=10, ge=1, le=100, description="Number of items per page"),
 ):
     """
     Return the timestamps at which a key was rate limited by the
@@ -4704,7 +4695,7 @@ async def concurrent_request_rate_limit_hits(
             # The UI shows the masked key (key_name, e.g. "sk-...gQxg"), so match
             # that first. Also accept the full raw key (hash it) or an already-hashed
             # token so the lookup is robust to whatever form is pasted.
-            token_candidates = list({api_key, hash_token(api_key)})
+            token_candidates = list({api_key, *hash_token_candidates(api_key)})
             token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
                 where={
                     "OR": [
@@ -4726,11 +4717,12 @@ async def concurrent_request_rate_limit_hits(
                 param="api_key" if api_key else "key_alias",
                 code=status.HTTP_404_NOT_FOUND,
             )
+        await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, token_rows)
 
         # Step 2: query SpendLogs for MPR 429 failures in the time range.
         # error_information is read from metadata the same way the failure logs
         # analytics endpoint does: (metadata::jsonb)->'error_information'->>'<field>'.
-        token_placeholders = ", ".join([f"${i+3}" for i in range(len(tokens))])
+        token_placeholders = ", ".join([f"${i + 3}" for i in range(len(tokens))])
         base_query = f"""
         FROM "LiteLLM_SpendLogs"
         WHERE status = 'failure'
@@ -4793,9 +4785,7 @@ async def concurrent_request_rate_limit_hits(
     except ProxyException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"[concurrent_request_rate_limit_hits] Error: {str(e)}"
-        )
+        verbose_proxy_logger.exception(f"[concurrent_request_rate_limit_hits] Error: {str(e)}")
         raise handle_exception_on_proxy(e)
 
 
@@ -4809,9 +4799,7 @@ async def concurrent_request_operation_counts(
     start_date: str = fastapi.Query(
         description="Start of the time range (UTC), e.g. '2026-05-20 06:00:00' or ISO 8601"
     ),
-    end_date: str = fastapi.Query(
-        description="End of the time range (UTC), e.g. '2026-05-20 07:00:00' or ISO 8601"
-    ),
+    end_date: str = fastapi.Query(description="End of the time range (UTC), e.g. '2026-05-20 07:00:00' or ISO 8601"),
     api_key: Optional[str] = fastapi.Query(
         default=None,
         description="API key to look up (masked key / full key / hashed token). Provide either this or key_alias, not both.",
@@ -4820,6 +4808,7 @@ async def concurrent_request_operation_counts(
         default=None,
         description="Key alias to look up. Provide either this or api_key, not both.",
     ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
 ):
     """
     Count the parallel_requests counter increment vs decrement [METRICS] log entries
@@ -4890,9 +4879,7 @@ async def concurrent_request_operation_counts(
             )
 
         if not GCP_LOGGING_AVAILABLE:
-            verbose_proxy_logger.warning(
-                "[concurrent_request_operation_counts] google-cloud-logging not available."
-            )
+            verbose_proxy_logger.warning("[concurrent_request_operation_counts] google-cloud-logging not available.")
             return {
                 "increment_count": 0,
                 "decrement_count": 0,
@@ -4915,7 +4902,7 @@ async def concurrent_request_operation_counts(
         if api_key:
             # Resolve the masked key / full key / hashed token to its token(s).
             # GCP logs only carry the token, so we must filter by it.
-            token_candidates = list({api_key, hash_token(api_key)})
+            token_candidates = list({api_key, *hash_token_candidates(api_key)})
             token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
                 where={
                     "OR": [
@@ -4932,6 +4919,7 @@ async def concurrent_request_operation_counts(
                     param="api_key",
                     code=status.HTTP_404_NOT_FOUND,
                 )
+            await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, token_rows)
             # Aggregate counts across all resolved tokens (usually exactly one).
             for tok in tokens:
                 counts, success, was_truncated = await count_parallel_request_operations(
@@ -4945,6 +4933,17 @@ async def concurrent_request_operation_counts(
                 truncated = truncated or was_truncated
             resolved_token = tokens[0] if len(tokens) == 1 else f"{len(tokens)} keys"
         else:
+            alias_token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
+                where={"key_alias": key_alias},
+            )
+            if not alias_token_rows:
+                raise ProxyException(
+                    message="No key found matching the provided Key Alias.",
+                    type="not_found",
+                    param="key_alias",
+                    code=status.HTTP_404_NOT_FOUND,
+                )
+            await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, alias_token_rows)
             counts, success, was_truncated = await count_parallel_request_operations(
                 start_timestamp=start_ts,
                 end_timestamp=end_ts,
@@ -4981,9 +4980,7 @@ async def concurrent_request_operation_counts(
     except ProxyException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"[concurrent_request_operation_counts] Error: {str(e)}"
-        )
+        verbose_proxy_logger.exception(f"[concurrent_request_operation_counts] Error: {str(e)}")
         raise handle_exception_on_proxy(e)
 
 
@@ -4997,9 +4994,7 @@ async def concurrent_request_timeline(
     start_date: str = fastapi.Query(
         description="Start of the time range (UTC), e.g. '2026-05-22 06:00:00' or ISO 8601"
     ),
-    end_date: str = fastapi.Query(
-        description="End of the time range (UTC), e.g. '2026-05-22 06:30:00' or ISO 8601"
-    ),
+    end_date: str = fastapi.Query(description="End of the time range (UTC), e.g. '2026-05-22 06:30:00' or ISO 8601"),
     api_key: Optional[str] = fastapi.Query(
         default=None,
         description="API key to look up (masked key / full key / hashed token). Provide either this or key_alias, not both.",
@@ -5008,6 +5003,7 @@ async def concurrent_request_timeline(
         default=None,
         description="Key alias to look up. Provide either this or api_key, not both.",
     ),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # noqa: B008
 ):
     """
     For a single key, return the Redis counter value and SpendLogs concurrency
@@ -5046,9 +5042,7 @@ async def concurrent_request_timeline(
             GCP_LOGGING_AVAILABLE,
         )
     except Exception as import_err:
-        verbose_proxy_logger.error(
-            f"[concurrent_request_timeline] Failed to import GCP logging helpers: {import_err}"
-        )
+        verbose_proxy_logger.error(f"[concurrent_request_timeline] Failed to import GCP logging helpers: {import_err}")
         return {"data": [], "total": 0, "gcp_available": False, "error": f"Import error: {str(import_err)}"}
 
     prisma_client = _get_read_prisma_client()
@@ -5076,7 +5070,7 @@ async def concurrent_request_timeline(
         # Resolve the input to the key's token(s). Both SpendLogs (keyed on the
         # hashed token) and GCP logs (carry token) need the token.
         if api_key:
-            token_candidates = list({api_key, hash_token(api_key)})
+            token_candidates = list({api_key, *hash_token_candidates(api_key)})
             token_rows = await prisma_client.db.litellm_verificationtoken.find_many(
                 where={
                     "OR": [
@@ -5098,6 +5092,7 @@ async def concurrent_request_timeline(
                 param="api_key" if api_key else "key_alias",
                 code=status.HTTP_404_NOT_FOUND,
             )
+        await _assert_user_can_view_token_rows(prisma_client, user_api_key_dict, token_rows)
         display_alias = token_rows[0].key_alias or key_alias or "—"
         display_token = tokens[0] if len(tokens) == 1 else f"{len(tokens)} keys"
 
@@ -5110,7 +5105,7 @@ async def concurrent_request_timeline(
 
         # SpendLogs concurrency per minute — single generate_series query, same
         # active-at-T definition as the Concurrent Request Logs view.
-        token_placeholders = ", ".join([f"${i+3}" for i in range(len(tokens))])
+        token_placeholders = ", ".join([f"${i + 3}" for i in range(len(tokens))])
         spend_sql = f"""
         SELECT
             ts AS bucket,
@@ -5181,14 +5176,16 @@ async def concurrent_request_timeline(
                 redis_val = running_total
 
             is_match: Optional[bool] = None if redis_val is None else (spend == redis_val)
-            data.append({
-                "timestamp": bucket.isoformat(),
-                "key_alias": display_alias,
-                "key_token": display_token,
-                "spend_logs_concurrency": spend,
-                "redis_concurrency": redis_val,
-                "is_match": is_match,
-            })
+            data.append(
+                {
+                    "timestamp": bucket.isoformat(),
+                    "key_alias": display_alias,
+                    "key_token": display_token,
+                    "spend_logs_concurrency": spend,
+                    "redis_concurrency": redis_val,
+                    "is_match": is_match,
+                }
+            )
 
         return {
             "data": data,
@@ -5200,7 +5197,5 @@ async def concurrent_request_timeline(
     except ProxyException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception(
-            f"[concurrent_request_timeline] Error: {str(e)}"
-        )
+        verbose_proxy_logger.exception(f"[concurrent_request_timeline] Error: {str(e)}")
         raise handle_exception_on_proxy(e)

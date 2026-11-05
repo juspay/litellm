@@ -1,4 +1,3 @@
-import asyncio
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Union, cast
@@ -713,6 +712,7 @@ class LiteLLMCompletionStreamingIterator(ResponsesAPIStreamingIterator):
         """
         if not self.litellm_model_response or isinstance(self.litellm_model_response, TextCompletionResponse):
             from litellm.litellm_core_utils.asyncify import asyncify
+
             self.litellm_model_response = await asyncify(self.create_litellm_model_response)()
         return self.common_done_event_logic(sync_mode=False)
 

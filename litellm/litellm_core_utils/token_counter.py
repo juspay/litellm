@@ -190,6 +190,59 @@ def get_image_type(image_data: bytes) -> Union[str, None]:
     return None
 
 
+def _download_image_bytes(url: str) -> bytes | None:
+    client = _get_httpx_client()
+    response = safe_get(client, url)
+    max_bytes = int(MAX_IMAGE_URL_DOWNLOAD_SIZE_MB * 1024 * 1024)
+    content_length = response.headers.get("Content-Length")
+    if content_length is not None and int(content_length) > max_bytes:
+        return None
+    chunks = []
+    total = 0
+    for chunk in response.iter_bytes():
+        total += len(chunk)
+        if total > max_bytes:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _base64_image_bytes(data: str) -> bytes | None:
+    if "," not in data:
+        return None
+    _header, encoded = data.split(",", 1)
+    if len(encoded) > int(MAX_IMAGE_URL_DOWNLOAD_SIZE_MB * 1024 * 1024):
+        return None
+    return base64.b64decode(encoded)
+
+
+def _jpeg_dimensions(img_data: bytes) -> tuple[int, int]:
+    with io.BytesIO(img_data) as fhandle:
+        fhandle.seek(0)
+        size = 2
+        ftype = 0
+        while not 0xC0 <= ftype <= 0xCF or ftype in (0xC4, 0xC8, 0xCC):
+            fhandle.seek(size, 1)
+            byte = fhandle.read(1)
+            while byte == b"\xff":
+                byte = fhandle.read(1)
+            if not byte:
+                return DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT
+            ftype = byte[0]
+            size_bytes = fhandle.read(2)
+            if len(size_bytes) < 2:
+                return DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT
+            size = struct.unpack(">H", size_bytes)[0] - 2
+            if size < 0:
+                return DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT
+        fhandle.seek(1, 1)
+        dims = fhandle.read(4)
+        if len(dims) < 4:
+            return DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT
+        h, w = struct.unpack(">HH", dims)
+    return w, h
+
+
 def get_image_dimensions(
     data: str,
 ) -> Tuple[int, int]:
@@ -205,22 +258,13 @@ def get_image_dimensions(
     img_data = None
     if data.startswith(("http://", "https://")):
         try:
-            client = _get_httpx_client()
-            response = safe_get(client, data)
-            max_bytes = int(MAX_IMAGE_URL_DOWNLOAD_SIZE_MB * 1024 * 1024)
-            content_length = response.headers.get("Content-Length")
-            if content_length is not None and int(content_length) > max_bytes:
-                pass  # skip download; img_data stays None
-            else:
-                body = response.read()
-                if len(body) <= max_bytes:
-                    img_data = body
+            img_data = _download_image_bytes(data)
         except Exception:
             pass
     if img_data is None:
-        # Not a URL or fetch failed — assume base64
-        _header, encoded = data.split(",", 1)
-        img_data = base64.b64decode(encoded)
+        img_data = _base64_image_bytes(data)
+        if img_data is None:
+            return DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT
 
     img_type = get_image_type(img_data)
 
@@ -231,20 +275,7 @@ def get_image_dimensions(
         w, h = struct.unpack("<HH", img_data[6:10])
         return w, h
     elif img_type == "jpeg":
-        with io.BytesIO(img_data) as fhandle:
-            fhandle.seek(0)
-            size = 2
-            ftype = 0
-            while not 0xC0 <= ftype <= 0xCF or ftype in (0xC4, 0xC8, 0xCC):
-                fhandle.seek(size, 1)
-                byte = fhandle.read(1)
-                while ord(byte) == 0xFF:
-                    byte = fhandle.read(1)
-                ftype = ord(byte)
-                size = struct.unpack(">H", fhandle.read(2))[0] - 2
-            fhandle.seek(1, 1)
-            h, w = struct.unpack(">HH", fhandle.read(4))
-        return w, h
+        return _jpeg_dimensions(img_data)
     elif img_type == "webp":
         # For WebP, the dimensions are stored at different offsets depending on the format
         # Check for VP8X (extended format)
@@ -377,7 +408,13 @@ def token_counter(
     if litellm.disable_token_counter is True:
         return 0
 
-    verbose_logger.debug(f"messages in token_counter: {messages}, text in token_counter: {text}")
+    verbose_logger.debug(
+        "token_counter called: model={}, num_messages={}, text_len={}".format(
+            model,
+            len(messages) if messages else 0,
+            len(text) if isinstance(text, str) else 0,
+        )
+    )
     if text is not None and messages is not None:
         raise ValueError("text and messages cannot both be set")
     if use_default_image_token_count is None:

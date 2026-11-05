@@ -6,11 +6,24 @@ resource "random_id" "bucket_suffix" {
   byte_length = 4
 }
 
+resource "google_storage_bucket" "access_logs" {
+  name                        = "${var.project_id}-${local.name}-bucket-logs-${random_id.bucket_suffix.hex}"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  force_destroy               = var.gcs_force_destroy
+
+  labels = local.labels
+}
+
 resource "google_storage_bucket" "this" {
   name                        = "${var.project_id}-${local.name}-${random_id.bucket_suffix.hex}"
   location                    = var.region
   uniform_bucket_level_access = true
   force_destroy               = var.gcs_force_destroy
+
+  logging {
+    log_bucket = google_storage_bucket.access_logs.name
+  }
 
   versioning {
     enabled = true
@@ -41,6 +54,10 @@ resource "google_storage_bucket" "proxy_config" {
   location                    = var.region
   uniform_bucket_level_access = true
   force_destroy               = var.gcs_force_destroy
+
+  logging {
+    log_bucket = google_storage_bucket.access_logs.name
+  }
 
   versioning {
     enabled = true

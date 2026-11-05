@@ -11,7 +11,6 @@ import sys
 sys.path.insert(
     0, os.path.abspath("../..")
 )  # Adds the parent directory to the system path
-import tempfile
 from typing import Optional
 
 from litellm._logging import verbose_proxy_logger
@@ -427,26 +426,18 @@ class _ENTERPRISE_SecretDetection(CustomGuardrail):
         super().__init__(**kwargs)
 
     def scan_message_for_secrets(self, message_content: str):
-        from detect_secrets import SecretsCollection
+        from detect_secrets.core.scan import _process_line_based_plugins
         from detect_secrets.settings import transient_settings
-
-        temp_file = tempfile.NamedTemporaryFile(delete=False)
-        temp_file.write(message_content.encode("utf-8"))
-        temp_file.close()
-
-        secrets = SecretsCollection()
 
         detect_secrets_config = (
             self.user_defined_detect_secrets_config or _default_detect_secrets_config
         )
-        with transient_settings(detect_secrets_config):
-            secrets.scan_file(temp_file.name)
-
-        os.remove(temp_file.name)
-
         detected_secrets = []
-        for file in secrets.files:
-            for found_secret in secrets[file]:
+        with transient_settings(detect_secrets_config):
+            for found_secret in _process_line_based_plugins(
+                lines=list(enumerate(message_content.splitlines(), start=1)),
+                filename="litellm-message-scan",
+            ):
                 if found_secret.secret_value is None:
                     continue
                 detected_secrets.append(

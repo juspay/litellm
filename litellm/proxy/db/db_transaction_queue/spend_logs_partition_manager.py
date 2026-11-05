@@ -25,6 +25,24 @@ from litellm.constants import (
 
 SPEND_LOGS_TABLE = "LiteLLM_SpendLogs"
 
+_VALID_PARTITION_NAME_RE = re.compile(r"^LiteLLM_SpendLogs_p[0-9]{8}$")
+
+
+def _quote_partition_name(name: str) -> str:
+    """Validate and quote a partition name for DDL.
+
+    Partition names come from pg_class.relname (drop path) or local date
+    formatting (create path), so they are not directly attacker-controlled —
+    but a role able to create a table with a crafted name in the same schema
+    would otherwise turn the f-string DDL into arbitrary SQL. Fail closed on
+    anything outside the exact ``LiteLLM_SpendLogs_pYYYYMMDD`` shape instead
+    of escaping and proceeding.
+    """
+    if not _VALID_PARTITION_NAME_RE.fullmatch(name):
+        raise ValueError(f"Refusing DDL on non-partition table name: {name!r}")
+    return f'"{name}"'
+
+
 PartitionInterval = str  # "day" | "week" | "month"
 
 VALID_PARTITION_INTERVALS = {"day", "week", "month"}
@@ -151,8 +169,9 @@ class SpendLogsPartitionManager:
             datetime.now(timezone.utc).date(), self.interval, self.precreate_ahead
         ):
             try:
+                quoted_name = _quote_partition_name(name)
                 await prisma_client.db.execute_raw(
-                    f'CREATE TABLE IF NOT EXISTS "{name}" '
+                    f"CREATE TABLE IF NOT EXISTS {quoted_name} "
                     f'PARTITION OF "{SPEND_LOGS_TABLE}" '
                     f"FOR VALUES FROM ('{lower.isoformat()}') TO ('{upper.isoformat()}')"
                 )
@@ -185,7 +204,8 @@ class SpendLogsPartitionManager:
         dropped: List[str] = []
         for name in to_drop:
             try:
-                await prisma_client.db.execute_raw(f'DROP TABLE IF EXISTS "{name}"')
+                quoted_name = _quote_partition_name(name)
+                await prisma_client.db.execute_raw(f"DROP TABLE IF EXISTS {quoted_name}")
                 dropped.append(name)
             except Exception as e:
                 verbose_proxy_logger.warning("Failed to drop spend-log partition %s: %s", name, e)

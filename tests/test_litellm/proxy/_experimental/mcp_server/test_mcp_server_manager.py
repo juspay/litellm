@@ -129,7 +129,8 @@ class TestMCPServerManager:
 
         assert client.transport_type == MCPTransport.stdio
         assert client.stdio_config is not None
-        assert client.stdio_config["command"] == "node"
+        assert os.path.isabs(client.stdio_config["command"])
+        assert os.path.basename(client.stdio_config["command"]) == "node"
         assert client.stdio_config["args"] == ["server.js"]
         # NPM_CONFIG_CACHE is injected automatically for container compatibility
         from litellm.constants import MCP_NPM_CACHE_DIR
@@ -5913,3 +5914,166 @@ class TestOBOEndpointDiscovery:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestValidateMcpStdioCommandStr:
+    def test_allowlisted_bare_name_passes(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("python") == "python"
+
+    def test_relative_path_rejected_even_when_basename_allowlisted(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("./python") is None
+        assert validate_mcp_stdio_command_str("bin/node") is None
+
+    def test_unknown_command_rejected(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("curl") is None
+
+    def test_empty_command_rejected(self) -> None:
+        from litellm.constants import validate_mcp_stdio_command_str
+
+        assert validate_mcp_stdio_command_str("") is None
+
+
+class TestResolveMcpStdioCommand:
+    def test_non_allowlisted_command_raises_403(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_mcp_stdio_command("curl")
+        assert exc_info.value.status_code == 403
+
+    def test_relative_path_raises_403(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        with pytest.raises(HTTPException) as exc_info:
+            _resolve_mcp_stdio_command("./python")
+        assert exc_info.value.status_code == 403
+
+    def test_world_writable_directory_rejected(self, tmp_path) -> None:
+        import stat
+
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        binary = tmp_path / "python"
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        world_writable_dir = tmp_path / "world"
+        world_writable_dir.mkdir()
+        world_writable_dir.chmod(0o777)
+        binary_in_world = world_writable_dir / "python"
+        binary_in_world.write_text("#!/bin/sh\nexit 0\n")
+        binary_in_world.chmod(0o755)
+
+        with patch("shutil.which", return_value=str(binary_in_world)):
+            with pytest.raises(HTTPException) as exc_info:
+                _resolve_mcp_stdio_command("python")
+        assert "world-writable" in str(exc_info.value.detail)
+        assert world_writable_dir.stat().st_mode & stat.S_IWOTH
+
+    def test_allowlisted_command_in_protected_dir_passes_and_pins(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        real_python = __import__("shutil").which("python3") or __import__("sys").executable
+        with patch("shutil.which", return_value=real_python):
+            pinned = _resolve_mcp_stdio_command("python")
+        assert os.path.isabs(pinned)
+        assert pinned == os.path.realpath(real_python)
+        with open(pinned, "rb") as f:
+            assert f.read(4) == b"\x7fELF" or f.readline().startswith(b"#!") or f.read(1)
+
+    def test_unresolvable_command_raises_403(self) -> None:
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        with patch("shutil.which", return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                _resolve_mcp_stdio_command("python")
+        assert "could not be resolved" in str(exc_info.value.detail)
+
+    def test_world_writable_file_in_safe_dir_rejected(self, tmp_path) -> None:
+        import stat
+
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        safe_dir = tmp_path / "safe"
+        safe_dir.mkdir()
+        safe_dir.chmod(0o755)
+        binary = safe_dir / "python"
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        binary.chmod(0o666)
+
+        with patch("shutil.which", return_value=str(binary)):
+            with pytest.raises(HTTPException) as exc_info:
+                _resolve_mcp_stdio_command("python")
+        assert "group- or world-writable" in str(exc_info.value.detail)
+        assert binary.stat().st_mode & stat.S_IWOTH
+        assert not safe_dir.stat().st_mode & stat.S_IWOTH
+
+    def test_symlink_to_foreign_binary_is_realpath_resolved(self, tmp_path) -> None:
+        import os as _os
+
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        real_python = __import__("shutil").which("python3") or __import__("sys").executable
+        link_dir = tmp_path / "links"
+        link_dir.mkdir()
+        link = link_dir / "python"
+        link.symlink_to(real_python)
+
+        pinned = _resolve_mcp_stdio_command(str(link))
+        assert pinned == _os.path.realpath(real_python)
+        assert "python" in pinned
+
+    def test_world_writable_ancestor_directory_rejected(self, tmp_path) -> None:
+        import stat
+
+        from litellm.proxy._experimental.mcp_server.mcp_server_manager import _resolve_mcp_stdio_command
+
+        mid_dir = tmp_path / "mid"
+        mid_dir.mkdir()
+        mid_dir.chmod(0o755)
+        nested_dir = mid_dir / "nested"
+        nested_dir.mkdir()
+        nested_dir.chmod(0o755)
+        binary = nested_dir / "python"
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        binary.chmod(0o755)
+        mid_dir.chmod(0o777)
+        try:
+            with patch("shutil.which", return_value=str(binary)):
+                with pytest.raises(HTTPException) as exc_info:
+                    _resolve_mcp_stdio_command("python")
+            assert "world-writable" in str(exc_info.value.detail)
+            assert str(mid_dir) in str(exc_info.value.detail)
+        finally:
+            mid_dir.chmod(0o755)
+
+    async def test_spawn_config_uses_pinned_path_not_the_raw_command(self) -> None:
+        """_create_mcp_client must hand the resolver's pinned absolute path to
+        the spawn config, never the raw server.command, so the mcp SDK's
+        create_subprocess_exec never re-consults PATH after validation."""
+        real_python = __import__("shutil").which("python3") or __import__("sys").executable
+        pinned = os.path.realpath(real_python)
+        manager = MCPServerManager()
+        server = MCPServer(
+            server_id="stdio-pinned",
+            name="pinned",
+            url=None,
+            transport=MCPTransport.stdio,
+            command="python",
+            args=["-c", "pass"],
+        )
+        with patch("shutil.which", return_value=real_python):
+            with patch(
+                "litellm.proxy._experimental.mcp_server.mcp_server_manager._resolve_mcp_stdio_command",
+                return_value=pinned,
+            ) as mock_resolve:
+                client = await manager._create_mcp_client(server)
+        mock_resolve.assert_called_once_with("python")
+        assert client.stdio_config is not None
+        assert client.stdio_config["command"] == pinned
+        assert client.stdio_config["command"] != "python"
+        assert os.path.isabs(client.stdio_config["command"])

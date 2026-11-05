@@ -28,7 +28,11 @@ class CredentialHelperUtils:
         """Encrypt values in credential.credential_values and add to DB"""
         encrypted_credential_values = {}
         for key, value in (credential.credential_values or {}).items():
-            encrypted_credential_values[key] = encrypt_value_helper(value, new_encryption_key)
+            encrypted_credential_values[key] = encrypt_value_helper(
+                value,
+                new_encryption_key,
+                context=f"LiteLLM_CredentialsTable:credential_values.{key}",
+            )
 
         # Return a new object to avoid mutating the caller's credential, which
         # is kept in memory and should remain unencrypted.

@@ -146,7 +146,7 @@ def generate_hash_from_response(response_obj: Any) -> str:
         response_obj: The response object to hash (can be dict, list, etc.)
 
     Returns:
-        A hex string representation of the MD5 hash
+        A hex string representation of the SHA-256 hash
     """
     try:
         # Create a stable JSON string of the entire response object
@@ -154,11 +154,11 @@ def generate_hash_from_response(response_obj: Any) -> str:
         json_str = json.dumps(response_obj, sort_keys=True)
 
         # Generate a hash of the response object
-        unique_hash = hashlib.md5(json_str.encode()).hexdigest()
+        unique_hash = hashlib.sha256(json_str.encode()).hexdigest()
         return unique_hash
     except Exception:
         # Return a fallback hash if serialization fails
-        return hashlib.md5(str(response_obj).encode()).hexdigest()
+        return hashlib.sha256(str(response_obj).encode()).hexdigest()
 
 
 def get_spend_logs_id(call_type: str, response_obj: dict, kwargs: dict) -> Optional[str]:

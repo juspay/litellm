@@ -14,7 +14,7 @@ import math
 import os
 import re
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Type, Union, cast
+from typing import TYPE_CHECKING, Any, Dict, Final, List, Literal, Optional, Type, Union, cast
 
 from fastapi import HTTPException, Request, status
 from pydantic import BaseModel
@@ -488,9 +488,7 @@ def is_model_info_route(route: str) -> bool:
 
 def _get_free_models_from_env() -> set[str]:
     free_models_env = os.getenv("FREE_MODELS", "")
-    return {
-        model.strip().lower() for model in free_models_env.split(",") if model.strip()
-    }
+    return {model.strip().lower() for model in free_models_env.split(",") if model.strip()}
 
 
 def is_free_model(model: Optional[Union[str, List[str]]]) -> bool:
@@ -501,9 +499,7 @@ def is_free_model(model: Optional[Union[str, List[str]]]) -> bool:
     if not free_models:
         return False
     if isinstance(model, list):
-        return len(model) > 0 and all(
-            str(m).strip().lower() in free_models for m in model
-        )
+        return len(model) > 0 and all(str(m).strip().lower() in free_models for m in model)
     return str(model).strip().lower() in free_models
 
 
@@ -2266,13 +2262,16 @@ async def get_org_object_by_alias(
         )
 
 
+LITELLM_SESSION_TOKEN_PREFIX: Final = "litellm_login_"
+
+
 class ExperimentalUIJWTToken:
     @staticmethod
     def get_experimental_ui_login_jwt_auth_token(user_info: LiteLLM_UserTable) -> str:
         from datetime import timedelta
 
         from litellm.proxy.common_utils.encrypt_decrypt_utils import (
-            encrypt_value_helper,
+            encrypt_bearer_token,
         )
 
         if user_info.user_role is None:
@@ -2298,7 +2297,7 @@ class ExperimentalUIJWTToken:
             user_role=LitellmUserRoles(user_info.user_role),
         )
 
-        return encrypt_value_helper(valid_token.model_dump_json(exclude_none=True))
+        return encrypt_bearer_token(valid_token.model_dump_json(exclude_none=True), prefix=LITELLM_SESSION_TOKEN_PREFIX)
 
     @staticmethod
     def get_cli_jwt_auth_token(
@@ -2325,7 +2324,7 @@ class ExperimentalUIJWTToken:
         from datetime import timedelta
 
         from litellm.proxy.common_utils.encrypt_decrypt_utils import (
-            encrypt_value_helper,
+            encrypt_bearer_token,
         )
 
         if user_info.user_role is None:
@@ -2361,7 +2360,7 @@ class ExperimentalUIJWTToken:
             is_session_token=True,
         )
 
-        return encrypt_value_helper(valid_token.model_dump_json(exclude_none=True))
+        return encrypt_bearer_token(valid_token.model_dump_json(exclude_none=True), prefix=LITELLM_SESSION_TOKEN_PREFIX)
 
     @staticmethod
     def get_key_object_from_ui_hash_key(
@@ -2371,10 +2370,10 @@ class ExperimentalUIJWTToken:
 
         from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth
         from litellm.proxy.common_utils.encrypt_decrypt_utils import (
-            decrypt_value_helper,
+            decrypt_bearer_token,
         )
 
-        decrypted_token = decrypt_value_helper(hashed_token, key="ui_hash_key", exception_type="debug")
+        decrypted_token: Final = decrypt_bearer_token(hashed_token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
         if decrypted_token is None:
             return None
         try:
@@ -2403,14 +2402,10 @@ async def _fetch_key_object_from_db_with_reconnect(
         if PrismaDBExceptionHandler.is_database_transport_error(e):
             did_reconnect = False
             if hasattr(prisma_client, "attempt_db_reconnect"):
-                auth_reconnect_timeout = getattr(
-                    prisma_client, "_db_auth_reconnect_timeout_seconds", 30.0
-                )
+                auth_reconnect_timeout = getattr(prisma_client, "_db_auth_reconnect_timeout_seconds", 30.0)
                 if not isinstance(auth_reconnect_timeout, (int, float)):
                     auth_reconnect_timeout = 30.0
-                auth_reconnect_lock_timeout = getattr(
-                    prisma_client, "_db_auth_reconnect_lock_timeout_seconds", 0.1
-                )
+                auth_reconnect_lock_timeout = getattr(prisma_client, "_db_auth_reconnect_lock_timeout_seconds", 0.1)
                 if not isinstance(auth_reconnect_lock_timeout, (int, float)):
                     auth_reconnect_lock_timeout = 0.1
                 did_reconnect = await prisma_client.attempt_db_reconnect(
@@ -3480,9 +3475,7 @@ async def _virtual_key_max_budget_check(
     """
     if is_free_model(model):
         user_email = (
-            user_obj.user_email
-            if user_obj and user_obj.user_email
-            else (user_obj.user_id if user_obj else "unknown")
+            user_obj.user_email if user_obj and user_obj.user_email else (user_obj.user_id if user_obj else "unknown")
         )
         verbose_proxy_logger.info(f"Free model usage - User: {user_email}, Model: {model}")
         return

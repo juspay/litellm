@@ -21,7 +21,11 @@ from litellm.proxy.utils import PrismaClient
 
 
 @pytest.mark.asyncio
-async def test_insert_data_hashes_token_and_upserts(prisma_client: PrismaClient) -> None:
+async def test_insert_data_hashes_token_and_upserts(
+    prisma_client: PrismaClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     token = "sk-secret-1"
     response = SimpleNamespace(token=hashlib.sha256(token.encode()).hexdigest(),
                                key_alias="alias", user_id="u1")
@@ -117,7 +121,9 @@ async def test_insert_data_logs_and_raises_generic_error(
 @pytest.mark.asyncio
 async def test_update_data_token_hashes_and_updates(
     prisma_client: PrismaClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     token = "sk-update-1"
     response = SimpleNamespace(
         token=hashlib.sha256(token.encode()).hexdigest(),
@@ -205,7 +211,9 @@ async def test_update_data_logs_and_raises_on_error(
 @pytest.mark.asyncio
 async def test_delete_data_hashes_sk_tokens_and_calls_delete_many(
     prisma_client: PrismaClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     deleted = SimpleNamespace(count=2)
     prisma_client.db.litellm_verificationtoken.delete_many = AsyncMock(
         return_value=deleted

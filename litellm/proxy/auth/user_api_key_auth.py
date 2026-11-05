@@ -11,12 +11,11 @@ import asyncio
 import fnmatch
 import re
 import secrets
-
-import orjson
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterator, NamedTuple, List, Optional, Protocol, Tuple, Union, cast
+from typing import Any, Dict, List, NamedTuple, Optional, Protocol, Tuple, Union, cast
 
 import fastapi
+import orjson
 from fastapi import HTTPException, Request, WebSocket, status
 from fastapi.security.api_key import APIKeyHeader
 
@@ -54,21 +53,22 @@ from litellm.proxy.auth.auth_checks import (
     resolve_and_validate_end_user_id,
 )
 from litellm.proxy.auth.auth_exception_handler import UserAPIKeyAuthExceptionHandler
+from litellm.proxy.auth.auth_method import AuthMethod
 from litellm.proxy.auth.auth_utils import (
     abbreviate_api_key,
     get_end_user_id_from_request_body,
     get_model_from_request,
     get_request_route,
     get_request_route_template,
+    iter_request_fallback_targets,
     normalize_request_route,
     pre_db_read_auth_checks,
     route_in_additonal_public_routes,
 )
 from litellm.proxy.auth.handle_jwt import JWTAuthManager, JWTHandler
+from litellm.proxy.auth.network import TrustedProxyConfig, resolve_network_context
 from litellm.proxy.auth.oauth2_check import Oauth2Handler
 from litellm.proxy.auth.oauth2_proxy_hook import handle_oauth2_proxy_request
-from litellm.proxy.auth.auth_method import AuthMethod
-from litellm.proxy.auth.network import TrustedProxyConfig, resolve_network_context
 from litellm.proxy.auth.resolvers import CredentialRef, Principal
 from litellm.proxy.auth.resolvers.store import IdentityStore
 from litellm.proxy.auth.route_checks import RouteChecks
@@ -82,6 +82,7 @@ from litellm.proxy.common_utils.http_parsing_utils import (
     populate_request_with_path_params,
 )
 from litellm.proxy.common_utils.realtime_utils import _realtime_request_body
+from litellm.proxy.common_utils.token_hash_utils import hash_token_candidates as _hash_token_candidates
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
 from litellm.proxy.utils import (
@@ -352,15 +353,22 @@ def _should_route_jwt_to_oauth2_override(token: str, jwt_handler: JWTHandler) ->
     return False
 
 
+# Matches a scheme token anywhere after the leading scheme was stripped. A
+# legit bearer token never contains one: sk- keys, JWTs, and Basic credentials
+# are all whitespace-free after extraction. A hit means the caller padded the
+# header so the value that reaches hashing differs from the value presented.
+_EMBEDDED_SCHEME_RE = re.compile(r"\s(?:Bearer|Basic|bearer)\s")
+
+
 def _get_bearer_token(
     api_key: str,
 ):
     if api_key.startswith("Bearer "):  # ensure Bearer token passed in
-        api_key = api_key.replace("Bearer ", "")  # extract the token
+        api_key = api_key.removeprefix("Bearer ")  # extract the token
     elif api_key.startswith("Basic "):
-        api_key = api_key.replace("Basic ", "")  # handle langfuse input
+        api_key = api_key.removeprefix("Basic ")  # handle langfuse input
     elif api_key.startswith("bearer "):
-        api_key = api_key.replace("bearer ", "")
+        api_key = api_key.removeprefix("bearer ")
     elif api_key.startswith("AWS4-HMAC-SHA256"):
         # Handle AWS Signature V4 format from LangChain
         # Format: AWS4-HMAC-SHA256 Credential=Bearer sk-12345/date/region/service/aws4_request, SignedHeaders=..., Signature=...
@@ -377,6 +385,11 @@ def _get_bearer_token(
                 api_key = ""
     else:
         api_key = ""
+    if _EMBEDDED_SCHEME_RE.search(api_key):
+        raise HTTPException(
+            status_code=400,
+            detail="Authorization header contains an embedded authentication scheme token",
+        )
     return api_key
 
 
@@ -1486,16 +1499,19 @@ async def _user_api_key_auth_builder(
         if valid_token is None:
             ## Check CACHE
             try:
-                with tracer.trace("litellm.proxy.auth.get_key_object_check_cache"):
-                    valid_token = IdentityStore.key_from_principal(
-                        await IdentityStore(
-                            prisma_client,
-                            user_api_key_cache,
-                            parent_otel_span=parent_otel_span,
-                            proxy_logging_obj=proxy_logging_obj,
-                            check_cache_only=True,
-                        ).resolve(hashed_token=hash_token(api_key))
-                    )
+                for _candidate in _hash_token_candidates(api_key):
+                    with tracer.trace("litellm.proxy.auth.get_key_object_check_cache"):
+                        valid_token = IdentityStore.key_from_principal(
+                            await IdentityStore(
+                                prisma_client,
+                                user_api_key_cache,
+                                parent_otel_span=parent_otel_span,
+                                proxy_logging_obj=proxy_logging_obj,
+                                check_cache_only=True,
+                            ).resolve(hashed_token=_candidate)
+                        )
+                    if valid_token is not None:
+                        break
             except Exception:
                 verbose_logger.debug("api key not found in cache.")
                 valid_token = None
@@ -1652,19 +1668,38 @@ async def _user_api_key_auth_builder(
                     )
                 )
             abbreviated_api_key = abbreviate_api_key(api_key=api_key)
+            _raw_api_key = api_key
             if api_key.startswith("sk-"):
                 api_key = hash_token(token=api_key)
 
             try:
                 with tracer.trace("litellm.proxy.auth.get_key_object_from_db"):
-                    valid_token = IdentityStore.key_from_principal(
-                        await IdentityStore(
-                            prisma_client,
-                            user_api_key_cache,
-                            parent_otel_span=parent_otel_span,
-                            proxy_logging_obj=proxy_logging_obj,
-                        ).resolve(hashed_token=api_key)
-                    )
+                    valid_token = None
+                    # Try the current digest first, then digests written by
+                    # older versions so pre-pepper rows keep authenticating.
+                    _candidates = _hash_token_candidates(_raw_api_key) if _raw_api_key.startswith("sk-") else (api_key,)
+                    for _candidate in _candidates:
+                        try:
+                            valid_token = IdentityStore.key_from_principal(
+                                await IdentityStore(
+                                    prisma_client,
+                                    user_api_key_cache,
+                                    parent_otel_span=parent_otel_span,
+                                    proxy_logging_obj=proxy_logging_obj,
+                                ).resolve(hashed_token=_candidate)
+                            )
+                            break
+                        except ProxyException as _lookup_err:
+                            if _lookup_err.code not in (401, "401"):
+                                raise
+                            valid_token = None
+                    if valid_token is None:
+                        raise ProxyException(
+                            message=f"Authentication Error, Invalid proxy server token passed. Received API Key = {abbreviated_api_key}, Key Hash (Token) ={api_key}. Unable to find token in cache or `LiteLLM_VerificationTokenTable`",
+                            type=ProxyErrorTypes.token_not_found_in_db,
+                            param="key",
+                            code=status.HTTP_401_UNAUTHORIZED,
+                        )
             except ProxyException as e:
                 if e.code == 401 or e.code == "401":
                     e.message = "Authentication Error, Invalid proxy server token passed. Received API Key = {}, Key Hash (Token) ={}. Unable to find token in cache or `LiteLLM_VerificationTokenTable`".format(
@@ -2083,7 +2118,13 @@ def _team_obj_from_token(valid_token: UserAPIKeyAuth) -> LiteLLM_TeamTableCached
     """Reconstruct a cached team object from the fields already on the
     UserAPIKeyAuth. Only called when valid_token.team_id is known to be
     non-None (the caller gates on it)."""
-    assert valid_token.team_id is not None
+    if valid_token.team_id is None:
+        raise ProxyException(
+            message="Team-bound key has no team_id; refusing to authorize",
+            type=ProxyErrorTypes.auth_error,
+            param="team_id",
+            code=status.HTTP_403_FORBIDDEN,
+        )
     return LiteLLM_TeamTableCachedObj(
         team_id=valid_token.team_id,
         max_budget=valid_token.team_max_budget,
@@ -2303,7 +2344,7 @@ async def _run_centralized_common_checks(
     team_object: Optional[LiteLLM_TeamTableCachedObj]
     if isinstance(team_result, BaseException):
         # Token-derived fallback only valid when a team_id is set;
-        # _team_obj_from_token asserts that precondition.
+        # _team_obj_from_token re-checks that precondition.
         team_object = _team_obj_from_token(user_api_key_auth_obj) if user_api_key_auth_obj.team_id is not None else None
     else:
         team_object = team_result
@@ -2814,9 +2855,7 @@ async def _enforce_key_and_fallback_model_access(
             "/spend/logs/failure_logs_analytics_paginated",
             "/spend/logs/models",
         ]
-        should_check_model = model is not None and not any(
-            route.startswith(r) for r in _skip_model_check_for_routes
-        )
+        should_check_model = model is not None and not any(route.startswith(r) for r in _skip_model_check_for_routes)
 
         if should_check_model:
             await can_key_call_model(
@@ -2826,19 +2865,11 @@ async def _enforce_key_and_fallback_model_access(
                 llm_router=llm_router,
             )
 
-        # Validate every fallback model name reachable by this request.
-        # All three fields (``fallbacks``, ``context_window_fallbacks``,
-        # ``content_policy_fallbacks``) are forwarded to the router as
-        # per-request kwargs whether they appear at the top level of
-        # ``request_data`` or nested under ``router_settings_override``.
-        # Both surfaces must be validated against the API key's model
-        # allowlist or a caller can smuggle a restricted model. VERIA-44.
-        fallback_names: List[str] = []
-        override_settings = request_data.get("router_settings_override")
-        for _fb_key in ROUTER_FALLBACK_FIELDS:
-            fallback_names.extend(iter_router_fallback_model_names(request_data.get(_fb_key)))
-            if isinstance(override_settings, dict):
-                fallback_names.extend(iter_router_fallback_model_names(override_settings.get(_fb_key)))
+        fallback_names = tuple(
+            name
+            for target in iter_request_fallback_targets(request_data)
+            if (name := _fallback_target_model_name(target)) is not None
+        )
 
         for _name in dict.fromkeys(fallback_names):  # dedupe, preserve order
             await can_key_call_model(
@@ -2854,36 +2885,14 @@ async def _enforce_key_and_fallback_model_access(
             )
 
 
-ROUTER_FALLBACK_FIELDS: Tuple[str, ...] = (
-    "fallbacks",
-    "context_window_fallbacks",
-    "content_policy_fallbacks",
-)
-
-
-def iter_router_fallback_model_names(fallbacks: Any) -> Iterator[str]:
-    """Yield leaf model names from any of the supported fallbacks shapes.
-
-    Handles the simple top-level shape (``str`` or ``{"model": str}``) and
-    the nested router-config shape (``[{primary: [fallback_list]}]``).
-    """
-    if not isinstance(fallbacks, list):
-        return
-    for entry in fallbacks:
-        if isinstance(entry, str):
-            yield entry
-        elif isinstance(entry, dict):
-            if isinstance(entry.get("model"), str):
-                yield entry["model"]
-                continue
-            for fallback_list in entry.values():
-                if not isinstance(fallback_list, list):
-                    continue
-                for m in fallback_list:
-                    if isinstance(m, str):
-                        yield m
-                    elif isinstance(m, dict) and isinstance(m.get("model"), str):
-                        yield m["model"]
+def _fallback_target_model_name(target: object) -> str | None:
+    if isinstance(target, str):
+        return target
+    if isinstance(target, dict):
+        model = target.get("model")
+        if isinstance(model, str):
+            return model
+    return None
 
 
 async def _run_post_custom_auth_checks(

@@ -7,7 +7,6 @@ This is currently in development and not yet ready for production.
 import asyncio
 import binascii
 import os
-import time
 import uuid
 from datetime import datetime
 from typing import (
@@ -2322,7 +2321,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
             current_ts = time.time()
 
-            print(
+            print(  # noqa: T201
                 build_parallel_requests_metric_log_line(
                     token=user_api_key_dict.token,
                     key_alias=user_api_key_dict.key_alias,
@@ -2885,7 +2884,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             allowed = int(result[0]) == 1
             previous_count = int(result[1])
             active_count = int(result[2])
-            already_present = len(result) > 5 and int(result[5]) == 1
             effective_count = active_count if allowed else max_parallel_requests_limit + 1
 
             if allowed:
@@ -2896,7 +2894,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
             # Emit metric log for every max_parallel_requests acquire decision.
             current_ts = datetime.now().isoformat()
-            print(
+            print(  # noqa: T201
                 build_parallel_requests_metric_log_line(
                     token=metric_token,
                     key_alias=metric_key_alias,
@@ -2919,7 +2917,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 active_count,
             ]
         except Exception as e:
-            print(
+            print(  # noqa: T201
                 f"[EXCEPTION] _execute_max_parallel_requests_increment failed: "
                 f"key={descriptor_key}:{descriptor_value}, "
                 f"lease_key={lease_key}, "
@@ -2965,7 +2963,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             return None
 
         if not request_id:
-            print(
+            print(  # noqa: T201
                 f"[DECR-SKIP] Max parallel requests release skipped: "
                 f"key={descriptor_key}:{descriptor_value}, "
                 f"request_id missing"
@@ -2986,7 +2984,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             new_count = int(result[2])
 
             if removed == 0:
-                print(
+                print(  # noqa: T201
                     f"[DECR-MISSING] Max parallel requests release did not remove a lease: "
                     f"key={descriptor_key}:{descriptor_value}, "
                     f"lease_key={lease_key}, "
@@ -2997,7 +2995,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
 
             # Emit metric log for every max_parallel_requests release result.
             current_ts = datetime.now().isoformat()
-            print(
+            print(  # noqa: T201
                 build_parallel_requests_metric_log_line(
                     token=metric_token,
                     key_alias=metric_key_alias,
@@ -3014,7 +3012,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
             )
             return result
         except Exception as e:
-            print(
+            print(  # noqa: T201
                 f"[EXCEPTION] _execute_max_parallel_requests_decrement failed: "
                 f"key={descriptor_key}:{descriptor_value}, "
                 f"lease_key={lease_key}, "
@@ -3434,7 +3432,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         standard_logging_object = kwargs.get("standard_logging_object") or {}
         standard_logging_metadata = standard_logging_object.get("metadata") or {}
 
-        user_api_key = standard_logging_metadata.get("user_api_key_hash")
         model_group = get_model_group_from_litellm_kwargs(kwargs)
 
         # Get total tokens from response
@@ -3543,93 +3540,6 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         except Exception as e:
             verbose_proxy_logger.exception(f"Error in rate limit success event: {str(e)}")
 
-    async def async_post_call_failure_hook(
-        self,
-        request_data: dict,
-        original_exception: Exception,
-        user_api_key_dict: UserAPIKeyAuth,
-        traceback_str: Optional[str] = None,
-    ):
-        """
-        Decrement max_parallel_requests once per failed logical request and
-        refund the upfront TPM reservation only against the scopes the
-        reservation actually charged.
-        """
-        from litellm.litellm_core_utils.core_helpers import (
-            _get_parent_otel_span_from_kwargs,
-        )
-
-        try:
-            litellm_parent_otel_span: Union[Span, None] = _get_parent_otel_span_from_kwargs(request_data)
-            standard_logging_object = request_data.get("standard_logging_object") or {}
-            standard_logging_metadata = standard_logging_object.get("metadata") or {}
-            user_api_key = user_api_key_dict.api_key or standard_logging_metadata.get("user_api_key_hash")
-
-            pipeline_operations: List[RedisPipelineIncrementOperation] = []
-
-            is_centralized_redis_cache_incremented = request_data.get(
-                "is_centralized_redis_cache_incremented",
-                request_data.get("litellm_params", {}).get("is_centralized_redis_cache_incremented", False),
-            )
-            max_parallel_requests_configured = not (
-                user_api_key_dict is not None and user_api_key_dict.max_parallel_requests is None
-            )
-            if user_api_key and is_centralized_redis_cache_incremented and max_parallel_requests_configured:
-                await self._release_max_parallel_requests_after_increment(
-                    request_data=request_data,
-                    user_api_key_dict=user_api_key_dict,
-                    standard_logging_metadata=standard_logging_metadata,
-                    parent_otel_span=litellm_parent_otel_span,
-                )
-
-            # Skip the reservation refund if async_post_call_failure_hook
-            # already released it (proxy-level rejection that also bubbles up
-            # here as an LLM-error callback). max_parallel_requests is its
-            # own counter and is decremented only if pre-call incremented it.
-            already_released = self._is_reservation_released(
-                kwargs=request_data,
-                standard_logging_metadata=standard_logging_metadata,
-            )
-            reserved_tokens = (
-                0
-                if already_released
-                else self._get_reserved_tokens_from_kwargs(
-                    kwargs=request_data,
-                    standard_logging_metadata=standard_logging_metadata,
-                )
-            )
-            if reserved_tokens > 0:
-                verbose_proxy_logger.debug(f"Releasing reserved TPM tokens on failure: {reserved_tokens}")
-                # Refund only against the scopes the reservation actually
-                # charged. _build_reservation_aware_tpm_ops with
-                # actual_tokens=0 emits -reserved on reserved scopes and 0
-                # on unreserved (skipped), so unreserved scopes can't drift
-                # negative. Targets are derived purely from the reserved
-                # set so we don't even need to re-collect them from
-                # metadata.
-                reserved_scopes = self._get_reserved_scopes_from_kwargs(
-                    kwargs=request_data,
-                    standard_logging_metadata=standard_logging_metadata,
-                )
-                pipeline_operations.extend(
-                    self._build_reservation_aware_tpm_ops(
-                        targets=list(reserved_scopes),
-                        reserved_scopes=reserved_scopes,
-                        actual_tokens=0,
-                        reserved_tokens=reserved_tokens,
-                    )
-                )
-
-            if pipeline_operations:
-                await self.internal_usage_cache.dual_cache.async_increment_cache_pipeline(
-                    increment_list=pipeline_operations,
-                    litellm_parent_otel_span=litellm_parent_otel_span,
-                )
-            if reserved_tokens > 0:
-                self._mark_reservation_released(request_data)
-        except Exception as e:
-            verbose_proxy_logger.exception(f"Error in rate limit failure hook: {str(e)}")
-
     async def async_release_max_parallel_requests_on_disconnect(
         self,
         user_api_key_dict: UserAPIKeyAuth,
@@ -3667,7 +3577,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                 timeout=MPR_INLINE_RELEASE_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            print(
+            print(  # noqa: T201
                 f"[MPR-TIMEOUT] on-disconnect release timed out after "
                 f"{MPR_INLINE_RELEASE_TIMEOUT_SECONDS}s; deferring to "
                 f"async_log_success_event release path"
@@ -3705,7 +3615,7 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
                     timeout=MPR_INLINE_RELEASE_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                print(
+                print(  # noqa: T201
                     f"[MPR-TIMEOUT] inline release timed out after "
                     f"{MPR_INLINE_RELEASE_TIMEOUT_SECONDS}s; deferring to "
                     f"async_log_success_event release path"

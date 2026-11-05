@@ -11,14 +11,17 @@ rebinding. Redirects are followed manually with validation at each hop.
 Admins can opt out via two ``litellm`` globals (wired from proxy config):
 
 - ``litellm.user_url_validation`` (bool, default True): master switch.
-  When False, ``safe_get``/``async_safe_get`` perform a plain fetch with
-  no DNS check, no block list, and no rewrite.
+  When False, ``safe_get``/``async_safe_get``/``async_safe_post`` perform a
+  plain fetch with no DNS check, no block list, and no rewrite. The bypass
+  is logged loudly (once per process) and never follows redirects, so a
+  bypassed fetch stays pinned to its requested destination.
 - ``litellm.user_url_allowed_hosts`` (List[str], default []): per-host
   allowlist. Entries are ``hostname`` or ``hostname:port`` (IPv6 hosts as
   ``[addr]`` / ``[addr]:port``). Matching hosts skip the blocked-networks
   check but still resolve DNS and still rewrite HTTP to the resolved IP.
 """
 
+import functools
 import socket
 from ipaddress import ip_address, ip_network
 from typing import Any, List, Optional, Set, Tuple
@@ -148,6 +151,15 @@ def _parse_url_destination_allowlist_entry(
     return _normalize_host(parsed.hostname), scheme, port
 
 
+def provider_url_destination_candidates(value: str) -> Tuple[str, ...]:
+    return tuple(
+        candidate
+        for part in value.split(",")
+        for candidate in (part.strip(), part.strip().split("/", 1)[1] if "/" in part.strip() else "")
+        if candidate
+    )
+
+
 def is_url_destination_allowed_by_host(url: str, allowed_hosts: List[str]) -> bool:
     """Return True when a credential-bearing provider URL is admin-allowlisted.
 
@@ -185,6 +197,27 @@ def is_url_destination_allowed_by_host(url: str, allowed_hosts: List[str]) -> bo
             continue
         return True
     return False
+
+
+def validate_credential_destination(url: str) -> None:
+    """Guard a credential-bearing outbound request against unvetted hosts.
+
+    When ``litellm.provider_url_destination_allowed_hosts`` is configured,
+    any endpoint that will receive provider credentials (API keys, Azure
+    tokens) must point at an allowlisted host. With no allowlist configured,
+    this is a no-op so existing deployments keep working; the deployment's
+    ``api_base`` is admin-controlled configuration either way.
+    """
+    allowed_hosts = getattr(litellm, "provider_url_destination_allowed_hosts", []) or []
+    if not allowed_hosts:
+        return
+    if is_url_destination_allowed_by_host(url, allowed_hosts):
+        return
+    raise SSRFError(
+        f"Rejected Request: credential destination '{url}' is not in "
+        "provider_url_destination_allowed_hosts. Add the destination host to "
+        "`provider_url_destination_allowed_hosts` in litellm_settings."
+    )
 
 
 def _format_host_header(hostname: str, port: int, default_port: int) -> str:
@@ -356,6 +389,26 @@ def assert_same_origin(candidate_url: str, expected_url: str) -> None:
 _MAX_REDIRECTS = 10
 
 
+@functools.cache
+def _warn_validation_bypass_once() -> None:
+    """Loud one-time warning when the SSRF validation bypass is active.
+
+    ``litellm.user_url_validation = False`` turns every safe-fetch helper
+    into an unrestricted fetch. That is an operator decision, but it must
+    never be silent: any process where the bypass fires logs this once so
+    the posture is visible in the logs of the deployment that opted out.
+    """
+    from litellm._logging import verbose_proxy_logger
+
+    verbose_proxy_logger.warning(
+        "litellm.user_url_validation is False: safe_get/async_safe_get/async_safe_post "
+        "are fetching user-supplied URLs WITHOUT SSRF destination checks. Any "
+        "request-influenced URL (including redirect targets) can reach internal "
+        "services and cloud metadata endpoints. Re-enable validation unless this "
+        "was an explicit operator decision."
+    )
+
+
 def _extract_redirect_url(response: Any, request_url: str) -> str:
     """Extract and resolve the redirect target from a response's Location header."""
     location = response.headers.get("location")
@@ -373,8 +426,11 @@ def safe_get(client: Any, url: str, **kwargs: Any) -> Any:
     request. No DNS rebinding (resolve-and-rewrite). No redirect bypass
     (each hop validated). No breaking change for legitimate CDN redirects.
 
-    When ``litellm.user_url_validation`` is False, validation is bypassed
-    and this function delegates to ``client.get(url, follow_redirects=True)``.
+    When ``litellm.user_url_validation`` is False, validation is bypassed:
+    the fetch goes straight to the client with no destination checks. The
+    bypass is an explicit operator decision and is logged loudly (once per
+    process); redirects are NOT followed through it, so a bypassed fetch
+    cannot be turned into an internal-destination fetch by a redirect.
 
     Args:
         client: An httpx.Client (sync).
@@ -385,8 +441,9 @@ def safe_get(client: Any, url: str, **kwargs: Any) -> Any:
         The final httpx.Response.
     """
     if not getattr(litellm, "user_url_validation", True):
-        kwargs.setdefault("follow_redirects", True)
-        return client.get(url, **kwargs)
+        _warn_validation_bypass_once()
+        kwargs.pop("follow_redirects", None)
+        return client.get(url, follow_redirects=False, **kwargs)
     kwargs.pop("follow_redirects", None)
     caller_headers = kwargs.pop("headers", {})
     for _ in range(_MAX_REDIRECTS):
@@ -405,11 +462,50 @@ def safe_get(client: Any, url: str, **kwargs: Any) -> Any:
     raise SSRFError("Too many redirects")
 
 
+async def async_safe_post(client: Any, url: str, **kwargs: Any) -> Any:
+    """POST a caller-influenced URL with the same SSRF validation as safe_get.
+
+    Resolves the hostname once, checks it against the blocked networks, and
+    connects to the validated IP with the original hostname in the Host
+    header. Redirects are not followed: a token or registration endpoint that
+    answers with a redirect is surfaced to the caller instead of being
+    auto-followed, so every hop the proxy talks to has been validated.
+
+    Accepts either an httpx.AsyncClient or a LiteLLM AsyncHTTPHandler (whose
+    ``post`` method does not accept ``follow_redirects``); a handler is
+    unwrapped to its underlying httpx.AsyncClient so the no-redirect policy
+    is always enforced.
+
+    Args:
+        client: An httpx.AsyncClient or AsyncHTTPHandler.
+        url: The URL to POST to.
+        **kwargs: Additional kwargs passed to client.post().
+
+    Returns:
+        The httpx.Response.
+    """
+    http_client = getattr(client, "client", client)
+    if not getattr(litellm, "user_url_validation", True):
+        _warn_validation_bypass_once()
+        kwargs.pop("follow_redirects", None)
+        return await http_client.post(url, follow_redirects=False, **kwargs)
+    kwargs.pop("follow_redirects", None)
+    caller_headers = kwargs.pop("headers", {})
+    validated_url, original_host = validate_url(url)
+    return await http_client.post(
+        validated_url,
+        headers={**caller_headers, "Host": original_host},
+        follow_redirects=False,
+        **kwargs,
+    )
+
+
 async def async_safe_get(client: Any, url: str, **kwargs: Any) -> Any:
     """Async version of safe_get."""
     if not getattr(litellm, "user_url_validation", True):
-        kwargs.setdefault("follow_redirects", True)
-        return await client.get(url, **kwargs)
+        _warn_validation_bypass_once()
+        kwargs.pop("follow_redirects", None)
+        return await client.get(url, follow_redirects=False, **kwargs)
     kwargs.pop("follow_redirects", None)
     caller_headers = kwargs.pop("headers", {})
     for _ in range(_MAX_REDIRECTS):

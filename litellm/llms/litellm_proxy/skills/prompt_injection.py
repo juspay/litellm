@@ -107,9 +107,14 @@ class SkillPromptInjectionHandler:
                     if not clean_path:
                         continue
 
-                    # Ensure the path stays within the intended directory
+                    from litellm.llms.litellm_proxy.skills.sandbox_executor import is_safe_skill_file_path
+
+                    # Same predicate the sandbox executor applies on its side,
+                    # so the two validation layers cannot disagree about path
+                    # semantics (backslashes, NUL bytes, drive letters, ".."
+                    # segments, absolute paths).
                     normalized = posixpath.normpath(clean_path)
-                    if normalized.startswith("..") or posixpath.isabs(normalized):
+                    if not is_safe_skill_file_path(normalized) or normalized != clean_path:
                         verbose_logger.warning(
                             f"SkillPromptInjectionHandler: Skipping entry with invalid path in skill {skill.skill_id}: {name}"
                         )

@@ -787,25 +787,41 @@ class JWTHandler:
         Setting ``JWT_AUDIENCE`` (and optionally ``JWT_ISSUER``) turns on the
         corresponding PyJWT verifications, blocking cross-tenant tokens
         minted by other applications that share the same IdP signing keys.
-        When both are unset PyJWT only checks the signature and expiry, which
-        is preserved for backward compatibility but logged once as a warning.
 
-        The warning fires even in mixed deployments that also configure
-        ``LiteLLM_JWTAuth.issuers``: tokens whose ``iss`` does not match any
-        configured issuer fall through to this global path, and if env-var
-        scoping is absent that fallback is itself unscoped.
+        Fail closed: when neither is configured the global decode path raises
+        instead of silently disabling verification, because a signature-valid
+        token from ANY application on the same IdP would otherwise be
+        accepted. Deployments that genuinely cannot scope their tokens can
+        set ``LITELLM_JWT_ALLOW_UNSCOPED=true`` to restore the legacy
+        warn-and-accept behavior; tokens with an unlisted ``iss`` still fail
+        when ``LiteLLM_JWTAuth.issuers`` is configured because they never
+        reach this global path.
         """
         audience = os.getenv("JWT_AUDIENCE")
         issuer = os.getenv("JWT_ISSUER")
 
-        if audience is None and issuer is None and not cls._unscoped_jwt_warning_emitted:
-            verbose_proxy_logger.warning(
-                "JWT auth is enabled but neither JWT_AUDIENCE nor JWT_ISSUER "
-                "is configured. Tokens minted by any application that shares "
-                "the same IdP signing keys will be accepted. Set JWT_AUDIENCE "
-                "(and ideally JWT_ISSUER) to scope this proxy."
-            )
-            cls._unscoped_jwt_warning_emitted = True
+        if audience is None and issuer is None:
+            if os.getenv("LITELLM_JWT_ALLOW_UNSCOPED", "false").lower() != "true":
+                raise ProxyException(
+                    message=(
+                        "JWT auth is enabled but neither JWT_AUDIENCE nor JWT_ISSUER is "
+                        "configured. Refusing to accept unscoped tokens: any application "
+                        "sharing the IdP signing keys would be trusted. Set JWT_AUDIENCE "
+                        "(and ideally JWT_ISSUER) to scope this proxy, or set "
+                        "LITELLM_JWT_ALLOW_UNSCOPED=true to explicitly accept the risk."
+                    ),
+                    type=ProxyErrorTypes.auth_error,
+                    param=None,
+                    code=status.HTTP_400_BAD_REQUEST,
+                )
+            if not cls._unscoped_jwt_warning_emitted:
+                verbose_proxy_logger.warning(
+                    "JWT auth is accepting unscoped tokens because "
+                    "LITELLM_JWT_ALLOW_UNSCOPED=true. Tokens minted by any application "
+                    "that shares the same IdP signing keys will be accepted. Set "
+                    "JWT_AUDIENCE (and ideally JWT_ISSUER) to scope this proxy."
+                )
+                cls._unscoped_jwt_warning_emitted = True
 
         options: dict = {}
         if audience is None:

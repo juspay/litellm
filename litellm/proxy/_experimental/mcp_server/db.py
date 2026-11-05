@@ -66,7 +66,7 @@ def _encrypt_global_env_var_values(env_vars: Iterable[Dict[str, Any]]) -> None:
             continue
         value = entry.get("value")
         if value:
-            entry["value"] = encrypt_value_helper(value)
+            entry["value"] = encrypt_value_helper(value, context="LiteLLM_MCPServerTable:env_vars.value")
 
 
 def decrypt_global_env_var_values(env_vars: Optional[Iterable[Any]]) -> None:
@@ -93,6 +93,7 @@ def decrypt_global_env_var_values(env_vars: Optional[Iterable[Any]]) -> None:
             key="mcp_global_env_var",
             exception_type="debug",
             return_original_value=False,
+            context="LiteLLM_MCPServerTable:env_vars.value",
         )
         if decrypted is None:
             name = entry.get("name") if is_dict else getattr(entry, "name", None)
@@ -170,6 +171,7 @@ def _reencrypt_global_env_var_values(
             key="mcp_global_env_var",
             exception_type="debug",
             return_original_value=False,
+            context="LiteLLM_MCPServerTable:env_vars.value",
         )
         if decrypted is None:
             verbose_proxy_logger.warning(
@@ -177,7 +179,11 @@ def _reencrypt_global_env_var_values(
                 entry.get("name"),
             )
             continue
-        entry["value"] = encrypt_value_helper(decrypted, new_encryption_key=new_encryption_key)
+        entry["value"] = encrypt_value_helper(
+            decrypted,
+            new_encryption_key=new_encryption_key,
+            context="LiteLLM_MCPServerTable:env_vars.value",
+        )
         rotated = True
     return rebuilt if rotated else None
 
@@ -282,43 +288,22 @@ def _prepare_mcp_server_data(
 
 
 def encrypt_credentials(credentials: MCPCredentials, encryption_key: Optional[str]) -> MCPCredentials:
-    auth_value = credentials.get("auth_value")
-    if auth_value is not None:
-        credentials["auth_value"] = encrypt_value_helper(
-            value=auth_value,
-            new_encryption_key=encryption_key,
-        )
-    client_id = credentials.get("client_id")
-    if client_id is not None:
-        credentials["client_id"] = encrypt_value_helper(
-            value=client_id,
-            new_encryption_key=encryption_key,
-        )
-    client_secret = credentials.get("client_secret")
-    if client_secret is not None:
-        credentials["client_secret"] = encrypt_value_helper(
-            value=client_secret,
-            new_encryption_key=encryption_key,
-        )
-    # AWS SigV4 credential fields
-    aws_access_key_id = credentials.get("aws_access_key_id")
-    if aws_access_key_id is not None:
-        credentials["aws_access_key_id"] = encrypt_value_helper(
-            value=aws_access_key_id,
-            new_encryption_key=encryption_key,
-        )
-    aws_secret_access_key = credentials.get("aws_secret_access_key")
-    if aws_secret_access_key is not None:
-        credentials["aws_secret_access_key"] = encrypt_value_helper(
-            value=aws_secret_access_key,
-            new_encryption_key=encryption_key,
-        )
-    aws_session_token = credentials.get("aws_session_token")
-    if aws_session_token is not None:
-        credentials["aws_session_token"] = encrypt_value_helper(
-            value=aws_session_token,
-            new_encryption_key=encryption_key,
-        )
+    secret_fields = (
+        "auth_value",
+        "client_id",
+        "client_secret",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+    )
+    for field in secret_fields:
+        field_value = credentials.get(field)
+        if field_value is not None:
+            credentials[field] = encrypt_value_helper(
+                value=field_value,
+                new_encryption_key=encryption_key,
+                context=f"LiteLLM_MCPServerTable:credentials.{field}",
+            )
     # aws_region_name and aws_service_name are NOT secrets — stored as-is
     return credentials
 
@@ -343,6 +328,7 @@ def decrypt_credentials(
                 key=field,
                 exception_type="debug",
                 return_original_value=True,
+                context=f"LiteLLM_MCPServerTable:credentials.{field}",
             )
     return credentials
 
@@ -705,6 +691,7 @@ def _decode_user_credential(stored: str) -> Optional[str]:
         key="mcp_user_credential",
         exception_type="debug",
         return_original_value=False,
+        context="LiteLLM_MCPUserCredentials:credential_b64",
     )
     if decrypted is not None:
         return decrypted
@@ -755,7 +742,11 @@ async def rotate_mcp_user_credentials_master_key(prisma_client: PrismaClient, ne
             )
             skipped += 1
             continue
-        re_encrypted = encrypt_value_helper(plaintext, new_encryption_key=new_master_key)
+        re_encrypted = encrypt_value_helper(
+            plaintext,
+            new_encryption_key=new_master_key,
+            context="LiteLLM_MCPUserCredentials:credential_b64",
+        )
         await MCPUserCredentialsRepository(prisma_client).table.update(
             where={
                 "user_id_server_id": {
@@ -790,6 +781,7 @@ async def rotate_mcp_user_env_vars_master_key(prisma_client: PrismaClient, new_m
             key="mcp_user_env_vars",
             exception_type="debug",
             return_original_value=False,
+            context="LiteLLM_MCPUserEnvVars:values_b64",
         )
         if plaintext is None:
             verbose_proxy_logger.warning(
@@ -799,7 +791,11 @@ async def rotate_mcp_user_env_vars_master_key(prisma_client: PrismaClient, new_m
             )
             skipped += 1
             continue
-        re_encrypted = encrypt_value_helper(plaintext, new_encryption_key=new_master_key)
+        re_encrypted = encrypt_value_helper(
+            plaintext,
+            new_encryption_key=new_master_key,
+            context="LiteLLM_MCPUserEnvVars:values_b64",
+        )
         await prisma_client.db.litellm_mcpuserenvvars.update(
             where={
                 "user_id_server_id": {
@@ -825,7 +821,7 @@ async def store_user_credential(
 ) -> None:
     """Store a user credential for a BYOK MCP server."""
 
-    encoded = encrypt_value_helper(credential)
+    encoded = encrypt_value_helper(credential, context="LiteLLM_MCPUserCredentials:credential_b64")
     await MCPUserCredentialsRepository(prisma_client).table.upsert(
         where={"user_id_server_id": {"user_id": user_id, "server_id": server_id}},
         data={
@@ -931,7 +927,7 @@ async def store_user_oauth_credential(
                 f"Refusing to overwrite."
             )
 
-    encoded = encrypt_value_helper(json.dumps(payload))
+    encoded = encrypt_value_helper(json.dumps(payload), context="LiteLLM_MCPUserCredentials:credential_b64")
     await MCPUserCredentialsRepository(prisma_client).table.upsert(
         where={"user_id_server_id": {"user_id": user_id, "server_id": server_id}},
         data={
@@ -1329,6 +1325,7 @@ def _decode_user_env_vars(stored: str) -> Dict[str, str]:
         key="mcp_user_env_vars",
         exception_type="debug",
         return_original_value=False,
+        context="LiteLLM_MCPUserEnvVars:values_b64",
     )
     if decrypted is None:
         if stored:
@@ -1405,7 +1402,7 @@ async def merge_user_env_vars(
         )
         existing = _decode_user_env_vars(row.values_b64) if row is not None else {}
         merged = {k: v for k, v in {**existing, **updates}.items() if k in allowed}
-        encoded = encrypt_value_helper(json.dumps(merged))
+        encoded = encrypt_value_helper(json.dumps(merged), context="LiteLLM_MCPUserEnvVars:values_b64")
         await tx.litellm_mcpuserenvvars.upsert(
             where={"user_id_server_id": {"user_id": user_id, "server_id": server_id}},
             data={

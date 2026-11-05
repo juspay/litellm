@@ -27,7 +27,10 @@ from litellm.proxy._types import LiteLLM_VerificationTokenView
 from litellm.proxy.utils import PrismaClient
 
 
-def test_hash_token_method_returns_sha256(prisma_client: PrismaClient) -> None:
+def test_hash_token_method_returns_sha256(
+    prisma_client: PrismaClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     token = "sk-token-xyz"
     actual = {
         "result": prisma_client.hash_token(token),
@@ -425,7 +428,9 @@ async def test_check_view_exists_raises_when_query_raw_fails(
 @pytest.mark.asyncio
 async def test_get_data_token_find_unique_returns_record(
     prisma_client: PrismaClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     token = "sk-key-1"
     hashed = hashlib.sha256(token.encode()).hexdigest()
     record = SimpleNamespace(token=hashed, user_id="u1", expires=None, spend=0.5)

@@ -22,10 +22,10 @@ try:
     GCP_LOGGING_AVAILABLE = True
 except ImportError:
     GCP_LOGGING_AVAILABLE = False
-    print(
-        "[gcp_logs_query] google-cloud-logging not installed. "
-        "Install with: pip install google-cloud-logging"
+    print(  # noqa: T201
+        "[gcp_logs_query] google-cloud-logging not installed. Install with: pip install google-cloud-logging"
     )
+
 
 def get_gcp_logging_client(project_id: Optional[str] = None):
     """
@@ -38,32 +38,30 @@ def get_gcp_logging_client(project_id: Optional[str] = None):
         LoggingClient or None if not available
     """
     if not GCP_LOGGING_AVAILABLE:
-        print(
-            "[gcp_logs_query] Cannot create GCP logging client - "
-            "google-cloud-logging is not installed"
+        print(  # noqa: T201
+            "[gcp_logs_query] Cannot create GCP logging client - google-cloud-logging is not installed"
         )
         return None
 
     try:
         # The client will use application default credentials (ADC)
         # Ensure GOOGLE_APPLICATION_CREDENTIALS env var is set, or running on GCP
-        print("[gcp_logs_query] Creating LoggingClient...")
+        print("[gcp_logs_query] Creating LoggingClient...")  # noqa: T201
         client = LoggingClient(project=project_id)
-        print("[gcp_logs_query] Successfully created LoggingClient")
+        print("[gcp_logs_query] Successfully created LoggingClient")  # noqa: T201
         return client
     except Exception as e:
         import traceback
-        print(f"[gcp_logs_query] Failed to create GCP logging client: {e}")
-        print(f"[gcp_logs_query] Stack trace: {traceback.format_exc()}")
+
+        print(f"[gcp_logs_query] Failed to create GCP logging client: {e}")  # noqa: T201
+        print(f"[gcp_logs_query] Stack trace: {traceback.format_exc()}")  # noqa: T201
         return None
 
 
 # Bound every google-cloud-logging call so a hung Logging API / ADC lookup
 # cannot stall the proxy event loop (and with it the liveness probe). 10s
 # matches the SpendLogs half of /concurrent_request_logs.
-GCP_LOG_QUERY_TIMEOUT_SECONDS = float(
-    os.environ.get("GCP_LOG_QUERY_TIMEOUT_SECONDS", "10")
-)
+GCP_LOG_QUERY_TIMEOUT_SECONDS = float(os.environ.get("GCP_LOG_QUERY_TIMEOUT_SECONDS", "10"))
 
 _T = TypeVar("_T")
 
@@ -139,9 +137,8 @@ async def query_parallel_requests_metrics_last_n_seconds(
     if project_id is None:
         project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
     if project_id is None:
-        print(
-            "[gcp_logs_query] No GCP project ID provided. "
-            "Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
+        print(  # noqa: T201
+            "[gcp_logs_query] No GCP project ID provided. Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
         )
         return []
 
@@ -180,16 +177,14 @@ async def query_parallel_requests_metrics_last_n_seconds(
 
         filter_str = " AND ".join(filter_parts)
 
-        print(
+        print(  # noqa: T201
             f"[gcp_logs_query] Querying GCP logs from {start_rfc3339} to {end_rfc3339} "
             f"(last {time_window_seconds} second(s) before target)"
         )
 
         # Execute the query using Client API
         # Limit entries for performance (we only need latest per token)
-        MAX_ENTRIES = int(
-            os.environ.get("GCP_LOG_QUERY_MAX_ENTRIES", "15000")
-        )
+        MAX_ENTRIES = int(os.environ.get("GCP_LOG_QUERY_MAX_ENTRIES", "15000"))
         results = await _run_blocking(
             _scan_latest_metrics_per_token,
             client,
@@ -200,7 +195,7 @@ async def query_parallel_requests_metrics_last_n_seconds(
         return results
 
     except Exception as e:
-        print(f"[gcp_logs_query] Error querying GCP logs: {e}")
+        print(f"[gcp_logs_query] Error querying GCP logs: {e}")  # noqa: T201
         return []
 
 
@@ -223,12 +218,12 @@ def _scan_latest_metrics_per_token(
     ):
         all_entries.append(entry)
         if len(all_entries) >= max_entries:
-            print(
+            print(  # noqa: T201
                 f"[gcp_logs_query] Hit max entries limit ({max_entries}), stopping"
             )
             break
 
-    print(
+    print(  # noqa: T201
         f"[gcp_logs_query] Found {len(all_entries)} log entries in last {time_window_seconds} second(s)"
     )
 
@@ -269,7 +264,7 @@ def _scan_latest_metrics_per_token(
     # Convert to list and sort by token for consistent ordering
     results = sorted(token_latest_metrics.values(), key=lambda x: x["token"])
 
-    print(
+    print(  # noqa: T201
         f"[gcp_logs_query] Returning {len(results)} unique token metrics "
         f"(latest log entry per token from last 5 minutes)"
     )
@@ -304,17 +299,14 @@ async def get_concurrent_requests_from_gcp_logs(
         where metrics_concurrency is the Redis counter value from the latest log entry.
     """
     if not GCP_LOGGING_AVAILABLE:
-        print(
-            "[gcp_logs_query] google-cloud-logging not available. "
-            "Cannot query GCP logs for concurrent requests."
+        print(  # noqa: T201
+            "[gcp_logs_query] google-cloud-logging not available. Cannot query GCP logs for concurrent requests."
         )
         return [], False
 
     # Query last N seconds and get latest entry per token
     # Default: 60 seconds (1 minute), configurable via GCP_LOG_QUERY_TIME_WINDOW_SECONDS
-    time_window = int(
-        os.environ.get("GCP_LOG_QUERY_TIME_WINDOW_SECONDS", "60")
-    )
+    time_window = int(os.environ.get("GCP_LOG_QUERY_TIME_WINDOW_SECONDS", "60"))
     metrics = await query_parallel_requests_metrics_last_n_seconds(
         target_timestamp=target_timestamp,
         project_id=project_id,
@@ -330,13 +322,15 @@ async def get_concurrent_requests_from_gcp_logs(
     # redis_concurrency represents the Redis counter value (current_count from latest log)
     results = []
     for m in metrics:
-        results.append({
-            "token": m["token"],
-            "key_name": m["token"][:16] + "..." if len(m["token"]) > 16 else m["token"],
-            "key_alias": m["key_alias"] or "—",
-            "redis_concurrency": m["current_count"],  # This is the Redis counter value
-            "timestamp": m["timestamp"],  # Timestamp of the latest log entry
-        })
+        results.append(
+            {
+                "token": m["token"],
+                "key_name": m["token"][:16] + "..." if len(m["token"]) > 16 else m["token"],
+                "key_alias": m["key_alias"] or "—",
+                "redis_concurrency": m["current_count"],  # This is the Redis counter value
+                "timestamp": m["timestamp"],  # Timestamp of the latest log entry
+            }
+        )
 
     return results, True
 
@@ -373,18 +367,16 @@ async def count_parallel_request_operations(
     counts = {"increment": 0, "decrement": 0, "total": 0}
 
     if not GCP_LOGGING_AVAILABLE:
-        print(
-            "[gcp_logs_query] google-cloud-logging not available. "
-            "Cannot count parallel request operations."
+        print(  # noqa: T201
+            "[gcp_logs_query] google-cloud-logging not available. Cannot count parallel request operations."
         )
         return counts, False, False
 
     if project_id is None:
         project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
     if project_id is None:
-        print(
-            "[gcp_logs_query] No GCP project ID provided. "
-            "Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
+        print(  # noqa: T201
+            "[gcp_logs_query] No GCP project ID provided. Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
         )
         return counts, False, False
 
@@ -413,7 +405,7 @@ async def count_parallel_request_operations(
         # reported as truncated (a lower bound).
         max_entries = int(os.environ.get("GCP_LOG_COUNT_MAX_ENTRIES", "50000"))
 
-        print(
+        print(  # noqa: T201
             f"[gcp_logs_query] Counting parallel_requests operations from "
             f"{start_rfc3339} to {end_rfc3339} "
             f"(token_filter={'set' if token_filter else 'none'}, "
@@ -427,14 +419,14 @@ async def count_parallel_request_operations(
             max_entries,
         )
         counts["total"] = counts["increment"] + counts["decrement"]
-        print(
+        print(  # noqa: T201
             f"[gcp_logs_query] Counted increment={counts['increment']} "
             f"decrement={counts['decrement']} truncated={truncated}"
         )
         return counts, True, truncated
 
     except Exception as e:
-        print(f"[gcp_logs_query] Error counting parallel request operations: {e}")
+        print(f"[gcp_logs_query] Error counting parallel request operations: {e}")  # noqa: T201
         return counts, False, False
 
 
@@ -459,9 +451,8 @@ def _count_operations_blocking(
         scanned += 1
         if scanned > max_entries:
             truncated = True
-            print(
-                f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
-                f"while counting, stopping"
+            print(  # noqa: T201
+                f"[gcp_logs_query] Hit max entries limit ({max_entries}) while counting, stopping"
             )
             break
 
@@ -508,18 +499,16 @@ async def get_parallel_request_metric_series(
     entries: List[Dict] = []
 
     if not GCP_LOGGING_AVAILABLE:
-        print(
-            "[gcp_logs_query] google-cloud-logging not available. "
-            "Cannot fetch parallel request metric series."
+        print(  # noqa: T201
+            "[gcp_logs_query] google-cloud-logging not available. Cannot fetch parallel request metric series."
         )
         return entries, False
 
     if project_id is None:
         project_id = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT")
     if project_id is None:
-        print(
-            "[gcp_logs_query] No GCP project ID provided. "
-            "Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
+        print(  # noqa: T201
+            "[gcp_logs_query] No GCP project ID provided. Set GOOGLE_CLOUD_PROJECT or GCP_PROJECT env var"
         )
         return entries, False
 
@@ -546,9 +535,8 @@ async def get_parallel_request_metric_series(
 
         max_entries = int(os.environ.get("GCP_LOG_COUNT_MAX_ENTRIES", "50000"))
 
-        print(
-            f"[gcp_logs_query] Fetching parallel_requests metric series from "
-            f"{start_rfc3339} to {end_rfc3339}"
+        print(  # noqa: T201
+            f"[gcp_logs_query] Fetching parallel_requests metric series from {start_rfc3339} to {end_rfc3339}"
         )
 
         entries = await _run_blocking(
@@ -557,11 +545,11 @@ async def get_parallel_request_metric_series(
             filter_str,
             max_entries,
         )
-        print(f"[gcp_logs_query] Returning {len(entries)} metric series entries")
+        print(f"[gcp_logs_query] Returning {len(entries)} metric series entries")  # noqa: T201
         return entries, True
 
     except Exception as e:
-        print(f"[gcp_logs_query] Error fetching parallel request metric series: {e}")
+        print(f"[gcp_logs_query] Error fetching parallel request metric series: {e}")  # noqa: T201
         return entries, False
 
 
@@ -584,9 +572,8 @@ def _scan_metric_series_blocking(
     ):
         scanned += 1
         if scanned > max_entries:
-            print(
-                f"[gcp_logs_query] Hit max entries limit ({max_entries}) "
-                f"while building metric series, stopping"
+            print(  # noqa: T201
+                f"[gcp_logs_query] Hit max entries limit ({max_entries}) while building metric series, stopping"
             )
             break
 
@@ -602,13 +589,15 @@ def _scan_metric_series_blocking(
         if not parsed:
             continue
 
-        entries.append({
-            "entry_time": entry_time.timestamp(),
-            "current_count": parsed["current_count"],
-            "operation": parsed["operation"],
-            "token": parsed["token"],
-            "key_alias": parsed["key_alias"],
-        })
+        entries.append(
+            {
+                "entry_time": entry_time.timestamp(),
+                "current_count": parsed["current_count"],
+                "operation": parsed["operation"],
+                "token": parsed["token"],
+                "key_alias": parsed["key_alias"],
+            }
+        )
 
     # Already ascending by order_by, but sort defensively.
     entries.sort(key=lambda x: x["entry_time"])

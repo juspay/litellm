@@ -1,6 +1,5 @@
 import enum
 import json
-import os
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, Union
 
@@ -16,7 +15,7 @@ from pydantic import (
 from typing_extensions import Required, TypedDict
 
 from litellm._uuid import uuid
-from litellm.constants import MCP_STDIO_ALLOWED_COMMANDS
+from litellm.constants import MCP_STDIO_ALLOWED_COMMANDS, validate_mcp_stdio_command_str
 from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
     validate_no_callback_env_reference,
 )
@@ -216,12 +215,9 @@ class Litellm_EntityType(enum.Enum):
 
 
 def hash_token(token: str):
-    import hashlib
+    from litellm.proxy.common_utils.token_hash_utils import hash_token as _hash_token
 
-    # Hash the string using SHA-256
-    hashed_token = hashlib.sha256(token.encode()).hexdigest()
-
-    return hashed_token
+    return _hash_token(token)
 
 
 class KeyManagementRoutes(str, enum.Enum):
@@ -793,12 +789,10 @@ class LiteLLMRoutes(enum.Enum):
     # Admin can read/list/get, Admin Viewer can too (no writes, no cost-incurring
     # actions).
     #
-    # NOTE: This list is no longer the primary mechanism for granting access —
-    # `_check_proxy_admin_viewer_access()` in route_checks.py default-allows
-    # any safe HTTP method (GET/HEAD/OPTIONS) on non-inference routes. This
-    # list now matters only for non-GET routes that are semantically reads
-    # (e.g. POST /spend/calculate). Adding a new GET endpoint does not require
-    # updating this list — the default-allow behavior covers it automatically.
+    # NOTE: GET routes for PROXY_ADMIN_VIEW_ONLY fail closed: read access is
+    # granted only by `_ADMIN_VIEWER_ALLOWED_GET_ROUTES` in route_checks.py or
+    # by these two explicit lists. Add new viewer-readable GET endpoints to
+    # this list (or the route_checks allowlist) deliberately.
     admin_viewer_routes = (
         [
             "/user/list",
@@ -851,6 +845,10 @@ class LiteLLMRoutes(enum.Enum):
             # Model cost map maintenance views (read-only status / source).
             "/schedule/model_cost_map_reload/status",
             "/model/cost_map/source",
+            # Claude Code marketplace plugin listing. The route also has a
+            # POST handler (mixed methods), so the GET-only derivation fails
+            # closed; the read is explicitly allowlisted here.
+            "/claude-code/plugins",
         ]
         # Spend tracking reads (/spend/logs, /spend/logs/ui, /spend/keys,
         # /spend/users, /spend/tags, /spend/calculate, /cost/estimate). Admin
@@ -1298,12 +1296,16 @@ class NewMCPServerRequest(LiteLLMPydanticObjectBase):
                     raise ValueError("command is required for stdio transport")
                 if not values.get("args"):
                     raise ValueError("args is required for stdio transport")
-                # Validate command against allowlist to prevent arbitrary execution
-                base_command = os.path.basename(values["command"])
-                if base_command not in MCP_STDIO_ALLOWED_COMMANDS:
+                # Validate command against allowlist to prevent arbitrary execution.
+                # Relative paths are rejected: they resolve against the proxy's
+                # CWD, so a swapped binary in a writable directory would run
+                # with the proxy's environment.
+                if validate_mcp_stdio_command_str(values["command"]) is None:
                     raise ValueError(
                         f"Command '{values['command']}' is not in the allowed commands list "
-                        f"for stdio transport. Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
+                        f"for stdio transport (a bare command name or an absolute path to an "
+                        f"allowed binary; relative paths are rejected). "
+                        f"Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
                     )
             elif transport in [MCPTransport.http, MCPTransport.sse]:
                 if not values.get("url") and not values.get("spec_path"):
@@ -1370,12 +1372,16 @@ class UpdateMCPServerRequest(LiteLLMPydanticObjectBase):
                     raise ValueError("command is required for stdio transport")
                 if not values.get("args"):
                     raise ValueError("args is required for stdio transport")
-                # Validate command against allowlist to prevent arbitrary execution
-                base_command = os.path.basename(values["command"])
-                if base_command not in MCP_STDIO_ALLOWED_COMMANDS:
+                # Validate command against allowlist to prevent arbitrary execution.
+                # Relative paths are rejected: they resolve against the proxy's
+                # CWD, so a swapped binary in a writable directory would run
+                # with the proxy's environment.
+                if validate_mcp_stdio_command_str(values["command"]) is None:
                     raise ValueError(
                         f"Command '{values['command']}' is not in the allowed commands list "
-                        f"for stdio transport. Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
+                        f"for stdio transport (a bare command name or an absolute path to an "
+                        f"allowed binary; relative paths are rejected). "
+                        f"Allowed commands: {sorted(MCP_STDIO_ALLOWED_COMMANDS)}"
                     )
             elif transport in [MCPTransport.http, MCPTransport.sse]:
                 if not values.get("url") and not values.get("spec_path"):

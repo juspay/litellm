@@ -57,6 +57,7 @@ def trust_xff():
 async def test_authorize_endpoint_includes_response_type():
     """Test that authorize endpoint includes response_type=code parameter (fixes #15684)"""
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -122,6 +123,7 @@ async def test_authorize_endpoint_includes_response_type():
 async def test_authorize_endpoint_preserves_existing_query_params():
     """Test that authorize endpoint merges OAuth params with existing query params in authorization_url"""
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -183,6 +185,7 @@ async def test_authorize_endpoint_preserves_existing_query_params():
 async def test_authorize_endpoint_forwards_pkce_parameters():
     """Test that authorize endpoint forwards PKCE parameters (code_challenge and code_challenge_method)"""
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -252,6 +255,7 @@ async def test_authorize_endpoint_forwards_pkce_parameters():
 async def test_token_endpoint_forwards_code_verifier():
     """Test that token endpoint forwards code_verifier for PKCE flow"""
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -307,6 +311,7 @@ async def test_token_endpoint_forwards_code_verifier():
         "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client"
     ) as mock_get_client:
         mock_async_client = MagicMock()
+        mock_async_client.client = mock_async_client
         # Use AsyncMock for the async post method
         mock_async_client.post = AsyncMock(return_value=mock_response)
         mock_get_client.return_value = mock_async_client
@@ -346,6 +351,7 @@ async def test_token_endpoint_forwards_code_verifier():
 @pytest.mark.asyncio
 async def test_register_client_without_mcp_server_name_returns_dummy():
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -379,6 +385,7 @@ async def test_register_client_without_mcp_server_name_returns_dummy():
 @pytest.mark.asyncio
 async def test_register_client_returns_existing_server_credentials():
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -431,6 +438,7 @@ async def test_register_client_returns_existing_server_credentials():
 @pytest.mark.asyncio
 async def test_register_client_remote_registration_success():
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -479,6 +487,7 @@ async def test_register_client_remote_registration_success():
     }
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     try:
@@ -491,6 +500,7 @@ async def test_register_client_remote_registration_success():
                 "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client",
                 return_value=mock_async_client,
             ),
+            patch.object(litellm, "user_url_validation", False),
         ):
             response = await register_client(request=mock_request, mcp_server_name=oauth2_server.server_name)
     finally:
@@ -521,6 +531,7 @@ async def test_register_client_persists_dcr_client_identity():
     autonomous refresh can authenticate as the registered client. Without persistence the
     minted client_id is discarded and the refresh_token grant has no client identity."""
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -561,6 +572,7 @@ async def test_register_client_persists_dcr_client_identity():
     }
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     mock_update = AsyncMock(return_value=MagicMock())
@@ -571,6 +583,7 @@ async def test_register_client_persists_dcr_client_identity():
             "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client",
             return_value=mock_async_client,
         ),
+        patch.object(litellm, "user_url_validation", False),
         patch("litellm.proxy.utils.get_prisma_client_or_throw", return_value=MagicMock()),
         patch("litellm.proxy._experimental.mcp_server.db.update_mcp_server", new=mock_update),
         patch.object(global_mcp_server_manager, "update_server", new=mock_update_server),
@@ -607,6 +620,7 @@ async def test_register_client_does_not_clobber_token_url_when_absent():
     partial update rather than passing None, so exclude_unset leaves the token_url column
     untouched instead of overwriting an existing value with NULL."""
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -643,6 +657,7 @@ async def test_register_client_does_not_clobber_token_url_when_absent():
     mock_response.json.return_value = {"client_id": "generated-client"}
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     mock_update = AsyncMock(return_value=MagicMock())
@@ -653,6 +668,7 @@ async def test_register_client_does_not_clobber_token_url_when_absent():
             "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client",
             return_value=mock_async_client,
         ),
+        patch.object(litellm, "user_url_validation", False),
         patch("litellm.proxy.utils.get_prisma_client_or_throw", return_value=MagicMock()),
         patch("litellm.proxy._experimental.mcp_server.db.update_mcp_server", new=mock_update),
         patch.object(global_mcp_server_manager, "update_server", new=mock_update_server),
@@ -676,6 +692,7 @@ async def test_register_client_does_not_clobber_token_url_when_absent():
 @pytest.mark.asyncio
 async def test_register_client_reuses_persisted_client_id_for_non_admin_when_registry_is_stale():
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -714,6 +731,7 @@ async def test_register_client_reuses_persisted_client_id_for_non_admin_when_reg
     mock_update_mcp_server = AsyncMock()
     mock_update_server = AsyncMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock()
 
     with (
@@ -721,6 +739,7 @@ async def test_register_client_reuses_persisted_client_id_for_non_admin_when_reg
             "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client",
             return_value=mock_async_client,
         ),
+        patch.object(litellm, "user_url_validation", False),
         patch("litellm.proxy.utils.get_prisma_client_or_throw", return_value=MagicMock()),
         patch(
             "litellm.proxy._experimental.mcp_server.db.get_mcp_server",
@@ -752,6 +771,7 @@ async def test_register_client_reuses_persisted_client_id_for_non_admin_when_reg
 @pytest.mark.asyncio
 async def test_register_client_reuse_refreshes_request_server_when_manager_update_fails():
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -792,6 +812,7 @@ async def test_register_client_reuse_refreshes_request_server_when_manager_updat
     }
     mock_get_mcp_server = AsyncMock(return_value=persisted_server)
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock()
     mock_update_server = AsyncMock(side_effect=RuntimeError("registry update failed"))
 
@@ -800,6 +821,7 @@ async def test_register_client_reuse_refreshes_request_server_when_manager_updat
             "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client",
             return_value=mock_async_client,
         ),
+        patch.object(litellm, "user_url_validation", False),
         patch("litellm.proxy.utils.get_prisma_client_or_throw", return_value=MagicMock()),
         patch(
             "litellm.proxy._experimental.mcp_server.db.get_mcp_server",
@@ -828,6 +850,7 @@ async def test_register_client_reuse_refreshes_request_server_when_manager_updat
 @pytest.mark.asyncio
 async def test_register_client_returns_reused_client_when_concurrent_persist_wins():
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -864,6 +887,7 @@ async def test_register_client_returns_reused_client_when_concurrent_persist_win
     mock_response.json.return_value = {"client_id": "generated-client"}
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     persisted_server = MagicMock()
@@ -877,6 +901,7 @@ async def test_register_client_returns_reused_client_when_concurrent_persist_win
             "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client",
             return_value=mock_async_client,
         ),
+        patch.object(litellm, "user_url_validation", False),
         patch("litellm.proxy.utils.get_prisma_client_or_throw", return_value=MagicMock()),
         patch(
             "litellm.proxy._experimental.mcp_server.db.get_mcp_server",
@@ -954,6 +979,8 @@ async def test_register_client_reuses_existing_client_id_without_re_dcr():
     }
 
     mock_async_client = MagicMock()
+
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock()
 
     try:
@@ -983,6 +1010,7 @@ async def test_public_register_route_does_not_persist_client_credentials():
     external caller could otherwise bind a caller-controlled client (and leak its secret) to
     a server that has no client yet."""
     try:
+        import litellm
         from fastapi import Request
 
         from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -1031,6 +1059,7 @@ async def test_public_register_route_does_not_persist_client_credentials():
     }
     mock_response.raise_for_status = MagicMock()
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     mock_update = AsyncMock(return_value=MagicMock())
@@ -1045,6 +1074,7 @@ async def test_public_register_route_does_not_persist_client_credentials():
                 "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client",
                 return_value=mock_async_client,
             ),
+            patch.object(litellm, "user_url_validation", False),
             patch("litellm.proxy.utils.get_prisma_client_or_throw", return_value=MagicMock()),
             patch.object(global_mcp_server_manager, "update_server", new=AsyncMock()),
             patch("litellm.proxy._experimental.mcp_server.db.update_mcp_server", new=mock_update),
@@ -1176,6 +1206,7 @@ async def test_token_endpoint_respects_x_forwarded_proto():
 
     # Mock the async httpx client
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     with patch(
@@ -1473,6 +1504,7 @@ async def test_token_endpoint_respects_x_forwarded_host():
 
     # Mock the async httpx client
     mock_async_client = MagicMock()
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     with patch(
@@ -2258,6 +2290,8 @@ async def test_token_root_resolves_single_oauth2_server():
     mock_response.raise_for_status = MagicMock()
 
     mock_async_client = MagicMock()
+
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     try:
@@ -2794,6 +2828,8 @@ async def test_token_endpoint_refresh_token_grant():
     mock_response.raise_for_status = MagicMock()
 
     mock_async_client = MagicMock()
+
+    mock_async_client.client = mock_async_client
     mock_async_client.post = AsyncMock(return_value=mock_response)
 
     with patch(
@@ -3095,6 +3131,7 @@ async def test_token_endpoint_sets_no_store_cache_control():
     }
     fake_http_response.raise_for_status = MagicMock()
     fake_http_client = MagicMock()
+    fake_http_client.client = fake_http_client
     fake_http_client.post = AsyncMock(return_value=fake_http_response)
 
     with patch(
@@ -3146,6 +3183,7 @@ async def _exchange_with_upstream_token_response(upstream_body):
     fake_http_response.json.return_value = upstream_body
     fake_http_response.raise_for_status = MagicMock()
     fake_http_client = MagicMock()
+    fake_http_client.client = fake_http_client
     fake_http_client.post = AsyncMock(return_value=fake_http_response)
 
     with patch(
@@ -3460,6 +3498,7 @@ async def test_token_endpoint_uses_client_secret_basic_when_configured():
     import base64
     from unittest.mock import AsyncMock
 
+    import litellm
     from fastapi import Request
 
     from litellm.proxy._experimental.mcp_server.discoverable_endpoints import (
@@ -3500,10 +3539,14 @@ async def test_token_endpoint_uses_client_secret_basic_when_configured():
     }
     mock_response.raise_for_status = MagicMock()
 
-    with patch(
-        "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client"
-    ) as mock_get_client:
+    with (
+        patch(
+            "litellm.proxy._experimental.mcp_server.discoverable_endpoints.get_async_httpx_client"
+        ) as mock_get_client,
+        patch.object(litellm, "user_url_validation", False),
+    ):
         mock_async_client = MagicMock()
+        mock_async_client.client = mock_async_client
         mock_async_client.post = AsyncMock(return_value=mock_response)
         mock_get_client.return_value = mock_async_client
 
@@ -3892,3 +3935,74 @@ async def test_oauth_authorization_server_404_for_unknown_server_name():
             mcp_server_name="does_not_exist",
         )
     assert exc_info.value.status_code == 404
+
+
+class TestMcpOutboundFetchesUseSsrfValidation:
+    """The three outbound fetches in the discovery module (well-known GET,
+    token exchange POST, DCR registration POST) must go through the safe
+    helpers so private/link-local destinations are refused even when the
+    upstream metadata is attacker-influenced."""
+
+    @pytest.fixture
+    def server(self):
+        from litellm.types.mcp_server.mcp_server_manager import MCPServer
+
+        return MCPServer(
+            server_id="srv-1",
+            name="upstream",
+            url="https://upstream.example.com/mcp",
+            transport="http",
+            auth_type="oauth2",
+            token_url="https://upstream.example.com/token",
+            registration_url="https://upstream.example.com/register",
+        )
+
+    @pytest.mark.asyncio
+    async def test_well_known_fetch_rejects_private_target(self, server, monkeypatch, caplog):
+        from litellm.proxy._experimental.mcp_server import discoverable_endpoints
+
+        monkeypatch.setattr(
+            discoverable_endpoints,
+            "_OAUTH_METADATA_CACHE",
+            {},
+        )
+
+        async def _boom(*args, **kwargs):
+            raise AssertionError("async_safe_get must be used, not a raw client.get")
+
+        monkeypatch.setattr(discoverable_endpoints, "async_safe_get", _boom)
+        metadata = await discoverable_endpoints.fetch_upstream_oauth_protected_resource(server)
+        assert metadata is None
+        assert any("async_safe_get must be used" in record.getMessage() for record in caplog.records), (
+            "well-known fetch must go through async_safe_get"
+        )
+
+    @pytest.mark.asyncio
+    async def test_well_known_fetch_blocks_link_local_via_safe_get(self, server, monkeypatch):
+        from litellm.proxy._experimental.mcp_server import discoverable_endpoints
+
+        monkeypatch.setattr(
+            discoverable_endpoints,
+            "_OAUTH_METADATA_CACHE",
+            {},
+        )
+        server.url = "http://169.254.169.254/mcp"
+        metadata = await discoverable_endpoints.fetch_upstream_oauth_protected_resource(server)
+        assert metadata is None
+
+    @pytest.mark.asyncio
+    async def test_token_exchange_rejects_private_token_url(self, server, monkeypatch):
+        from litellm.proxy._experimental.mcp_server import discoverable_endpoints
+
+        server.token_url = "http://169.254.169.254/token"
+        with pytest.raises(ValueError):
+            await discoverable_endpoints.exchange_token_with_server(
+                request=_mock_callback_request("https://litellm.example.com/"),
+                mcp_server=server,
+                grant_type="authorization_code",
+                code="auth-code",
+                redirect_uri=None,
+                client_id=None,
+                client_secret=None,
+                code_verifier=None,
+            )

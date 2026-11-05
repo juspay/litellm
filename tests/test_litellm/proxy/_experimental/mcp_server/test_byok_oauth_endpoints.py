@@ -334,10 +334,12 @@ async def test_token_endpoint_success():
     assert data["token_type"] == "bearer"
     assert data["expires_in"] == 3600
 
-    # Verify JWT payload
-    import jwt as pyjwt
+    # Verify JWT payload: byok session tokens are signed with the HKDF-derived
+    # session key, not the raw master key, so they cannot be verified (or
+    # forged) with the master key alone.
+    from litellm.proxy.common_utils.session_cookie_utils import decode_byok_session_jwt
 
-    payload = pyjwt.decode(data["access_token"], test_master_key, algorithms=["HS256"])
+    payload = decode_byok_session_jwt(data["access_token"], test_master_key)
     assert payload["user_id"] == "user-42"
     assert payload["server_id"] == "server-1"
     assert payload["type"] == "byok_session"
@@ -733,17 +735,16 @@ def test_authorize_post_accepts_ui_session_cookie(unauthenticated_client):
     """Browser flow: the native HTML form doesn't add Authorization. Instead
     the user's UI session cookie ``token`` carries a master-key-signed JWT
     whose ``user_id`` + ``login_method`` claims authenticate the POST."""
-    import jwt as _jwt
+    from litellm.proxy.common_utils.session_cookie_utils import encode_ui_session_jwt
 
     with patch("litellm.proxy.proxy_server.master_key", "test-master-key"):
-        cookie_jwt = _jwt.encode(
+        cookie_jwt = encode_ui_session_jwt(
             {
                 "user_id": "browser-user-42",
                 "login_method": "sso",
                 "exp": int(time.time()) + 3600,
             },
             "test-master-key",
-            algorithm="HS256",
         )
         resp = _authorize_post_with_cookie(unauthenticated_client, cookie_jwt)
     assert resp.status_code == 302

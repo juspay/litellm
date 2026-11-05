@@ -31,6 +31,7 @@ from litellm.litellm_core_utils.model_response_utils import (
     is_model_response_stream_empty,
 )
 from litellm.litellm_core_utils.asyncify import asyncify
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.litellm_core_utils.redact_messages import LiteLLMLoggingObject
 from litellm.litellm_core_utils.thread_pool_executor import executor
 from litellm.types.llms.openai import OpenAIChatCompletionChunk
@@ -1704,9 +1705,7 @@ class CustomStreamWrapper:
             str(error),
         )
         try:
-            return self.model_response_creator(
-                chunk={"usage": calculate_total_usage(chunks=self.chunks)}
-            )
+            return self.model_response_creator(chunk={"usage": calculate_total_usage(chunks=self.chunks)})
         except Exception:
             return None
 

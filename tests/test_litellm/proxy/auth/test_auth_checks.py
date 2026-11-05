@@ -1,12 +1,12 @@
 import asyncio
+import base64
 import json
 import os
+import re
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
-sys.path.insert(
-    0, os.path.abspath("../../..")
-)  # Adds the parent directory to the system path
+sys.path.insert(0, os.path.abspath("../../.."))  # Adds the parent directory to the system path
 
 from datetime import datetime, timedelta
 
@@ -20,17 +20,16 @@ from litellm.proxy._types import (
     Litellm_EntityType,
     LiteLLM_BudgetTable,
     LiteLLM_EndUserTable,
-    LiteLLM_ObjectPermissionTable,
     LiteLLM_TagTable,
     LiteLLM_TeamTable,
     LiteLLM_UserTable,
     LitellmUserRoles,
     ProxyErrorTypes,
     ProxyException,
-    SSOUserDefinedValues,
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.auth_checks import (
+    LITELLM_SESSION_TOKEN_PREFIX,
     ExperimentalUIJWTToken,
     _cache_management_object,
     _can_object_call_model,
@@ -53,7 +52,9 @@ from litellm.proxy.auth.auth_checks import (
 )
 from litellm.caching.in_memory_cache import InMemoryCache
 from litellm.constants import DEFAULT_MANAGEMENT_OBJECT_IN_MEMORY_CACHE_TTL
-from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_value_helper
+from litellm.proxy import proxy_server
+from litellm.proxy.auth.user_api_key_auth import check_api_key_for_custom_headers_or_pass_through_endpoints
+from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_bearer_token, encrypt_value_helper
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.utils import get_utc_datetime
 
@@ -107,14 +108,10 @@ def invalid_sso_user_defined_values():
 
 def test_get_experimental_ui_login_jwt_auth_token_valid(valid_sso_user_defined_values):
     """Test generating JWT token with valid user role"""
-    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(
-        valid_sso_user_defined_values
-    )
+    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(valid_sso_user_defined_values)
 
     # Decrypt and verify token contents
-    decrypted_token = decrypt_value_helper(
-        token, key="ui_hash_key", exception_type="debug"
-    )
+    decrypted_token = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     # Check that decrypted_token is not None before using json.loads
     assert decrypted_token is not None
     token_data = json.loads(decrypted_token)
@@ -140,9 +137,7 @@ def test_get_cli_jwt_auth_token_includes_team_alias(valid_sso_user_defined_value
         team_alias="test-team",
     )
 
-    decrypted_token = decrypt_value_helper(
-        token, key="ui_hash_key", exception_type="debug"
-    )
+    decrypted_token = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     assert decrypted_token is not None
     token_data = json.loads(decrypted_token)
 
@@ -154,12 +149,8 @@ def test_get_experimental_ui_login_jwt_auth_token_uses_10_min_expiry(
     valid_sso_user_defined_values,
 ):
     """Test that Experimental UI token uses fixed 10-minute expiry (does not use LITELLM_UI_SESSION_DURATION)."""
-    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(
-        valid_sso_user_defined_values
-    )
-    decrypted_token = decrypt_value_helper(
-        token, key="ui_hash_key", exception_type="debug"
-    )
+    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(valid_sso_user_defined_values)
+    decrypted_token = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     assert decrypted_token is not None
     token_data = json.loads(decrypted_token)
     expires = datetime.fromisoformat(token_data["expires"].replace("Z", "+00:00"))
@@ -176,20 +167,16 @@ def test_experimental_ui_token_ignores_litellm_ui_session_duration(
     Experimental UI intentionally uses fixed 10-min expiry. If this test fails, the constant
     was incorrectly wired to the experimental flow."""
     # Default LITELLM_UI_SESSION_DURATION is "24h" - token must still expire in ~10 min
-    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(
-        valid_sso_user_defined_values
-    )
-    decrypted_token = decrypt_value_helper(
-        token, key="ui_hash_key", exception_type="debug"
-    )
+    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(valid_sso_user_defined_values)
+    decrypted_token = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     assert decrypted_token is not None
     token_data = json.loads(decrypted_token)
     expires = datetime.fromisoformat(token_data["expires"].replace("Z", "+00:00"))
     now = get_utc_datetime()
     # Must be ~10 min, NOT 24h. If LITELLM_UI_SESSION_DURATION were incorrectly used, this would fail.
-    assert expires <= now + timedelta(
-        minutes=11
-    ), "Experimental UI must use 10-min expiry, not LITELLM_UI_SESSION_DURATION"
+    assert expires <= now + timedelta(minutes=11), (
+        "Experimental UI must use 10-min expiry, not LITELLM_UI_SESSION_DURATION"
+    )
 
 
 def test_get_experimental_ui_login_jwt_auth_token_invalid(
@@ -197,22 +184,16 @@ def test_get_experimental_ui_login_jwt_auth_token_invalid(
 ):
     """Test generating JWT token with missing user role"""
     with pytest.raises(Exception) as exc_info:
-        ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(
-            invalid_sso_user_defined_values
-        )
+        ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(invalid_sso_user_defined_values)
 
     assert str(exc_info.value) == "User role is required for experimental UI login"
 
 
-def test_get_key_object_from_ui_hash_key_valid(
-    valid_sso_user_defined_values, monkeypatch
-):
+def test_get_key_object_from_ui_hash_key_valid(valid_sso_user_defined_values, monkeypatch):
     """Test getting key object from valid UI hash key"""
     monkeypatch.setenv("EXPERIMENTAL_UI_LOGIN", "True")
     # Generate a valid token
-    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(
-        valid_sso_user_defined_values
-    )
+    token = ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(valid_sso_user_defined_values)
 
     # Get key object
     key_object = ExperimentalUIJWTToken.get_key_object_from_ui_hash_key(token)
@@ -222,6 +203,51 @@ def test_get_key_object_from_ui_hash_key_valid(
     assert key_object.user_role == LitellmUserRoles.PROXY_ADMIN
     assert key_object.models == ["gpt-3.5-turbo"]
     assert key_object.max_budget == litellm.max_ui_session_budget
+
+
+@pytest.mark.parametrize("encryption_algorithm", ["xsalsa20-poly1305", "aes-256-gcm"])
+def test_get_key_object_from_ui_hash_key_accepts_only_minted_session_tokens(
+    valid_sso_user_defined_values, monkeypatch, encryption_algorithm
+):
+    monkeypatch.setattr(proxy_server, "general_settings", {"encryption_algorithm": encryption_algorithm})
+    session_token = ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values)
+    stored_value = encrypt_value_helper(json.dumps({"user_role": LitellmUserRoles.PROXY_ADMIN.value}))
+
+    key_object = ExperimentalUIJWTToken.get_key_object_from_ui_hash_key(session_token)
+    assert key_object is not None
+    assert key_object.user_role == LitellmUserRoles.PROXY_ADMIN
+    reshaped = LITELLM_SESSION_TOKEN_PREFIX + stored_value.removeprefix("v2:gcm:").rstrip("=")
+    for candidate in (stored_value, reshaped):
+        assert ExperimentalUIJWTToken.get_key_object_from_ui_hash_key(candidate) is None
+
+
+def test_session_tokens_are_header_safe_and_never_look_like_virtual_keys(valid_sso_user_defined_values):
+    for token in (
+        ExperimentalUIJWTToken.get_experimental_ui_login_jwt_auth_token(valid_sso_user_defined_values),
+        ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values),
+    ):
+        assert re.fullmatch(r"litellm_login_[A-Za-z0-9_-]+", token), token
+        assert ExperimentalUIJWTToken.get_key_object_from_ui_hash_key(token) is not None
+
+
+@pytest.mark.asyncio
+async def test_session_token_survives_langfuse_basic_auth_parsing(valid_sso_user_defined_values):
+    session_token = ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values)
+    basic_credentials = base64.b64encode(f"{session_token}:sk-lf-secret".encode()).decode()
+    request = MagicMock()
+    request.headers = {}
+
+    api_key = await check_api_key_for_custom_headers_or_pass_through_endpoints(
+        request=request,
+        route="/api/public/ingestion",
+        pass_through_endpoints=[
+            {"path": "/api/public/ingestion", "target": "https://example.com", "custom_auth_parser": "langfuse"}
+        ],
+        api_key=f"Basic {basic_credentials}",
+    )
+
+    assert api_key == session_token
+    assert ExperimentalUIJWTToken.get_key_object_from_ui_hash_key(session_token) is not None
 
 
 def test_get_key_object_from_ui_hash_key_invalid():
@@ -241,9 +267,7 @@ def test_get_key_object_from_ui_hash_key_invalid():
         ("project", ProxyErrorTypes.project_model_access_denied),
     ],
 )
-def test_can_object_call_model_denials_return_forbidden(
-    object_type, expected_error_type
-):
+def test_can_object_call_model_denials_return_forbidden(object_type, expected_error_type):
     with pytest.raises(ProxyException) as exc_info:
         _can_object_call_model(
             model="restricted-model",
@@ -492,7 +516,7 @@ async def test_get_key_object_should_reconnect_once_on_db_connection_error():
     assert mock_prisma_client.get_data.await_count == 2
     mock_prisma_client.attempt_db_reconnect.assert_awaited_once_with(
         reason="auth_get_key_object_lookup_failure",
-        timeout_seconds=2.0,
+        timeout_seconds=30.0,
         lock_timeout_seconds=0.1,
     )
 
@@ -500,9 +524,7 @@ async def test_get_key_object_should_reconnect_once_on_db_connection_error():
 @pytest.mark.asyncio
 async def test_get_key_object_should_raise_if_reconnect_fails_on_db_connection_error():
     mock_prisma_client = MagicMock()
-    mock_prisma_client.get_data = AsyncMock(
-        side_effect=httpx.ConnectError("db not reachable after outage")
-    )
+    mock_prisma_client.get_data = AsyncMock(side_effect=httpx.ConnectError("db not reachable after outage"))
     mock_prisma_client.attempt_db_reconnect = AsyncMock(return_value=False)
 
     mock_cache = MagicMock()
@@ -518,7 +540,7 @@ async def test_get_key_object_should_raise_if_reconnect_fails_on_db_connection_e
 
     mock_prisma_client.attempt_db_reconnect.assert_awaited_once_with(
         reason="auth_get_key_object_lookup_failure",
-        timeout_seconds=2.0,
+        timeout_seconds=30.0,
         lock_timeout_seconds=0.1,
     )
     assert mock_prisma_client.get_data.await_count == 1
@@ -529,9 +551,7 @@ def test_get_cli_jwt_auth_token_default_expiration(valid_sso_user_defined_values
     token = ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values)
 
     # Decrypt and verify token contents
-    decrypted_token = decrypt_value_helper(
-        token, key="ui_hash_key", exception_type="debug"
-    )
+    decrypted_token = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     assert decrypted_token is not None
     token_data = json.loads(decrypted_token)
 
@@ -553,9 +573,7 @@ def test_get_cli_jwt_auth_token_default_expiration(valid_sso_user_defined_values
     assert expires >= get_utc_datetime() + timedelta(hours=23, minutes=59)
 
 
-def test_get_cli_jwt_auth_token_custom_expiration(
-    valid_sso_user_defined_values, monkeypatch
-):
+def test_get_cli_jwt_auth_token_custom_expiration(valid_sso_user_defined_values, monkeypatch):
     """Test generating CLI JWT token with custom expiration via environment variable"""
     import importlib
 
@@ -570,14 +588,10 @@ def test_get_cli_jwt_auth_token_custom_expiration(
     # Also reload auth_checks to pick up the new constant value
     importlib.reload(auth_checks)
 
-    token = auth_checks.ExperimentalUIJWTToken.get_cli_jwt_auth_token(
-        valid_sso_user_defined_values
-    )
+    token = auth_checks.ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values)
 
     # Decrypt and verify token contents
-    decrypted_token = decrypt_value_helper(
-        token, key="ui_hash_key", exception_type="debug"
-    )
+    decrypted_token = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     assert decrypted_token is not None
     token_data = json.loads(decrypted_token)
 
@@ -595,18 +609,12 @@ def test_get_cli_jwt_auth_token_unique_per_session(valid_sso_user_defined_values
     from litellm.constants import CLI_SESSION_KEY_PREFIX
 
     def _decode(token: str) -> dict:
-        decrypted = decrypt_value_helper(
-            token, key="ui_hash_key", exception_type="debug"
-        )
+        decrypted = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
         assert decrypted is not None
         return json.loads(decrypted)
 
-    first = _decode(
-        ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values)
-    )
-    second = _decode(
-        ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values)
-    )
+    first = _decode(ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values))
+    second = _decode(ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values))
 
     assert first["token"].startswith(f"{CLI_SESSION_KEY_PREFIX}-")
     assert second["token"].startswith(f"{CLI_SESSION_KEY_PREFIX}-")
@@ -621,7 +629,7 @@ def test_get_cli_jwt_auth_token_applies_fallback_budget(valid_sso_user_defined_v
     token = ExperimentalUIJWTToken.get_cli_jwt_auth_token(
         valid_sso_user_defined_values, max_budget=litellm.max_ui_session_budget
     )
-    decrypted = decrypt_value_helper(token, key="ui_hash_key", exception_type="debug")
+    decrypted = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     assert decrypted is not None
     assert json.loads(decrypted).get("max_budget") == litellm.max_ui_session_budget
 
@@ -629,10 +637,8 @@ def test_get_cli_jwt_auth_token_applies_fallback_budget(valid_sso_user_defined_v
 def test_get_cli_jwt_auth_token_no_fallback_when_budget_provided(
     valid_sso_user_defined_values,
 ):
-    token = ExperimentalUIJWTToken.get_cli_jwt_auth_token(
-        valid_sso_user_defined_values, max_budget=None
-    )
-    decrypted = decrypt_value_helper(token, key="ui_hash_key", exception_type="debug")
+    token = ExperimentalUIJWTToken.get_cli_jwt_auth_token(valid_sso_user_defined_values, max_budget=None)
+    decrypted = decrypt_bearer_token(token, prefix=LITELLM_SESSION_TOKEN_PREFIX)
     assert decrypted is not None
     assert json.loads(decrypted).get("max_budget") is None
 
@@ -681,7 +687,7 @@ async def test_default_internal_user_params_with_get_user_object(monkeypatch):
 
     # Call get_user_object with user_id_upsert=True to trigger user creation
     try:
-        user_obj = await get_user_object(
+        await get_user_object(
             user_id="new_test_user",
             prisma_client=mock_prisma_client,
             user_api_key_cache=mock_cache,
@@ -690,7 +696,7 @@ async def test_default_internal_user_params_with_get_user_object(monkeypatch):
         )
     except Exception as e:
         # this fails since the mock object is a MagicMock and not a LiteLLM_UserTable
-        print(e)
+        assert not isinstance(e, AssertionError)
 
     # Verify the user was created with the default params
     mock_prisma_client.db.litellm_usertable.create.assert_called_once()
@@ -751,15 +757,13 @@ async def test_get_user_object_upsert_includes_user_email():
         )
     except Exception as e:
         # May fail since mock object is not a real LiteLLM_UserTable
-        print(e)
+        assert not isinstance(e, AssertionError)
 
     # Verify the user was created with user_email included
     mock_prisma_client.db.litellm_usertable.create.assert_called_once()
     creation_args = mock_prisma_client.db.litellm_usertable.create.call_args[1]["data"]
 
-    assert (
-        "user_email" in creation_args
-    ), "user_email should be included when upserting a new user"
+    assert "user_email" in creation_args, "user_email should be included when upserting a new user"
     assert creation_args["user_email"] == "test@example.com"
     assert creation_args["user_id"] == "new_test_user"
 
@@ -786,9 +790,7 @@ def test_log_budget_lookup_failure_skips_user_not_found():
 
 
 @pytest.mark.asyncio
-@patch(
-    "litellm.proxy.management_endpoints.team_endpoints.new_team", new_callable=AsyncMock
-)
+@patch("litellm.proxy.management_endpoints.team_endpoints.new_team", new_callable=AsyncMock)
 async def test_get_team_db_check_calls_new_team_on_upsert(mock_new_team, monkeypatch):
     """
     Test that _get_team_db_check correctly calls the `new_team` function
@@ -822,12 +824,8 @@ async def test_get_team_db_check_calls_new_team_on_upsert(mock_new_team, monkeyp
 
 
 @pytest.mark.asyncio
-@patch(
-    "litellm.proxy.management_endpoints.team_endpoints.new_team", new_callable=AsyncMock
-)
-async def test_get_team_db_check_does_not_call_new_team_if_exists(
-    mock_new_team, monkeypatch
-):
+@patch("litellm.proxy.management_endpoints.team_endpoints.new_team", new_callable=AsyncMock)
+async def test_get_team_db_check_does_not_call_new_team_if_exists(mock_new_team, monkeypatch):
     """
     Test that _get_team_db_check does NOT call the `new_team` function
     if the team already exists in the database.
@@ -861,9 +859,7 @@ async def test_get_team_db_check_does_not_call_new_team_if_exists(
         (MagicMock(), MagicMock(), True),  # No vector stores to run
     ],
 )
-async def test_vector_store_access_check_early_returns(
-    prisma_client, vector_store_registry, expected_result
-):
+async def test_vector_store_access_check_early_returns(prisma_client, vector_store_registry, expected_result):
     """Test vector_store_access_check returns True for early exit conditions"""
     request_body = {"messages": [{"role": "user", "content": "test"}]}
 
@@ -913,9 +909,7 @@ async def test_vector_store_access_check_early_returns(
         ),  # Partial access
     ],
 )
-def test_can_object_call_vector_stores_scenarios(
-    object_permissions, vector_store_ids, should_raise, error_type
-):
+def test_can_object_call_vector_stores_scenarios(object_permissions, vector_store_ids, should_raise, error_type):
     """Test _can_object_call_vector_stores with various permission scenarios"""
     # Convert dict to object if not None
     if object_permissions is not None:
@@ -923,11 +917,7 @@ def test_can_object_call_vector_stores_scenarios(
         mock_permissions.vector_stores = object_permissions["vector_stores"]
         object_permissions = mock_permissions
 
-    object_type = (
-        "key"
-        if error_type == ProxyErrorTypes.key_vector_store_access_denied
-        else "team"
-    )
+    object_type = "key" if error_type == ProxyErrorTypes.key_vector_store_access_denied else "team"
 
     if should_raise:
         with pytest.raises(ProxyException) as exc_info:
@@ -962,9 +952,7 @@ async def test_vector_store_access_check_with_permissions():
     mock_prisma_client = MagicMock()
     mock_permissions = MagicMock()
     mock_permissions.vector_stores = ["store-1", "store-2"]
-    mock_prisma_client.db.litellm_objectpermissiontable.find_unique = AsyncMock(
-        return_value=mock_permissions
-    )
+    mock_prisma_client.db.litellm_objectpermissiontable.find_unique = AsyncMock(return_value=mock_permissions)
 
     mock_vector_store_registry = MagicMock()
     mock_vector_store_registry.get_vector_store_ids_to_run.return_value = ["store-1"]
@@ -1010,14 +998,10 @@ async def test_vector_store_access_check_with_team_permissions():
     mock_prisma_client = MagicMock()
     team_permissions = MagicMock()
     team_permissions.vector_stores = ["team-store-allowed"]
-    mock_prisma_client.db.litellm_objectpermissiontable.find_unique = AsyncMock(
-        return_value=team_permissions
-    )
+    mock_prisma_client.db.litellm_objectpermissiontable.find_unique = AsyncMock(return_value=team_permissions)
 
     mock_vector_store_registry = MagicMock()
-    mock_vector_store_registry.get_vector_store_ids_to_run.return_value = [
-        "team-store-allowed"
-    ]
+    mock_vector_store_registry.get_vector_store_ids_to_run.return_value = ["team-store-allowed"]
 
     with (
         patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
@@ -1031,9 +1015,7 @@ async def test_vector_store_access_check_with_team_permissions():
 
     assert result is True
 
-    mock_vector_store_registry.get_vector_store_ids_to_run.return_value = [
-        "team-store-denied"
-    ]
+    mock_vector_store_registry.get_vector_store_ids_to_run.return_value = ["team-store-denied"]
 
     with (
         patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
@@ -1082,7 +1064,7 @@ def test_can_object_call_model_with_alias():
         fallback_depth=0,
     )
 
-    print(result)
+    assert result is not None
 
 
 def test_can_object_call_model_access_via_alias_only():
@@ -1594,9 +1576,7 @@ async def test_get_tag_objects_batch():
     mock_cache.async_set_cache = AsyncMock()
 
     # Mock DB to return all uncached tags in ONE query
-    mock_prisma.db.litellm_tagtable.find_many = AsyncMock(
-        return_value=[uncached_tag_1, uncached_tag_2, uncached_tag_3]
-    )
+    mock_prisma.db.litellm_tagtable.find_many = AsyncMock(return_value=[uncached_tag_1, uncached_tag_2, uncached_tag_3])
 
     # Call batch fetch
     tag_objects = await get_tag_objects_batch(
@@ -2079,9 +2059,7 @@ async def test_virtual_key_soft_budget_check_without_user_obj():
     ],
 )
 @pytest.mark.asyncio
-async def test_virtual_key_soft_budget_check_scenarios(
-    spend, soft_budget, expect_alert
-):
+async def test_virtual_key_soft_budget_check_scenarios(spend, soft_budget, expect_alert):
     """Test _virtual_key_soft_budget_check with various spend and soft_budget scenarios"""
     alert_triggered = False
 
@@ -2110,9 +2088,9 @@ async def test_virtual_key_soft_budget_check_scenarios(
 
     await asyncio.sleep(0.1)
 
-    assert (
-        alert_triggered == expect_alert
-    ), f"Expected alert_triggered to be {expect_alert} for spend={spend}, soft_budget={soft_budget}"
+    assert alert_triggered == expect_alert, (
+        f"Expected alert_triggered to be {expect_alert} for spend={spend}, soft_budget={soft_budget}"
+    )
 
 
 @pytest.mark.asyncio
@@ -2223,9 +2201,7 @@ async def test_virtual_key_max_budget_alert_check_without_user_obj():
     ],
 )
 @pytest.mark.asyncio
-async def test_virtual_key_max_budget_alert_check_scenarios(
-    spend, max_budget, expect_alert
-):
+async def test_virtual_key_max_budget_alert_check_scenarios(spend, max_budget, expect_alert):
     """Test _virtual_key_max_budget_alert_check with various spend and max_budget scenarios"""
     alert_triggered = False
 
@@ -2254,9 +2230,9 @@ async def test_virtual_key_max_budget_alert_check_scenarios(
 
     await asyncio.sleep(0.1)
 
-    assert (
-        alert_triggered == expect_alert
-    ), f"Expected alert_triggered to be {expect_alert} for spend={spend}, max_budget={max_budget}"
+    assert alert_triggered == expect_alert, (
+        f"Expected alert_triggered to be {expect_alert} for spend={spend}, max_budget={max_budget}"
+    )
 
 
 @pytest.mark.asyncio
@@ -2515,9 +2491,7 @@ async def test_custom_auth_common_checks_opt_in():
             "prisma_client": None,
             "user_api_key_cache": MagicMock(),
             "proxy_logging_obj": MagicMock(),
-            "general_settings": (
-                {"custom_auth_run_common_checks": True} if flag else {}
-            ),
+            "general_settings": ({"custom_auth_run_common_checks": True} if flag else {}),
             "llm_router": None,
             "user_custom_auth": user_custom_auth,
             "litellm_proxy_admin_name": "admin",
@@ -2589,9 +2563,7 @@ async def test_virtual_key_budget_check_reads_from_spend_counter():
     proxy_logging_obj = ProxyLogging(user_api_key_cache=None)
     proxy_logging_obj.budget_alerts = AsyncMock()
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:key:test-hashed-token":
             return 1.5
         return fallback_spend
@@ -2623,9 +2595,7 @@ async def test_virtual_key_budget_check_fallback_no_counter():
     proxy_logging_obj.budget_alerts = AsyncMock()
 
     # get_current_spend returns fallback_spend when no counter exists
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         return fallback_spend
 
     with patch("litellm.proxy.proxy_server.get_current_spend", mock_get_current_spend):
@@ -2652,9 +2622,7 @@ async def test_team_budget_check_reads_from_spend_counter():
     proxy_logging_obj = ProxyLogging(user_api_key_cache=None)
     proxy_logging_obj.budget_alerts = AsyncMock()
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team:test-team":
             return 1.5
         return fallback_spend
@@ -2679,9 +2647,7 @@ async def test_end_user_budget_check_reads_from_spend_counter():
         litellm_budget_table=LiteLLM_BudgetTable(max_budget=1.0),
     )
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:end_user:customer-1":
             return 1.5
         return fallback_spend
@@ -2707,9 +2673,7 @@ async def test_tag_budget_check_reads_from_spend_counter():
         litellm_budget_table=LiteLLM_BudgetTable(max_budget=1.0),
     )
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:tag:paid-tag":
             return 1.5
         return fallback_spend
@@ -2757,9 +2721,7 @@ async def test_team_member_budget_check_reads_from_spend_counter():
 
     proxy_logging_obj = ProxyLogging(user_api_key_cache=None)
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return 1.5
         return fallback_spend
@@ -2797,9 +2759,7 @@ class TestGuardrailModificationCheck:
 
         team_object = MagicMock()
         team_object.metadata = {}  # no permission
-        return _guardrail_modification_check(
-            request_body=request_body, team_object=team_object
-        )
+        return _guardrail_modification_check(request_body=request_body, team_object=team_object)
 
     def test_noop_when_no_guardrail_keys_present(self):
         # no-op — should return silently
@@ -2847,9 +2807,7 @@ class TestGuardrailModificationCheck:
             return_value=False,
         ):
             with pytest.raises(HTTPException) as exc:
-                self._call(
-                    {"metadata": {"opted_out_global_guardrails": ["some_guardrail"]}}
-                )
+                self._call({"metadata": {"opted_out_global_guardrails": ["some_guardrail"]}})
             assert exc.value.status_code == 403
 
     @pytest.mark.parametrize(
@@ -2983,18 +2941,12 @@ async def test_team_member_budget_check_falls_back_to_team_default_budget_id():
 
     fake_budget_row = MagicMock()
     fake_budget_row.max_budget = 50.0
-    fake_budget_row.dict = MagicMock(
-        return_value={"budget_id": "budget-default", "max_budget": 50.0}
-    )
+    fake_budget_row.dict = MagicMock(return_value={"budget_id": "budget-default", "max_budget": 50.0})
 
     prisma_client = MagicMock()
-    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(
-        return_value=fake_budget_row
-    )
+    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(return_value=fake_budget_row)
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return 70.0
         return fallback_spend
@@ -3085,15 +3037,11 @@ async def test_team_member_budget_check_per_member_override_wins_over_team_defau
     fake_budget_row.max_budget = 50.0
 
     prisma_client = MagicMock()
-    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(
-        return_value=fake_budget_row
-    )
+    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(return_value=fake_budget_row)
 
     mocked_spend = 70.0
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return mocked_spend
         return fallback_spend
@@ -3174,18 +3122,12 @@ async def test_team_member_budget_check_null_clone_falls_back_to_team_default():
 
     fake_default_row = MagicMock()
     fake_default_row.max_budget = 65.0
-    fake_default_row.dict = MagicMock(
-        return_value={"budget_id": "budget-default", "max_budget": 65.0}
-    )
+    fake_default_row.dict = MagicMock(return_value={"budget_id": "budget-default", "max_budget": 65.0})
 
     prisma_client = MagicMock()
-    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(
-        return_value=fake_default_row
-    )
+    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(return_value=fake_default_row)
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return 500.0
         return fallback_spend
@@ -3243,18 +3185,12 @@ async def test_team_member_budget_check_null_clone_with_null_default_skips_enfor
 
     fake_default_row = MagicMock()
     fake_default_row.max_budget = None
-    fake_default_row.dict = MagicMock(
-        return_value={"budget_id": "budget-default", "max_budget": None}
-    )
+    fake_default_row.dict = MagicMock(return_value={"budget_id": "budget-default", "max_budget": None})
 
     prisma_client = MagicMock()
-    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(
-        return_value=fake_default_row
-    )
+    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(return_value=fake_default_row)
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return 1000.0
         return fallback_spend
@@ -3312,18 +3248,12 @@ async def test_team_member_budget_check_zero_team_default_treated_as_no_cap():
     # Team default budget row with max_budget=0.0 (the regression trigger).
     fake_default_row = MagicMock()
     fake_default_row.max_budget = 0.0
-    fake_default_row.dict = MagicMock(
-        return_value={"budget_id": "budget-default", "max_budget": 0.0}
-    )
+    fake_default_row.dict = MagicMock(return_value={"budget_id": "budget-default", "max_budget": 0.0})
 
     prisma_client = MagicMock()
-    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(
-        return_value=fake_default_row
-    )
+    prisma_client.db.litellm_budgettable.find_unique = AsyncMock(return_value=fake_default_row)
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return 0.0
         return fallback_spend
@@ -3381,9 +3311,7 @@ async def test_team_member_budget_check_zero_per_member_row_still_blocks():
     prisma_client = MagicMock()
     prisma_client.db.litellm_budgettable.find_unique = AsyncMock(return_value=None)
 
-    async def mock_get_current_spend(
-        counter_key, fallback_spend, max_budget=None, **kwargs
-    ):
+    async def mock_get_current_spend(counter_key, fallback_spend, max_budget=None, **kwargs):
         if counter_key == "spend:team_member:test-user:test-team":
             return 0.0
         return fallback_spend
@@ -3431,19 +3359,13 @@ def _patch_validation_helpers(monkeypatch, *, end_user=None, user=None, fuzzy=No
     """Stub out the DB helpers resolve_and_validate_end_user_id delegates to."""
     from litellm.proxy.auth import auth_checks
 
-    monkeypatch.setattr(
-        auth_checks, "get_end_user_object", AsyncMock(return_value=end_user)
-    )
+    monkeypatch.setattr(auth_checks, "get_end_user_object", AsyncMock(return_value=end_user))
     monkeypatch.setattr(auth_checks, "get_user_object", AsyncMock(return_value=user))
-    monkeypatch.setattr(
-        auth_checks, "_get_fuzzy_user_object", AsyncMock(return_value=fuzzy)
-    )
+    monkeypatch.setattr(auth_checks, "_get_fuzzy_user_object", AsyncMock(return_value=fuzzy))
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_returns_none_for_none_input(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_returns_none_for_none_input(_validate_flag_on, monkeypatch):
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
 
     _patch_validation_helpers(monkeypatch)
@@ -3478,9 +3400,7 @@ async def test_resolve_end_user_passes_through_when_flag_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_passes_through_when_no_prisma_client(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_passes_through_when_no_prisma_client(_validate_flag_on, monkeypatch):
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
 
     _patch_validation_helpers(monkeypatch)
@@ -3514,9 +3434,7 @@ async def test_resolve_end_user_matches_end_user_table(_validate_flag_on, monkey
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_matches_user_table_by_user_id(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_matches_user_table_by_user_id(_validate_flag_on, monkeypatch):
     from litellm.proxy.auth import auth_checks
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
 
@@ -3534,9 +3452,7 @@ async def test_resolve_end_user_matches_user_table_by_user_id(
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_matches_user_table_by_email(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_matches_user_table_by_email(_validate_flag_on, monkeypatch):
     """Email-shaped ids route through get_user_object with user_email set.
 
     The fuzzy lookup must happen inside get_user_object so it shares the
@@ -3564,9 +3480,7 @@ async def test_resolve_end_user_matches_user_table_by_email(
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_non_email_id_does_not_pass_user_email(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_non_email_id_does_not_pass_user_email(_validate_flag_on, monkeypatch):
     """Non-email ids skip the email fuzzy path to avoid a pointless DB hit."""
     from litellm.proxy.auth import auth_checks
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
@@ -3585,9 +3499,7 @@ async def test_resolve_end_user_non_email_id_does_not_pass_user_email(
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_drops_codex_opaque_identifier(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_drops_codex_opaque_identifier(_validate_flag_on, monkeypatch):
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
 
     _patch_validation_helpers(monkeypatch)  # all helpers return None
@@ -3609,9 +3521,7 @@ async def test_resolve_end_user_drops_codex_opaque_identifier(
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_preserves_id_when_default_budget_configured(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_preserves_id_when_default_budget_configured(_validate_flag_on, monkeypatch):
     """Don't drop unregistered ids when litellm.max_end_user_budget_id is set.
 
     The default end-user budget is applied downstream when the id is present
@@ -3648,9 +3558,7 @@ async def test_resolve_end_user_drops_unknown_email(_validate_flag_on, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_uses_cached_valid_result(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_uses_cached_valid_result(_validate_flag_on, monkeypatch):
     from litellm.proxy.auth import auth_checks
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
 
@@ -3670,9 +3578,7 @@ async def test_resolve_end_user_uses_cached_valid_result(
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_uses_cached_invalid_result(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_uses_cached_invalid_result(_validate_flag_on, monkeypatch):
     from litellm.proxy.auth import auth_checks
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
 
@@ -3691,9 +3597,7 @@ async def test_resolve_end_user_uses_cached_invalid_result(
 
 
 @pytest.mark.asyncio
-async def test_resolve_end_user_swallows_db_errors_and_returns_none(
-    _validate_flag_on, monkeypatch
-):
+async def test_resolve_end_user_swallows_db_errors_and_returns_none(_validate_flag_on, monkeypatch):
     from litellm.proxy.auth import auth_checks
     from litellm.proxy.auth.auth_checks import resolve_and_validate_end_user_id
 
@@ -3810,27 +3714,19 @@ async def test_cache_team_object_writes_team_id_and_invalidates_team_alias():
     )
 
     # (1) team_id-keyed write fires with the refreshed object
-    written_keys = [
-        (c.kwargs.get("key") or c.args[0])
-        for c in cache.async_set_cache.await_args_list
-    ]
+    written_keys = [(c.kwargs.get("key") or c.args[0]) for c in cache.async_set_cache.await_args_list]
     assert written_keys == ["team_id:team-1234"], (
         "Only the team_id-keyed write should fire; the alias key must be "
         "deleted, NOT written. "
         f"Got writes: {written_keys}"
     )
-    written_value = (
-        cache.async_set_cache.await_args.kwargs.get("value")
-        or cache.async_set_cache.await_args.args[1]
-    )
+    written_value = cache.async_set_cache.await_args.kwargs.get("value") or cache.async_set_cache.await_args.args[1]
     assert written_value is team_table
 
     # (2) team_alias-keyed entry is deleted in BOTH the in-memory cache
     # and the Redis dual cache (mirrors _delete_cache_key_object pattern).
     cache.delete_cache.assert_called_once_with(key="team_alias:H-Capacity")
-    logging_obj.internal_usage_cache.dual_cache.async_delete_cache.assert_awaited_once_with(
-        key="team_alias:H-Capacity"
-    )
+    logging_obj.internal_usage_cache.dual_cache.async_delete_cache.assert_awaited_once_with(key="team_alias:H-Capacity")
 
     # ===== team_alias is None: no alias-key operation =====
     aliasless = LiteLLM_TeamTableCachedObj(**{**base_team_row, "team_alias": None})
@@ -3849,10 +3745,7 @@ async def test_cache_team_object_writes_team_id_and_invalidates_team_alias():
 
     cache2.delete_cache.assert_not_called()
     logging_obj2.internal_usage_cache.dual_cache.async_delete_cache.assert_not_awaited()
-    written_keys_aliasless = [
-        (c.kwargs.get("key") or c.args[0])
-        for c in cache2.async_set_cache.await_args_list
-    ]
+    written_keys_aliasless = [(c.kwargs.get("key") or c.args[0]) for c in cache2.async_set_cache.await_args_list]
     assert written_keys_aliasless == ["team_id:team-no-alias"]
 
 
@@ -4264,8 +4157,9 @@ async def test_common_checks_budget_reads_run_concurrently():
 
     probe = _BudgetSpendConcurrencyProbe(expected=4)
 
-    with patch("litellm.proxy.proxy_server.prisma_client", None), patch(
-        "litellm.proxy.proxy_server.get_current_spend", probe
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch("litellm.proxy.proxy_server.get_current_spend", probe),
     ):
         task = asyncio.create_task(
             common_checks(
@@ -4333,8 +4227,9 @@ async def test_common_checks_budget_gather_raises_highest_priority_scope():
             request=MagicMock(spec=Request),
         )
 
-    with patch("litellm.proxy.proxy_server.prisma_client", None), patch(
-        "litellm.proxy.proxy_server.get_current_spend", _spend_by_counter
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch("litellm.proxy.proxy_server.get_current_spend", _spend_by_counter),
     ):
         # Both team and end-user over budget: team wins on priority.
         _spend_by_counter.team = 999.0
@@ -4369,8 +4264,9 @@ async def test_common_checks_personal_user_budget_blocks_in_gather():
     async def _spend_by_counter(counter_key, fallback_spend, max_budget=None, **kwargs):
         return 999.0 if counter_key == "spend:user:u1" else 0.0
 
-    with patch("litellm.proxy.proxy_server.prisma_client", None), patch(
-        "litellm.proxy.proxy_server.get_current_spend", _spend_by_counter
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch("litellm.proxy.proxy_server.get_current_spend", _spend_by_counter),
     ):
         with pytest.raises(litellm.BudgetExceededError) as over:
             await common_checks(

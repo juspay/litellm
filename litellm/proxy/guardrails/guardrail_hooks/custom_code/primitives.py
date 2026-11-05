@@ -6,8 +6,9 @@ and provide safe, sandboxed functionality for common guardrail operations.
 """
 
 import json
+import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -78,6 +79,67 @@ def modify(
 # Regex Primitives
 # =============================================================================
 
+# Size caps for regex inputs. A pathological pattern (catastrophic
+# backtracking) or a multi-megabyte document can otherwise pin a worker for
+# the full guardrail deadline even though the caller enforces a 5s timeout:
+# the cap bounds the work before it starts instead of relying on the
+# deadline to interrupt it.
+_MAX_REGEX_TEXT_CHARS = 1_000_000
+_MAX_REGEX_PATTERN_CHARS = 1_000
+
+# Bounds for json_schema_valid inputs. jsonschema's $ref resolution can
+# recurse without a bound, so the schema is walked (iteratively, with the
+# same depth cap the fallback validator uses) and refused when it nests
+# deeper or serializes larger than these caps.
+_MAX_JSON_SCHEMA_CHARS = 1_000_000
+_MAX_JSON_SCHEMA_DEPTH = 50
+
+
+def _json_schema_within_limits(schema: object) -> bool:
+    """True if the schema is a JSON object within the depth/size caps.
+
+    Iterative walk with an explicit depth cap: a deeply nested or
+    self-referential schema (``$ref`` cycles) cannot drive unbounded
+    recursion here or in the jsonschema library afterwards.
+    """
+    if not isinstance(schema, dict):
+        verbose_proxy_logger.warning(f"Custom code json_schema_valid refused non-object schema: {type(schema)!r}")
+        return False
+    if len(json.dumps(schema)) > _MAX_JSON_SCHEMA_CHARS:
+        verbose_proxy_logger.warning(
+            f"Custom code json_schema_valid refused schema of {len(json.dumps(schema))} chars (limit {_MAX_JSON_SCHEMA_CHARS})"
+        )
+        return False
+    stack: list[tuple[object, int]] = [(schema, 0)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _MAX_JSON_SCHEMA_DEPTH:
+            verbose_proxy_logger.warning(
+                f"Custom code json_schema_valid refused schema nested deeper than {_MAX_JSON_SCHEMA_DEPTH}"
+            )
+            return False
+        if isinstance(node, dict):
+            dict_node = cast("dict[object, object]", node)
+            stack.extend((v, depth + 1) for v in dict_node.values())
+        elif isinstance(node, list):
+            list_node = cast("list[object]", node)
+            stack.extend((v, depth + 1) for v in list_node)
+    return True
+
+
+def _regex_inputs_within_limits(text: str, pattern: str) -> bool:
+    if len(text) > _MAX_REGEX_TEXT_CHARS:
+        verbose_proxy_logger.warning(
+            f"Custom code regex primitive refused text of {len(text)} chars (limit {_MAX_REGEX_TEXT_CHARS})"
+        )
+        return False
+    if len(pattern) > _MAX_REGEX_PATTERN_CHARS:
+        verbose_proxy_logger.warning(
+            f"Custom code regex primitive refused pattern of {len(pattern)} chars (limit {_MAX_REGEX_PATTERN_CHARS})"
+        )
+        return False
+    return True
+
 
 def regex_match(text: str, pattern: str, flags: int = 0) -> bool:
     """
@@ -92,6 +154,8 @@ def regex_match(text: str, pattern: str, flags: int = 0) -> bool:
         True if pattern matches, False otherwise
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return False
         return bool(re.search(pattern, text, flags))
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_match error: {e}")
@@ -111,6 +175,8 @@ def regex_match_all(text: str, pattern: str, flags: int = 0) -> bool:
         True if pattern matches entire text, False otherwise
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return False
         return bool(re.fullmatch(pattern, text, flags))
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_match_all error: {e}")
@@ -131,6 +197,8 @@ def regex_replace(text: str, pattern: str, replacement: str, flags: int = 0) -> 
         The text with replacements applied
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return text
         return re.sub(pattern, replacement, text, flags=flags)
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_replace error: {e}")
@@ -150,6 +218,8 @@ def regex_find_all(text: str, pattern: str, flags: int = 0) -> List[str]:
         List of all matches
     """
     try:
+        if not _regex_inputs_within_limits(text, pattern):
+            return []
         return re.findall(pattern, text, flags)
     except re.error as e:
         verbose_proxy_logger.warning(f"Starlark regex_find_all error: {e}")
@@ -159,6 +229,11 @@ def regex_find_all(text: str, pattern: str, flags: int = 0) -> List[str]:
 # =============================================================================
 # JSON Primitives
 # =============================================================================
+
+# Size cap for JSON inputs: a multi-megabyte or deeply nested document makes
+# json.loads (and jsonschema validation over the parsed value) expensive
+# enough to pin a worker for the full guardrail deadline.
+_MAX_JSON_CHARS = 1_000_000
 
 
 def json_parse(text: str) -> Optional[Any]:
@@ -172,6 +247,11 @@ def json_parse(text: str) -> Optional[Any]:
         Parsed Python object, or None if parsing fails
     """
     try:
+        if len(text) > _MAX_JSON_CHARS:
+            verbose_proxy_logger.warning(
+                f"Custom code json_parse refused input of {len(text)} chars (limit {_MAX_JSON_CHARS})"
+            )
+            return None
         return json.loads(text)
     except (json.JSONDecodeError, TypeError) as e:
         verbose_proxy_logger.debug(f"Starlark json_parse error: {e}")
@@ -207,6 +287,8 @@ def json_schema_valid(obj: Any, schema: Dict[str, Any]) -> bool:
         True if valid, False otherwise
     """
     try:
+        if not _json_schema_within_limits(schema):
+            return False
         # Try to import jsonschema, fall back to basic validation if not available
         try:
             import jsonschema
@@ -357,6 +439,57 @@ _HTTP_DEFAULT_TIMEOUT = 30.0
 # Maximum allowed timeout (in seconds)
 _HTTP_MAX_TIMEOUT = 60.0
 
+# Optional egress allowlist for guardrail HTTP primitives. When
+# CUSTOM_CODE_HTTP_ALLOWED_HOSTS is set (comma-separated hostnames, e.g.
+# "moderation.internal,api.example.com"), http_request/http_get/http_post
+# refuse any URL whose host is not listed. Hosts listed here are
+# admin-trusted to receive guardrail traffic, including private-range
+# destinations. When unset, every destination still passes SSRF
+# validation (validate_url), so loopback, link-local, RFC1918 and
+# cloud-metadata addresses are refused.
+_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV = "CUSTOM_CODE_HTTP_ALLOWED_HOSTS"
+
+# Maximum redirect hops validated before giving up (mirrors url_utils).
+_HTTP_MAX_REDIRECTS = 10
+
+
+def _http_host_is_allowed(url: str) -> bool:
+    """True when CUSTOM_CODE_HTTP_ALLOWED_HOSTS is unset (SSRF-validated
+    egress) or the URL's host is listed in it. Exact host match only — no
+    wildcards."""
+    raw = os.getenv(_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV, "")
+    if not raw:
+        return True
+    allowed = {host.strip().lower() for host in raw.split(",") if host.strip()}
+    if not allowed:
+        return True
+    host = get_url_domain(url)
+    if host is None:
+        return False
+    return host.lower() in allowed
+
+
+def _http_allowlist_is_configured() -> bool:
+    raw = os.getenv(_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV, "")
+    return bool(raw.strip())
+
+
+def _validate_http_destination(url: str) -> Optional[str]:
+    """SSRF-validate a guardrail HTTP destination, honoring the admin
+    allowlist. Returns the URL to connect to (rewritten to a validated IP for
+    plain HTTP so DNS rebinding cannot swap the destination after the check),
+    or None when the destination must be refused."""
+    if _http_allowlist_is_configured() and _http_host_is_allowed(url):
+        return url
+    from litellm.litellm_core_utils.url_utils import SSRFError, validate_url
+
+    try:
+        validated_url, _host_header = validate_url(url)
+    except (SSRFError, ValueError) as e:
+        verbose_proxy_logger.warning(f"Custom code http_request blocked destination: {e}")
+        return None
+    return validated_url
+
 
 def _http_error_response(error: str) -> Dict[str, Any]:
     """Create a standardized error response for HTTP requests."""
@@ -450,6 +583,21 @@ async def http_request(
     if not is_valid_url(url):
         return _http_error_response(f"Invalid URL: {url}")
 
+    # Enforce the optional egress allowlist, and otherwise run the
+    # destination through SSRF validation so loopback, link-local, RFC1918
+    # and cloud-metadata addresses are refused even without an allowlist.
+    if _http_allowlist_is_configured() and not _http_host_is_allowed(url):
+        host = get_url_domain(url) or url
+        return _http_error_response(
+            f"Host '{host}' is not in the guardrail HTTP allowlist ({_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV})"
+        )
+    validated_url = _validate_http_destination(url)
+    if validated_url is None:
+        return _http_error_response(
+            "Destination refused: it resolves to a blocked or private address. "
+            f"Set {_CUSTOM_CODE_HTTP_ALLOWED_HOSTS_ENV} to allow an internal service."
+        )
+
     # Validate and normalize method
     method = method.upper()
     allowed_methods = {"GET", "POST", "PUT", "DELETE", "PATCH"}
@@ -469,7 +617,7 @@ async def http_request(
     )
 
     try:
-        response = await _execute_http_request(client, method, url, headers, body, timeout)
+        response = await _execute_http_request_validated(client, method, url, validated_url, headers, body, timeout)
         return _http_success_response(response)
 
     except httpx.TimeoutException as e:
@@ -486,29 +634,51 @@ async def http_request(
         return _http_error_response(f"Unexpected error: {str(e)}")
 
 
-async def _execute_http_request(
+async def _execute_http_request_validated(
     client: Any,
     method: str,
-    url: str,
+    original_url: str,
+    validated_url: str,
     headers: Optional[Dict[str, str]],
     body: Optional[Any],
     timeout: float,
 ) -> httpx.Response:
-    """Execute the HTTP request using the appropriate client method."""
-    json_body, data_body = _prepare_http_body(body)
+    """Execute the request with SSRF validation on every redirect hop.
 
-    if method == "GET":
-        return await client.get(url=url, headers=headers)
-    elif method == "POST":
-        return await client.post(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    elif method == "PUT":
-        return await client.put(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    elif method == "DELETE":
-        return await client.delete(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    elif method == "PATCH":
-        return await client.patch(url=url, headers=headers, json=json_body, data=data_body, timeout=timeout)
-    else:
-        raise ValueError(f"Unsupported HTTP method: {method}")
+    The pooled client follows redirects by default, which would let a
+    first-hop server bounce the request to an internal address after the
+    initial URL passed validation. Redirects are therefore followed
+    manually here: each Location target goes through the same destination
+    validation before the next request is sent.
+    """
+    json_body, data_body = _prepare_http_body(body)
+    current_url = validated_url
+    resolved_url = original_url
+    for _ in range(_HTTP_MAX_REDIRECTS):
+        req = client.client.build_request(
+            method=method,
+            url=current_url,
+            headers=headers,
+            json=json_body,
+            data=data_body,
+            timeout=timeout,
+        )
+        response = await client.client.send(req, follow_redirects=False)
+        if not response.is_redirect:
+            return response
+        location = response.headers.get("location", "")
+        if not isinstance(location, str) or not location:
+            return response
+        resolved_url = str(httpx.URL(resolved_url).join(location))
+        next_validated = _validate_http_destination(resolved_url)
+        if next_validated is None:
+            verbose_proxy_logger.warning(
+                f"Custom code http_request refused redirect to a blocked destination: {resolved_url}"
+            )
+            return response
+        current_url = next_validated
+    verbose_proxy_logger.warning("Custom code http_request exceeded the maximum number of redirects")
+    raise httpx.TooManyRedirects(f"Exceeded {_HTTP_MAX_REDIRECTS} redirects", request=req)
 
 
 async def http_get(

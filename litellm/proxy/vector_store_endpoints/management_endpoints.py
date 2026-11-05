@@ -261,7 +261,12 @@ async def _resolve_embedding_config_from_db(embedding_model: str, prisma_client)
                     for k, v in model_params.items():
                         if isinstance(v, str):
                             # Decrypt value - returns original value if decryption fails or no key is set
-                            decrypted_value = decrypt_value_helper(value=v, key=k, return_original_value=True)
+                            decrypted_value = decrypt_value_helper(
+                                value=v,
+                                key=k,
+                                return_original_value=True,
+                                context=f"LiteLLM_ProxyModelTable:litellm_params.{k}",
+                            )
                             decrypted_params[k] = decrypted_value
                         else:
                             decrypted_params[k] = v

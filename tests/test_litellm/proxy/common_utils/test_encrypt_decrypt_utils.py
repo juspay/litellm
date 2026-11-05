@@ -6,12 +6,17 @@ gate, and the backward-compatibility guarantees that let legacy XSalsa20-Poly130
 (nacl) ciphertext and new AES values coexist and decrypt correctly.
 """
 
+import re
+
 import pytest
 
 from litellm.proxy import proxy_server
 from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     _V2_GCM_PREFIX,
+    _V3_HKDF_PREFIX,
+    decrypt_bearer_token,
     decrypt_value_helper,
+    encrypt_bearer_token,
     encrypt_value_helper,
 )
 
@@ -31,20 +36,31 @@ def _salt_key(monkeypatch):
 
 
 def test_aes_gcm_round_trip(monkeypatch):
-    """A value written under AES-256-GCM is tagged v2:gcm: and decrypts back."""
+    """A value written under AES-256-GCM is tagged v3:hkdf: and decrypts back."""
     _use_aes(monkeypatch)
 
     ct = encrypt_value_helper("super-secret")
 
-    assert ct.startswith(_V2_GCM_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == "super-secret"
 
 
-def test_default_is_legacy_algorithm(monkeypatch):
-    """With no config, writes stay on the legacy algorithm (no v2: marker)."""
+def test_default_is_aes_algorithm(monkeypatch):
+    """With no config, new writes use AES-256-GCM + HKDF (v3: marker)."""
+    ct = encrypt_value_helper("fresh-secret")
+
+    assert ct.startswith(_V3_HKDF_PREFIX)
+    assert decrypt_value_helper(ct, key="t") == "fresh-secret"
+
+
+def test_explicit_legacy_algorithm_opt_in(monkeypatch):
+    """general_settings.encryption_algorithm: xsalsa20-poly1305 keeps legacy writes."""
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
     ct = encrypt_value_helper("legacy-secret")
 
-    assert not ct.startswith(_V2_GCM_PREFIX)
+    assert not ct.startswith(_V2_GCM_PREFIX) and not ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == "legacy-secret"
 
 
@@ -54,13 +70,16 @@ def test_legacy_nacl_value_still_decrypts_after_flag_flip(monkeypatch):
     This is the mixed-format readback guarantee: decrypt is format-detecting, so
     flipping the flag forward never strands previously-written data.
     """
-    legacy = encrypt_value_helper("legacy-secret")  # default = xsalsa20
-    assert not legacy.startswith(_V2_GCM_PREFIX)
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
+    legacy = encrypt_value_helper("legacy-secret")  # explicit legacy opt-in
+    assert not legacy.startswith(_V2_GCM_PREFIX) and not legacy.startswith(_V3_HKDF_PREFIX)
 
     _use_aes(monkeypatch)
-    # New writes are now AES, but the old value must still come back.
+    # The old value must still come back, whatever new writes use.
     assert decrypt_value_helper(legacy, key="t") == "legacy-secret"
-    assert encrypt_value_helper("fresh").startswith(_V2_GCM_PREFIX)
+    assert encrypt_value_helper("fresh").startswith(_V3_HKDF_PREFIX)
 
 
 def test_v2_prefix_is_idempotent_marker(monkeypatch):
@@ -72,11 +91,11 @@ def test_v2_prefix_is_idempotent_marker(monkeypatch):
     _use_aes(monkeypatch)
 
     ct = encrypt_value_helper("secret")
-    assert ct.startswith(_V2_GCM_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
 
     # Round-tripping does not change the plaintext, and the marker is stable.
     again = encrypt_value_helper(decrypt_value_helper(ct, key="t"))
-    assert again.startswith(_V2_GCM_PREFIX)
+    assert again.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(again, key="t") == "secret"
 
 
@@ -102,7 +121,7 @@ def test_empty_string_round_trips_under_aes(monkeypatch):
     _use_aes(monkeypatch)
 
     ct = encrypt_value_helper("")
-    assert ct.startswith(_V2_GCM_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == ""
 
 
@@ -126,16 +145,17 @@ def test_callback_prefix_composes_with_v2(monkeypatch):
 
     assert stored.startswith(_CALLBACK_VAR_ENCRYPTED_PREFIX)
     inner = stored[len(_CALLBACK_VAR_ENCRYPTED_PREFIX) :]
-    assert inner.startswith(_V2_GCM_PREFIX)
+    assert inner.startswith("v4:ctx:")
+    assert "metadata.callback_vars.gcs_path_service_account" in inner
     assert _decrypt_or_passthrough("gcs_path_service_account", stored) == "my-sa-secret"
 
 
-def test_unknown_algorithm_falls_back_to_legacy(monkeypatch):
-    """An unrecognized encryption_algorithm value does not produce v2 writes."""
+def test_unknown_algorithm_falls_back_to_aes(monkeypatch):
+    """An unrecognized encryption_algorithm value does not produce legacy writes."""
     monkeypatch.setattr(proxy_server, "general_settings", {"encryption_algorithm": "rot13"})
 
     ct = encrypt_value_helper("secret")
-    assert not ct.startswith(_V2_GCM_PREFIX)
+    assert ct.startswith(_V3_HKDF_PREFIX)
     assert decrypt_value_helper(ct, key="t") == "secret"
 
 
@@ -185,3 +205,166 @@ def test_decrypt_failure_debug_log_omits_raw_value(monkeypatch):
         "the failing key should still be named in the breadcrumb"
     )
     assert result == secret
+
+
+def test_bearer_token_opens_only_under_its_own_prefix():
+    token = encrypt_bearer_token("session", prefix="kind_a_")
+    relabeled = "kind_b_" + token.removeprefix("kind_a_")
+
+    assert decrypt_bearer_token(token, prefix="kind_a_") == "session"
+    assert decrypt_bearer_token(token, prefix="kind_b_") is None
+    assert decrypt_bearer_token(relabeled, prefix="kind_b_") is None
+
+
+@pytest.mark.parametrize("use_aes", [False, True])
+def test_stored_value_is_not_a_bearer_token_even_when_reshaped(monkeypatch, use_aes: bool):
+    if use_aes:
+        _use_aes(monkeypatch)
+    stored = encrypt_value_helper("stored-secret")
+
+    for candidate in (stored, "kind_a_" + stored.removeprefix(_V2_GCM_PREFIX).rstrip("=")):
+        assert decrypt_bearer_token(candidate, prefix="kind_a_") is None
+
+
+@pytest.mark.parametrize("length", range(6))
+def test_bearer_token_uses_only_header_safe_characters(length: int):
+    token = encrypt_bearer_token("x" * length, prefix="kind_a_")
+
+    assert re.fullmatch(r"kind_a_[A-Za-z0-9_-]+", token), token
+    assert decrypt_bearer_token(token, prefix="kind_a_") == "x" * length
+
+
+def test_v3_hkdf_and_v2_gcm_values_coexist(monkeypatch):
+    """Mixed-format readback: a v2:gcm: value written before the HKDF switch
+    still decrypts after new writes produce v3:hkdf: values."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _decrypt_aes_gcm
+
+    _use_aes(monkeypatch)
+    v2_value = _encrypt_aes_gcm_with_legacy_kdf("old-secret")
+
+    new_value = encrypt_value_helper("new-secret")
+
+    assert new_value.startswith(_V3_HKDF_PREFIX)
+    assert _decrypt_aes_gcm(v2_value, "sk-salt-aes-1234") == "old-secret"
+    assert decrypt_value_helper(new_value, key="t") == "new-secret"
+
+
+def _encrypt_aes_gcm_with_legacy_kdf(value: str) -> str:
+    """Write a value in the pre-HKDF v2:gcm: wire format for readback tests."""
+    import base64
+
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import (
+        _V2_GCM_PREFIX,
+        _derive_key,
+        _seal_aes_gcm,
+    )
+
+    sealed = _seal_aes_gcm(value=value, key=_derive_key("sk-salt-aes-1234"), aad=None)
+    return _V2_GCM_PREFIX + base64.urlsafe_b64encode(sealed).decode("utf-8")
+
+
+def test_hkdf_derivation_differs_from_single_sha256(monkeypatch):
+    """The HKDF-derived key must not equal the legacy single-pass SHA-256 key,
+    so v3 ciphertext is never decryptable with the v2 KDF (and vice versa)."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _derive_key, _derive_key_hkdf
+
+    assert _derive_key_hkdf("sk-salt-aes-1234") != _derive_key("sk-salt-aes-1234")
+
+
+def test_hkdf_info_binds_derivation_to_purpose(monkeypatch):
+    """Same salt, different HKDF info must derive different keys, so the
+    at-rest key cannot be reused as, e.g., a token-signing key."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _HKDF_INFO, _derive_key_hkdf
+
+    other = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"other-purpose").derive(
+        b"sk-salt-aes-1234"
+    )
+    assert other != _derive_key_hkdf("sk-salt-aes-1234")
+    assert _HKDF_INFO == b"litellm-at-rest-encryption-v1"
+
+
+def test_salt_key_fallback_refused_on_db_connected_proxy(monkeypatch):
+    """The master-key fallback is refused once a DB is connected.
+
+    Deriving the at-rest key from LITELLM_MASTER_KEY couples credential
+    encryption to a bearer credential; a DB-connected proxy must set
+    LITELLM_SALT_KEY instead of silently getting the fallback.
+    """
+    import pytest as _pytest
+
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.setattr(proxy_server, "master_key", "sk-master-fallback")
+    monkeypatch.setattr(proxy_server, "prisma_client", object())
+    monkeypatch.delenv("LITELLM_ALLOW_SALT_KEY_FALLBACK", raising=False)
+
+    with _pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+        _get_salt_key()
+
+
+def test_salt_key_fallback_allowed_via_explicit_opt_in(monkeypatch):
+    """LITELLM_ALLOW_SALT_KEY_FALLBACK=1 restores the legacy fallback."""
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.setattr(proxy_server, "master_key", "sk-master-fallback")
+    monkeypatch.setattr(proxy_server, "prisma_client", object())
+    monkeypatch.setenv("LITELLM_ALLOW_SALT_KEY_FALLBACK", "1")
+
+    assert _get_salt_key() == "sk-master-fallback"
+
+
+def test_salt_key_fallback_refused_without_db(monkeypatch):
+    """Without a DB connection the master-key fallback is still refused:
+    LITELLM_SALT_KEY is required for at-rest encryption regardless of DB
+    state, so a not-yet-connected or SDK-only deployment cannot silently
+    encrypt credentials under the bearer master key."""
+    import pytest as _pytest
+
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_ALLOW_SALT_KEY_FALLBACK", raising=False)
+    monkeypatch.setattr(proxy_server, "master_key", "sk-master-fallback")
+    monkeypatch.setattr(proxy_server, "prisma_client", None)
+
+    with _pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+        _get_salt_key()
+
+
+def test_context_bound_value_round_trips_under_its_context(monkeypatch):
+    """A context-bound v4 ciphertext decrypts only under its own context."""
+    _use_aes(monkeypatch)
+
+    ct = encrypt_value_helper("secret", context="LiteLLM_ProxyModelTable:api_key")
+
+    assert ct.startswith("v4:ctx:")
+    assert (
+        decrypt_value_helper(ct, key="t", context="LiteLLM_ProxyModelTable:api_key")
+        == "secret"
+    )
+
+
+@pytest.mark.parametrize(
+    "wrong_context",
+    ["LiteLLM_CredentialsTable:credential_values", "LiteLLM_ProxyModelTable:model_key", None],
+)
+def test_context_bound_value_cannot_transplant_between_fields(monkeypatch, wrong_context):
+    """Replay protection: a ciphertext written for one column fails in another.
+
+    A value encrypted for the model table's api_key column must fail
+    authentication when read as a credentials-table value (or context-free),
+    so a DB write cannot silently move secrets between records/fields.
+    """
+    _use_aes(monkeypatch)
+
+    ct = encrypt_value_helper("secret", context="LiteLLM_ProxyModelTable:api_key")
+
+    result = decrypt_value_helper(
+        ct, key="t", exception_type="debug", return_original_value=False, context=wrong_context
+    )
+    assert result is None

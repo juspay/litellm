@@ -19,7 +19,10 @@ from litellm.litellm_core_utils.initialize_dynamic_callback_params import (
     iter_client_callback_metadata_dicts,
 )
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
-from litellm.litellm_core_utils.url_utils import is_url_destination_allowed_by_host
+from litellm.litellm_core_utils.url_utils import (
+    is_url_destination_allowed_by_host,
+    provider_url_destination_candidates,
+)
 from litellm.proxy._types import (
     AddTeamCallback,
     CommonProxyErrors,
@@ -234,23 +237,26 @@ def _reject_url_valued_destinations(data: Dict[str, Any]) -> None:
     allowed_hosts = getattr(litellm, "provider_url_destination_allowed_hosts", []) or []
     for field in _URL_DESTINATION_REQUEST_FIELDS:
         value = data.get(field)
-        if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+        if not isinstance(value, str):
             continue
-        if is_url_destination_allowed_by_host(value, allowed_hosts):
-            continue
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "invalid_request",
-                "param": field,
-                "message": (
-                    f"URL-valued '{field}' is not allowed. Configure custom "
-                    "endpoints with api_base instead, or add the destination "
-                    "host to `provider_url_destination_allowed_hosts` in "
-                    "litellm_settings."
-                ),
-            },
-        )
+        for candidate in provider_url_destination_candidates(value):
+            if not candidate.lower().startswith(("http://", "https://")):
+                continue
+            if is_url_destination_allowed_by_host(candidate, allowed_hosts):
+                continue
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_request",
+                    "param": field,
+                    "message": (
+                        f"URL-valued '{field}' is not allowed. Configure custom "
+                        "endpoints with api_base instead, or add the destination "
+                        "host to `provider_url_destination_allowed_hosts` in "
+                        "litellm_settings."
+                    ),
+                },
+            )
 
 
 def _strip_untrusted_request_header_controls(
@@ -2238,9 +2244,7 @@ def _apply_vision_fallback_if_needed(
             return data
 
         # Apply fallback
-        verbose_proxy_logger.info(
-            f"Vision fallback applied: '{requested_model}' -> '{vision_fallback_model}'"
-        )
+        verbose_proxy_logger.info(f"Vision fallback applied: '{requested_model}' -> '{vision_fallback_model}'")
 
         # Store original model in metadata for tracking
         _metadata_name = "metadata"
@@ -2252,9 +2256,7 @@ def _apply_vision_fallback_if_needed(
         data["model"] = vision_fallback_model
 
     except Exception as e:
-        verbose_proxy_logger.debug(
-            f"Vision fallback check failed for '{requested_model}': {e}"
-        )
+        verbose_proxy_logger.debug(f"Vision fallback check failed for '{requested_model}': {e}")
 
     return data
 

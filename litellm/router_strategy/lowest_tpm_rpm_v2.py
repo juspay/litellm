@@ -436,7 +436,7 @@ class LowestTPMLoggingHandler_v2(BaseRoutingStrategy, CustomLogger):
         else:
             return None
 
-    async def async_get_available_deployments(  # noqa: PLR0915
+    async def async_get_available_deployments(
         self,
         model_group: str,
         healthy_deployments: list,

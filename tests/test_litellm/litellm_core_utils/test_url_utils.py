@@ -19,9 +19,7 @@ def mock_dns_public(monkeypatch):
     """Resolve any hostname to 93.184.216.34 (public)."""
 
     def fake_getaddrinfo(host, port, *args, **kwargs):
-        return [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 80))
-        ]
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 80))]
 
     monkeypatch.setattr(url_utils.socket, "getaddrinfo", fake_getaddrinfo)
 
@@ -163,9 +161,7 @@ class TestValidateUrl:
 
     def test_blocks_localhost_hostname(self, monkeypatch):
         def fake(host, port, *a, **kw):
-            return [
-                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port or 80))
-            ]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port or 80))]
 
         monkeypatch.setattr(url_utils.socket, "getaddrinfo", fake)
         with pytest.raises(SSRFError):
@@ -175,17 +171,13 @@ class TestValidateUrl:
         with pytest.raises(SSRFError):
             validate_url("http://[::1]/")
 
-    def test_https_rewrites_when_ssl_verify_disabled(
-        self, monkeypatch, mock_dns_public
-    ):
+    def test_https_rewrites_when_ssl_verify_disabled(self, monkeypatch, mock_dns_public):
         monkeypatch.setattr(litellm, "ssl_verify", False)
         rewritten, host = validate_url("https://example.com/image.png")
         assert host == "example.com"
         assert "example.com" not in rewritten  # rewritten to IP
 
-    def test_https_not_rewritten_when_ssl_verify_enabled(
-        self, monkeypatch, mock_dns_public
-    ):
+    def test_https_not_rewritten_when_ssl_verify_enabled(self, monkeypatch, mock_dns_public):
         monkeypatch.setattr(litellm, "ssl_verify", True)
         rewritten, host = validate_url("https://example.com/image.png")
         assert rewritten == "https://example.com/image.png"
@@ -262,9 +254,7 @@ class TestRedirectHostnamePreservation:
 
     def test_relative_redirect_preserves_hostname_for_next_hop(self, monkeypatch):
         def fake(host, port, *a, **kw):
-            return [
-                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))
-            ]
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port))]
 
         monkeypatch.setattr(url_utils.socket, "getaddrinfo", fake)
 
@@ -301,8 +291,10 @@ class TestRedirectHostnamePreservation:
 
 class TestValidationMasterSwitch:
     def test_disabled_bypasses_fetch_in_safe_get(self, monkeypatch):
-        """When user_url_validation is False, safe_get delegates to client.get without validation."""
+        """When user_url_validation is False, safe_get delegates to client.get
+        without validation, does NOT follow redirects, and logs the bypass."""
         monkeypatch.setattr(litellm, "user_url_validation", False)
+        url_utils._warn_validation_bypass_once.cache_clear()
 
         calls = []
 
@@ -317,7 +309,135 @@ class TestValidationMasterSwitch:
 
         url_utils.safe_get(FakeClient(), "http://127.0.0.1/internal")
         assert calls and calls[0][0] == "http://127.0.0.1/internal"
-        assert calls[0][1].get("follow_redirects") is True
+        assert calls[0][1].get("follow_redirects") is False
+
+    def test_disabled_bypass_warns_once(self, monkeypatch, caplog):
+        """The bypass fires a loud warning the first time it is used."""
+        import logging
+
+        import litellm as _litellm
+
+        monkeypatch.setattr(_litellm, "user_url_validation", False)
+        url_utils._warn_validation_bypass_once.cache_clear()
+
+        class FakeClient:
+            def get(self, url, **kwargs):
+                class R:
+                    is_redirect = False
+
+                return R()
+
+        class FakeAsyncClient:
+            async def get(self, url, **kwargs):
+                class R:
+                    is_redirect = False
+
+                return R()
+
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            url_utils.safe_get(FakeClient(), "http://127.0.0.1/internal")
+            assert url_utils._warn_validation_bypass_once.cache_info().currsize == 1
+
+        warnings = [r for r in caplog.records if "user_url_validation is False" in r.message]
+        assert len(warnings) == 1
+
+        # Second fetch: no additional warning.
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            import asyncio
+
+            asyncio.run(url_utils.async_safe_get(FakeAsyncClient(), "http://127.0.0.1/internal"))
+        warnings = [r for r in caplog.records if "user_url_validation is False" in r.message]
+        assert len(warnings) == 1
+
+    def test_disabled_bypass_post_refuses_redirects(self, monkeypatch):
+        monkeypatch.setattr(litellm, "user_url_validation", False)
+        url_utils._warn_validation_bypass_once()  # pre-arm the once-per-process warning
+
+        calls = []
+
+        class FakeAsyncClient:
+            async def post(self, url, **kwargs):
+                calls.append((url, kwargs))
+
+                class R:
+                    pass
+
+                return R()
+
+        import asyncio
+
+        asyncio.run(url_utils.async_safe_post(FakeAsyncClient(), "http://127.0.0.1/internal"))
+        assert calls and calls[0][1].get("follow_redirects") is False
+
+    def test_async_safe_post_unwraps_http_handler(self, monkeypatch):
+        """Regression: AsyncHTTPHandler.post does not accept follow_redirects
+        (or arbitrary kwargs); passing the handler to async_safe_post raised
+        TypeError before any request went out, breaking MCP token exchange and
+        dynamic client registration. The helper must unwrap the handler to its
+        underlying httpx.AsyncClient so the no-redirect policy is enforced on
+        a client whose post() accepts it."""
+        monkeypatch.setattr(litellm, "user_url_validation", False)
+        url_utils._warn_validation_bypass_once()  # pre-arm the once-per-process warning
+
+        calls = []
+
+        class FakeUnderlyingAsyncClient:
+            async def post(self, url, **kwargs):
+                calls.append((url, kwargs))
+
+                class R:
+                    pass
+
+                return R()
+
+        class FakeAsyncHTTPHandler:
+            """Mirrors AsyncHTTPHandler: .client is the real httpx client,
+            .post has a closed signature with no **kwargs."""
+
+            def __init__(self):
+                self.client = FakeUnderlyingAsyncClient()
+
+            async def post(self, url, data=None, json=None, headers=None):
+                raise AssertionError("async_safe_post must not call AsyncHTTPHandler.post directly")
+
+        import asyncio
+
+        asyncio.run(url_utils.async_safe_post(FakeAsyncHTTPHandler(), "http://127.0.0.1/internal", data={"a": 1}))
+        assert calls and calls[0][1].get("follow_redirects") is False
+
+    def test_async_safe_post_validated_path_unwraps_http_handler(self, monkeypatch):
+        """The validated (non-bypass) path must also unwrap the handler."""
+        monkeypatch.setattr(litellm, "user_url_validation", True)
+        monkeypatch.setattr(litellm, "user_url_allowed_hosts", [])
+
+        calls = []
+
+        class FakeUnderlyingAsyncClient:
+            async def post(self, url, **kwargs):
+                calls.append((url, kwargs))
+
+                class R:
+                    pass
+
+                return R()
+
+        class FakeAsyncHTTPHandler:
+            def __init__(self):
+                self.client = FakeUnderlyingAsyncClient()
+
+            async def post(self, url, data=None, json=None, headers=None):
+                raise AssertionError("async_safe_post must not call AsyncHTTPHandler.post directly")
+
+        def fake_resolve(url):
+            return "http://93.184.216.34/path", "example.com"
+
+        monkeypatch.setattr(url_utils, "validate_url", fake_resolve)
+
+        import asyncio
+
+        asyncio.run(url_utils.async_safe_post(FakeAsyncHTTPHandler(), "http://example.com/path", json={"b": 2}))
+        assert calls and calls[0][1].get("follow_redirects") is False
+        assert calls[0][1].get("headers", {}).get("Host") == "example.com"
 
     def test_enabled_still_blocks(self, monkeypatch):
         monkeypatch.setattr(litellm, "user_url_validation", True)
@@ -467,6 +587,21 @@ class TestProviderUrlDestinationAllowlist:
         )
 
 
+class TestValidateCredentialDestination:
+    def test_no_allowlist_configured_is_a_no_op(self, monkeypatch):
+        monkeypatch.setattr(litellm, "provider_url_destination_allowed_hosts", [])
+        url_utils.validate_credential_destination("https://anything.example/v1/x")
+
+    def test_allowed_host_passes(self, monkeypatch):
+        monkeypatch.setattr(litellm, "provider_url_destination_allowed_hosts", ["trusted.example"])
+        url_utils.validate_credential_destination("https://trusted.example/v1/x")
+
+    def test_disallowed_host_raises_ssrf_error(self, monkeypatch):
+        monkeypatch.setattr(litellm, "provider_url_destination_allowed_hosts", ["trusted.example"])
+        with pytest.raises(SSRFError):
+            url_utils.validate_credential_destination("https://evil.example/v1/x")
+
+
 # ── assert_same_origin ────────────────────────────────────────────────────────
 
 
@@ -497,16 +632,12 @@ def test_assert_same_origin_rejects_different_host():
 
 def test_assert_same_origin_rejects_different_scheme():
     with pytest.raises(SSRFError, match="scheme"):
-        assert_same_origin(
-            "http://api.example.com/poll", "https://api.example.com/generate"
-        )
+        assert_same_origin("http://api.example.com/poll", "https://api.example.com/generate")
 
 
 def test_assert_same_origin_rejects_different_port():
     with pytest.raises(SSRFError, match="port"):
-        assert_same_origin(
-            "https://api.example.com:8443/poll", "https://api.example.com/generate"
-        )
+        assert_same_origin("https://api.example.com:8443/poll", "https://api.example.com/generate")
 
 
 def test_assert_same_origin_rejects_non_http_scheme():
@@ -517,9 +648,7 @@ def test_assert_same_origin_rejects_non_http_scheme():
 
 
 def test_assert_same_origin_case_insensitive_host():
-    assert_same_origin(
-        "https://API.example.com/poll", "https://api.example.com/generate"
-    )
+    assert_same_origin("https://API.example.com/poll", "https://api.example.com/generate")
 
 
 def test_assert_same_origin_error_message_does_not_leak_hostnames():

@@ -2,7 +2,7 @@ import moment from "moment";
 import { useEffect, useMemo, useState } from "react";
 import { uiSpendLogsCall } from "../networking";
 import { Team } from "../key_team_helpers/key_list";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { fetchAllTeams } from "../../components/key_team_helpers/filter_helpers";
 import { defaultPageSize } from "../constants";
 import type { LogEntry, LogsSortField } from "./columns";
@@ -42,6 +42,14 @@ export const FILTER_KEYS = {
 
 export type FilterKey = keyof typeof FILTER_KEYS;
 export type LogFilterState = Record<(typeof FILTER_KEYS)[FilterKey], string>;
+
+export type UseLogFilterLogicReturn = {
+  logsQuery: UseQueryResult<PaginatedResponse>;
+  filteredLogs: PaginatedResponse;
+  allTeams: Team[] | undefined;
+  handleFilterChange: (newFilters: Partial<LogFilterState>) => void;
+  handleFilterReset: () => void;
+};
 
 // Keys whose UI is a free-form text input; only these need debouncing.
 const TEXT_FILTER_KEYS: readonly (keyof LogFilterState)[] = [
@@ -220,11 +228,12 @@ export function useLogFilterLogic({
     setCurrentPage(1);
   };
 
-  return {
+  const result: UseLogFilterLogicReturn = {
     logsQuery,
     filteredLogs,
     allTeams,
     handleFilterChange,
     handleFilterReset,
   };
+  return result;
 }

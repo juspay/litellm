@@ -25,6 +25,7 @@ from backend.routes.allowlist import (
     BACKEND_MOUNT_PATHS,
     BACKEND_PATH_PREFIXES,
 )
+from component_route_match import path_matches_any
 
 
 def _is_backend_route(route) -> bool:
@@ -38,7 +39,7 @@ def _is_backend_route(route) -> bool:
         return path in BACKEND_MOUNT_PATHS
     if path in BACKEND_EXACT_PATHS:
         return True
-    return any(path.startswith(prefix) for prefix in BACKEND_PATH_PREFIXES)
+    return path_matches_any(path, BACKEND_PATH_PREFIXES)
 
 
 # See gateway/main.py for why the trim runs inside the lifespan instead of at

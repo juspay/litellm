@@ -9,6 +9,7 @@ from typing import Optional, Union
 
 import httpx
 
+from litellm._logging import verbose_proxy_logger
 from litellm.integrations.custom_secret_manager import CustomSecretManager
 
 
@@ -16,9 +17,7 @@ class InMemorySecretManager(CustomSecretManager):
     def __init__(self):
         super().__init__(secret_manager_name="in_memory_secrets")
         # Store your secrets in memory
-        print("INITIALIZING CUSTOM SECRET MANAGER IN MEMORY")
         self.secrets = {}
-        print("CUSTOM SECRET MANAGER IN MEMORY INITIALIZED")
 
     async def async_read_secret(
         self,
@@ -27,9 +26,7 @@ class InMemorySecretManager(CustomSecretManager):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
     ) -> Optional[str]:
         """Read secret asynchronously"""
-        print("READING SECRET ASYNCHRONOUSLY")
-        print("SECRET NAME: %s", secret_name)
-        print("SECRET: %s", self.secrets.get(secret_name))
+        verbose_proxy_logger.debug("reading secret name=%s", secret_name)
         return self.secrets.get(secret_name)
 
     def sync_read_secret(
@@ -39,14 +36,8 @@ class InMemorySecretManager(CustomSecretManager):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
     ) -> Optional[str]:
         """Read secret synchronously"""
-        from litellm._logging import verbose_proxy_logger
-
-        verbose_proxy_logger.info(
-            f"CUSTOM SECRET MANAGER: LOOKING FOR SECRET: {secret_name}"
-        )
-        value = self.secrets.get(secret_name)
-        verbose_proxy_logger.info(f"CUSTOM SECRET MANAGER: READ SECRET: {value}")
-        return value
+        verbose_proxy_logger.debug("CUSTOM SECRET MANAGER: looking for secret: %s", secret_name)
+        return self.secrets.get(secret_name)
 
     async def async_write_secret(
         self,
@@ -59,7 +50,6 @@ class InMemorySecretManager(CustomSecretManager):
     ) -> dict:
         """Write a secret to the in-memory store"""
         self.secrets[secret_name] = secret_value
-        print("ALL SECRETS=%s", self.secrets)
         return {
             "status": "success",
             "secret_name": secret_name,

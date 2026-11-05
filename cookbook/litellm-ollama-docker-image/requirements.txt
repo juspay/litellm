@@ -1,1 +1,4 @@
-litellm==1.83.14
+litellm==1.106.5
+anyio>=4.14.2
+filelock==3.20.3
+idna>=3.15

@@ -7,19 +7,28 @@ import { renderWithProviders } from "../../../tests/test-utils";
 import { uiSpendLogsCall } from "../networking";
 import type { LogEntry } from "./columns";
 import { useLogFilterLogic } from "./log_filter_logic";
+import type { PaginatedResponse, UseLogFilterLogicReturn } from "./log_filter_logic";
+import type { UseQueryResult } from "@tanstack/react-query";
 
 const mockHandleFilterResetFromHook = vi.fn();
 vi.mock("./log_filter_logic", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./log_filter_logic")>();
   return {
     ...actual,
-    useLogFilterLogic: vi.fn(() => ({
-      logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
-      filteredLogs: { data: [], total: 0, page: 1, page_size: 50, total_pages: 1 },
-      allTeams: [],
-      handleFilterChange: vi.fn(),
-      handleFilterReset: mockHandleFilterResetFromHook,
-    })),
+    useLogFilterLogic: vi.fn(
+      (): UseLogFilterLogicReturn => ({
+        logsQuery: {
+          isLoading: false,
+          isFetching: false,
+          isPlaceholderData: false,
+          refetch: vi.fn(),
+        } as unknown as UseQueryResult<PaginatedResponse>,
+        filteredLogs: { data: [], total: 0, page: 1, page_size: 50, total_pages: 1 },
+        allTeams: [],
+        handleFilterChange: vi.fn(),
+        handleFilterReset: mockHandleFilterResetFromHook,
+      }),
+    ),
   };
 });
 
@@ -44,8 +53,13 @@ vi.mock("../key_team_helpers/filter_helpers", () => ({
   fetchAllTeams: vi.fn().mockResolvedValue([]),
 }));
 
-const mockUseLogFilterLogicReturn = (data: LogEntry[] = []) => ({
-  logsQuery: { isLoading: false, isFetching: false, isPlaceholderData: false, refetch: vi.fn() },
+const mockUseLogFilterLogicReturn = (data: LogEntry[] = []): UseLogFilterLogicReturn => ({
+  logsQuery: {
+    isLoading: false,
+    isFetching: false,
+    isPlaceholderData: false,
+    refetch: vi.fn(),
+  } as unknown as UseQueryResult<PaginatedResponse>,
   filteredLogs: { data, total: data.length, page: 1, page_size: 50, total_pages: 1 },
   allTeams: [],
   handleFilterChange: vi.fn(),
