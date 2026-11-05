@@ -11744,14 +11744,49 @@ async def _filter_models_by_team_id(
     return filtered_models
 
 
+async def _caller_can_see_deployment(
+    found_model: dict,
+    user_api_key_dict: UserAPIKeyAuth,
+    llm_router: Router,
+    prisma_client: Any,
+) -> bool:
+    """Whether the caller may see this deployment in a model/info response.
+
+    Enforces the same three scopes as the /v2/model/info listing: key/team
+    model allowlists, experimental-deployment tags, and BYOK team membership.
+    """
+    allowed_model_names = _get_v1_model_info_allowed_model_names(
+        user_api_key_dict=user_api_key_dict,
+        llm_router=llm_router,
+    )
+    if allowed_model_names is not None and not _deployment_matches_allowed_model_names(
+        found_model, allowed_model_names
+    ):
+        return False
+    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN and _is_experimental_deployment(found_model):
+        return False
+    allowed_team_ids = await _get_caller_byok_team_scope(
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    )
+    return not _byok_row_outside_caller_teams(found_model.get("model_info") or {}, allowed_team_ids)
+
+
 async def _find_model_by_id(
     model_id: str,
     search: Optional[str],
     llm_router,
     prisma_client,
     proxy_config,
+    user_api_key_dict: UserAPIKeyAuth | None = None,
 ) -> tuple[list, Optional[int]]:
-    """Find a model by its ID and optionally filter by search term."""
+    """Find a model by its ID and optionally filter by search term.
+
+    The caller must be allowed to see the deployment: key/team allowlist,
+    experimental tags, and BYOK team scope are all enforced the same way
+    the /v2/model/info listing enforces them, so a modelId learned from
+    another response cannot fetch a row the listing would hide.
+    """
     found_model = None
 
     # First, search in config
@@ -11780,6 +11815,14 @@ async def _find_model_by_id(
             if search_lower not in model_name.lower():
                 # Model found but doesn't match search filter
                 found_model = None
+
+    if (
+        found_model is not None
+        and user_api_key_dict is not None
+        and llm_router is not None
+        and not await _caller_can_see_deployment(found_model, user_api_key_dict, llm_router, prisma_client)
+    ):
+        found_model = None
 
     # Set all_models to the found model or empty list
     all_models = [found_model] if found_model is not None else []
@@ -11821,7 +11864,11 @@ async def model_info_v2(
     Paginated model metadata for proxy deployments (pricing, provider, team access).
 
     Returns configured router deployments with enriched `model_info` (costs, provider,
-    context window, etc.). Sensitive fields such as API keys and api_base are omitted.
+    context window, etc.). Credential and infra-topology fields (API keys, tokens,
+    api_base, cloud role/project identifiers) are omitted. Results are scoped to
+    deployments the caller can use: key/team model allowlists, BYOK team
+    membership, and experimental-deployment tags are all enforced, including
+    for `modelId` lookups.
 
     Query parameters:
         model: Filter to a single public `model_name`.
@@ -11891,6 +11938,7 @@ async def model_info_v2(
             llm_router=llm_router,
             prisma_client=prisma_client,
             proxy_config=proxy_config,
+            user_api_key_dict=user_api_key_dict,
         )
     else:
         # Normal flow when modelId is not provided
@@ -11902,6 +11950,28 @@ async def model_info_v2(
 
         if model is not None:
             all_models = [m for m in all_models if m["model_name"] == model]
+
+        # Scope the default listing the same way /v1/model/info does, so a
+        # key without model restrictions still cannot read rows it cannot
+        # use: other teams' BYOK deployments, key/team allowlist misses, and
+        # experimental deployments.
+        allowed_model_names = _get_v1_model_info_allowed_model_names(
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
+        )
+        all_models = _filter_v1_model_info_deployments(
+            all_models=all_models,
+            allowed_model_names=allowed_model_names,
+        )
+        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+            all_models = [m for m in all_models if not _is_experimental_deployment(m)]
+        allowed_team_ids = await _get_caller_byok_team_scope(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+        )
+        all_models = [
+            m for m in all_models if not _byok_row_outside_caller_teams(m.get("model_info") or {}, allowed_team_ids)
+        ]
 
         # Apply search filter if provided
         all_models, search_total_count = await _apply_search_filter_to_models(
@@ -12598,7 +12668,7 @@ async def model_info_v1(
     ),
 ):
     """
-    Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)
+    Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
 
     Parameters:
         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -12697,7 +12767,36 @@ async def model_info_v1(
                 status_code=400,
                 detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
             )
-        _deployment_info_dict = _get_proxy_model_info(model=deployment_info.model_dump(exclude_none=True))
+        allowed_model_names = _get_v1_model_info_allowed_model_names(
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
+        )
+        _single_deployment_dict = deployment_info.model_dump(exclude_none=True)
+        if allowed_model_names is not None and not _deployment_matches_allowed_model_names(
+            _single_deployment_dict, allowed_model_names
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
+            )
+        if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN and _is_experimental_deployment(
+            _single_deployment_dict
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
+            )
+        if prisma_client is not None:
+            _allowed_byok_team_ids = await _get_caller_byok_team_scope(
+                user_api_key_dict=user_api_key_dict,
+                prisma_client=prisma_client,
+            )
+            if _byok_row_outside_caller_teams(_single_deployment_dict.get("model_info") or {}, _allowed_byok_team_ids):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
+                )
+        _deployment_info_dict = _get_proxy_model_info(model=_single_deployment_dict)
         single_model_list: List[dict] = [_deployment_info_dict]
         if prisma_client is not None:
             single_model_list = await _populate_team_access_on_models(
@@ -12830,7 +12929,7 @@ async def model_group_info(
     model_group: Optional[str] = None,
 ):
     """
-    Get information about all the deployments on litellm proxy, including config.yaml descriptions (except api key and api base)
+    Get information about all the deployments on litellm proxy, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
 
     - /model_group/info returns all model groups. End users of proxy should use /model_group/info since those models will be used for /chat/completions, /embeddings, etc.
     - /model_group/info?model_group=rerank-english-v3.0 returns all model groups for a specific model group (`model_name` in config.yaml)
