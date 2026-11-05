@@ -8153,6 +8153,7 @@ class ProxyStartupEvent:
             "LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS=1 to explicitly accept the legacy mode."
         )
 
+    @classmethod
     async def _setup_prisma_client(
         cls,
         database_url: Optional[str],
