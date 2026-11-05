@@ -10479,6 +10479,30 @@ async def _try_provider_token_count(
     return result
 
 
+def _select_tokenizer_and_count(
+    model: str,
+    custom_tokenizer: CustomHuggingfaceTokenizer | None,
+    text: str | None,
+    messages: list[dict] | None,
+) -> tuple[int, str]:
+    """Select the tokenizer and count tokens in one blocking unit.
+
+    ``_select_tokenizer`` can download Hugging Face tokenizer files and
+    ``token_counter`` walks every message, so both belong on a worker thread.
+    Returns ``(total_tokens, tokenizer_type)``.
+    """
+    from litellm import token_counter
+
+    _tokenizer_used = litellm.utils._select_tokenizer(model=model, custom_tokenizer=custom_tokenizer)
+    total_tokens = token_counter(
+        model=model,
+        text=text,
+        messages=messages,
+        custom_tokenizer=_tokenizer_used,  # type: ignore
+    )
+    return total_tokens, str(_tokenizer_used["type"])
+
+
 @router.post(
     "/utils/token_counter",
     tags=["llm utils"],
@@ -10494,8 +10518,6 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
     Returns:
         TokenCountResponse
     """
-    from litellm import token_counter
-
     global llm_router
 
     prompt = request.prompt
@@ -10577,14 +10599,11 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
             Optional[CustomHuggingfaceTokenizer],
             model_info.get("custom_tokenizer", None),
         )
-    _tokenizer_used = litellm.utils._select_tokenizer(model=model_to_use, custom_tokenizer=custom_tokenizer)
-
-    tokenizer_used = str(_tokenizer_used["type"])
-    total_tokens = await asyncify(token_counter)(
+    total_tokens, tokenizer_used = await asyncify(_select_tokenizer_and_count)(
         model=model_to_use,
+        custom_tokenizer=custom_tokenizer,
         text=prompt,
         messages=messages,
-        custom_tokenizer=_tokenizer_used,  # type: ignore
     )
     return TokenCountResponse(
         total_tokens=total_tokens,
@@ -10641,9 +10660,7 @@ async def transform_request(request: TransformRequestBody):
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e)})
 
-    return await asyncify(return_raw_request)(
-        endpoint=request.call_type, kwargs=request.request_body
-    )
+    return await asyncify(return_raw_request)(endpoint=request.call_type, kwargs=request.request_body)
 
 
 async def _check_if_model_is_user_added(

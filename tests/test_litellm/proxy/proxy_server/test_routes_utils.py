@@ -195,34 +195,38 @@ async def test_transform_request_runs_off_event_loop(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_token_counter_runs_off_event_loop(monkeypatch):
-    """``token_counter`` walks every message with the HF tokenizer and used to
-    run on the event loop; a burst of large-prompt token counting stalled the
-    pod. Fails if the callable ever runs back on the loop thread."""
+    """``_select_tokenizer`` can download Hugging Face tokenizer files and
+    ``token_counter`` walks every message with the tokenizer. Both ran on the
+    event loop; a burst of large-prompt token counting or a first cold load of
+    an HF tokenizer stalled the pod long enough for the kubelet liveness probe
+    to kill it. Fails if either callable ever runs back on the loop thread."""
     import threading
 
     from litellm.proxy._types import TokenCountRequest
 
     monkeypatch.setattr(proxy_server, "llm_router", None)
     monkeypatch.setattr(litellm, "disable_token_counter", False, raising=False)
-    monkeypatch.setattr(
-        litellm.utils,
-        "_select_tokenizer",
-        lambda model, custom_tokenizer=None: {
-            "type": "openai_tokenizer",
-            "tokenizer": None,
-        },
-    )
 
-    seen_threads: list[int] = []
+    select_threads: list[int] = []
+    count_threads: list[int] = []
 
-    def _blocking_token_counter(**kwargs):
-        seen_threads.append(threading.get_ident())
+    def _select_tokenizer(model, custom_tokenizer=None):
+        select_threads.append(threading.get_ident())
+        return {"type": "openai_tokenizer", "tokenizer": None}
+
+    def _token_counter(**kwargs):
+        count_threads.append(threading.get_ident())
         return 7
 
-    monkeypatch.setattr(litellm, "token_counter", _blocking_token_counter)
+    monkeypatch.setattr(litellm.utils, "_select_tokenizer", _select_tokenizer)
+    monkeypatch.setattr(litellm, "token_counter", _token_counter)
 
+    loop_thread = threading.get_ident()
     request = TokenCountRequest(model="gpt-4", prompt="Hi there")
     response = await proxy_server.token_counter(request)
     assert response.total_tokens == 7
-    assert seen_threads, "token_counter was never invoked"
-    assert seen_threads[0] != threading.get_ident(), "token_counter ran on the event loop thread"
+
+    assert select_threads, "_select_tokenizer was never invoked"
+    assert select_threads[0] != loop_thread, "_select_tokenizer ran on the event loop thread"
+    assert count_threads, "token_counter was never invoked"
+    assert count_threads[0] != loop_thread, "token_counter ran on the event loop thread"
