@@ -269,12 +269,19 @@ def test_model_info_team_key_cannot_see_other_teams_byok_model(
 
 @pytest.fixture
 def v2_scoped_router(monkeypatch):
-    """Router with three deployments: a public model, team-abc's BYOK model,
-    and an experimental deployment (scaled-down GPUStack replica)."""
+    """Router with four deployments: a public model, another ordinary model,
+    team-abc's BYOK model, and an experimental deployment (scaled-down
+    GPUStack replica). The second ordinary row exists so key/team model
+    allowlists have an allowed row to keep and a restricted row to drop."""
     public_deployment = {
         "model_name": "public-gpt-4",
         "litellm_params": {"model": "openai/gpt-4"},
         "model_info": {"id": "public-id", "db_model": False},
+    }
+    other_deployment = {
+        "model_name": "restricted-claude",
+        "litellm_params": {"model": "anthropic/claude-3"},
+        "model_info": {"id": "restricted-id", "db_model": False},
     }
     experimental_deployment = {
         "model_name": "experimental-gpt-4",
@@ -293,7 +300,7 @@ def v2_scoped_router(monkeypatch):
     }
 
     router = MagicMock()
-    router.model_list = [public_deployment, experimental_deployment, byok_deployment]
+    router.model_list = [public_deployment, other_deployment, experimental_deployment, byok_deployment]
     router.get_model_list_from_model_alias = MagicMock(return_value=[])
     router.get_model_names = MagicMock(return_value=[])
     router.get_model_access_groups = MagicMock(return_value={})
@@ -325,6 +332,32 @@ def test_v2_model_info_default_path_scopes_to_caller(client, auth_as, v2_scoped_
     assert body["total_count"] >= 1
 
 
+def test_v2_model_info_default_path_enforces_key_model_allowlist(
+    client, auth_as, v2_scoped_router, mock_prisma, monkeypatch
+):
+    """Regression: a non-admin key restricted to specific models must see only
+    those models in the v2 default listing, not every ordinary deployment.
+
+    Before the scoping fix the allowlist filter was absent entirely; this
+    test pins it so a refactor cannot delete the filter silently."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(
+        role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        team_id="other-team",
+        models=["public-gpt-4"],
+    ):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    surfaced_names = [m["model_name"] for m in response.json()["data"]]
+    assert surfaced_names == ["public-gpt-4"]
+
+
 def test_v2_model_info_admin_sees_all_rows(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
     """PROXY_ADMIN keeps the full listing: BYOK rows and experimental
     deployments included (the dashboard model page needs them)."""
@@ -339,6 +372,7 @@ def test_v2_model_info_admin_sees_all_rows(client, auth_as, v2_scoped_router, mo
     assert response.status_code == 200
     surfaced_ids = [m["model_info"].get("id") for m in response.json()["data"]]
     assert "public-id" in surfaced_ids
+    assert "restricted-id" in surfaced_ids
     assert "experimental-id" in surfaced_ids
     assert "byok-deployment-id" in surfaced_ids
 
@@ -353,7 +387,7 @@ def test_v2_model_info_modelid_scoped_to_caller(client, auth_as, v2_scoped_route
     mock_prisma.db.litellm_usertable.find_unique.return_value = None
     mock_prisma.db.litellm_proxymodeltable.find_unique.return_value = None
 
-    v2_scoped_router.get_model_info = MagicMock(return_value=v2_scoped_router.model_list[2])
+    v2_scoped_router.get_model_info = MagicMock(return_value=v2_scoped_router.model_list[3])
 
     with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None, team_id="other-team"):
         response = client.get("/v2/model/info", params={"modelId": "byok-deployment-id"})
@@ -371,7 +405,7 @@ def test_v2_model_info_modelid_member_sees_own_byok(client, auth_as, v2_scoped_r
     monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
     mock_prisma.db.litellm_usertable.find_unique.return_value = None
 
-    v2_scoped_router.get_model_info = MagicMock(return_value=v2_scoped_router.model_list[2])
+    v2_scoped_router.get_model_info = MagicMock(return_value=v2_scoped_router.model_list[3])
 
     with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None, team_id=_BYOK_TEAM_ID):
         response = client.get("/v2/model/info", params={"modelId": "byok-deployment-id"})
@@ -392,7 +426,7 @@ def test_v1_model_info_specific_id_scoped_to_caller(client, auth_as, v2_scoped_r
     monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
     mock_prisma.db.litellm_usertable.find_unique.return_value = None
 
-    byok_row = v2_scoped_router.model_list[2]
+    byok_row = v2_scoped_router.model_list[3]
     deployment = MagicMock()
     deployment.model_dump = MagicMock(return_value=byok_row)
     v2_scoped_router.get_deployment = MagicMock(return_value=deployment)
