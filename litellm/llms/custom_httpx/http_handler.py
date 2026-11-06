@@ -5,6 +5,7 @@ import os
 import socket
 import ssl
 import sys
+import threading
 import time
 from typing import (
     TYPE_CHECKING,
@@ -198,21 +199,77 @@ def _prepare_request_data_and_content(
 
 
 # Cache for SSL contexts to avoid creating duplicate contexts with the same configuration
-# Key: tuple of (cafile, ssl_security_level, ssl_ecdh_curve)
+# Key: tuple of (cafile, ssl_security_level, ssl_ecdh_curve, client_cert)
 # Value: ssl.SSLContext
-_ssl_context_cache: Dict[Tuple[Optional[str], Optional[str], Optional[str]], ssl.SSLContext] = {}
+_ssl_context_cache: Dict[Tuple[Optional[str], Optional[str], Optional[str], Optional[str]], ssl.SSLContext] = {}
+
+
+class SSLCertificateError(ValueError):
+    """Raised when a configured client certificate cannot be used.
+
+    We intentionally do NOT silently degrade to one-way TLS when an
+    operator has explicitly configured mutual TLS: a strict mTLS server
+    would reject the handshake, and a permissive server must not silently
+    accept ordinary TLS when mTLS was requested.
+    """
+
+
+def get_ssl_client_certificate() -> Optional[str]:
+    """Resolve the client certificate (cert + key) used for mutual TLS.
+
+    Priority:
+    1. os.environ["SSL_CERTIFICATE"]
+    2. litellm.ssl_certificate (settable via `litellm_settings.ssl_certificate`)
+
+    Returns a path to a PEM file (cert + unencrypted private key).
+
+    Returns None only when mTLS is not configured at all.  When configured,
+    the path is validated to exist - otherwise we raise SSLCertificateError
+    so misconfiguration is surfaced instead of masked by the cert cache.
+    """
+    client_cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
+    if client_cert is None or client_cert == "":
+        return None
+    if not os.path.exists(client_cert):
+        raise SSLCertificateError(
+            f"SSL_CERTIFICATE is configured at '{client_cert}' but the file "
+            f"does not exist. Fix the mount path so the mTLS client identity "
+            f"is present, or unset SSL_CERTIFICATE/litellm.ssl_certificate."
+        )
+    return client_cert
 
 
 def _create_ssl_context(
     cafile: Optional[str],
     ssl_security_level: Optional[str],
     ssl_ecdh_curve: Optional[str],
+    client_cert: Optional[str] = None,
 ) -> ssl.SSLContext:
     """
     Create an SSL context with the given configuration.
     This is separated from get_ssl_configuration to enable caching.
+
+    If `client_cert` is provided, the certificate chain (and private key) is
+    loaded into the context so it can be used for mutual TLS. Both the
+    httpx and aiohttp transports share this context, so loading it here
+    makes mTLS work on either transport without per-transport customization.
+
+    Any failure to load raises SSLCertificateError - the operator explicitly
+    configured TLS-client-auth and we must not silently downgrade.
     """
     custom_ssl_context = ssl.create_default_context(cafile=cafile)
+
+    # Enable mutual TLS: present the client certificate on every handshake.
+    if client_cert:
+        try:
+            custom_ssl_context.load_cert_chain(certfile=client_cert)
+        except (ssl.SSLError, OSError, ValueError) as e:
+            raise SSLCertificateError(
+                f"Failed to load the configured mTLS client certificate from "
+                f"'{client_cert}': {e}. The PEM must contain both the "
+                f"certificate and its unencrypted private key, and the file "
+                f"must be readable."
+            ) from e
 
     # Optimize SSL handshake performance
     # Set minimum TLS version to 1.2 for better performance
@@ -339,8 +396,20 @@ def get_ssl_configuration(
             cafile = certifi.where()
 
     if ssl_verify is not False:
+        # Resolve any configured client certificate (raises if the operator
+        # explicitly configured a path that cannot be used). Fail-fast prevents m
+        # silently de-anonymizing connections that expect strong authentication.
+        client_cert = get_ssl_client_certificate()
+
+        # Keep certifi's public roots when a custom CA bundle is provided.
+        # get_ssl_configuration() is also called by other providers with default
+        # no-arg semantics, so a CA file global would otherwise replace the
+        # public trust store. Combining unconditionally also covers those paths.
+        if isinstance(ssl_verify, str) and os.path.exists(ssl_verify) and ssl_verify != certifi.where():
+            cafile = _combined_ca_bundle(ssl_verify)
+
         # Create cache key from configuration parameters
-        cache_key = (cafile, ssl_security_level, ssl_ecdh_curve)
+        cache_key = (cafile, ssl_security_level, ssl_ecdh_curve, client_cert)
 
         # Check if we have a cached SSL context for this configuration
         if cache_key not in _ssl_context_cache:
@@ -348,6 +417,7 @@ def get_ssl_configuration(
                 cafile=cafile,
                 ssl_security_level=ssl_security_level,
                 ssl_ecdh_curve=ssl_ecdh_curve,
+                client_cert=client_cert,
             )
 
         # Return the cached SSL context
@@ -357,6 +427,52 @@ def get_ssl_configuration(
 
 
 _shared_realtime_ssl_context: Optional[Union[bool, str, ssl.SSLContext]] = None
+
+
+_COMBINED_CA_BUNDLES: Dict[str, str] = {}
+_combined_ca_bundle_lock = threading.Lock()
+
+
+def _combined_ca_bundle(private_ca_path: str) -> str:
+    """Materialize a PEM with certifi's public roots + one private bundle.
+
+    The result is written once per process and private bundle path. The private
+    file is read fresh if its contents change (e.g. secret rotation), while
+    preserving the cache when it has not changed. On Windows, where deleting an
+    open NamedTemporaryFile fails, the file is opened for reading then closed
+    before any replacement.
+    """
+    import hashlib
+    import tempfile
+
+    with open(private_ca_path, "rb") as f:
+        private_roots = f.read()
+    file_digest = hashlib.sha256(private_roots).hexdigest()
+    key = hashlib.sha256(private_ca_path.encode()).hexdigest()[:16]
+
+    with _combined_ca_bundle_lock:
+        key = f"{key}:{file_digest}"
+        existing = _COMBINED_CA_BUNDLES.get(key)
+        if existing and os.path.exists(existing):
+            return existing
+
+        out = tempfile.NamedTemporaryFile(
+            prefix=f"litellm_ca_{key}_", suffix=".pem", delete=False, mode="wb"
+        )
+        try:
+            out.write(certifi.contents().encode("utf-8"))
+            out.write(b"\n")
+            out.write(private_roots)
+            out.flush()
+            os.fchmod(out.fileno(), 0o600)
+        finally:
+            out.close()
+
+        _COMBINED_CA_BUNDLES[key] = out.name
+        return out.name
+
+
+_COMBINED_CA_BUNDLES: Dict[str, str] = {}
 
 
 def get_shared_realtime_ssl_context() -> Union[bool, str, ssl.SSLContext]:
@@ -551,7 +667,11 @@ class AsyncHTTPHandler:
 
         # An SSL certificate used by the requested host to authenticate the client.
         # /path/to/client.pem
-        cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
+        # NOTE: when ssl_config is an SSLContext, the client cert has already been
+        # loaded into it (see get_ssl_configuration/_create_ssl_context) - that is
+        # what makes mTLS work on the aiohttp transport. It is also passed via
+        # httpx's `cert=` below for the httpx transport path.
+        cert = get_ssl_client_certificate()
 
         if timeout is None:
             timeout = _DEFAULT_TIMEOUT
@@ -1093,7 +1213,9 @@ class HTTPHandler:
 
         # An SSL certificate used by the requested host to authenticate the client.
         # /path/to/client.pem
-        cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
+        # NOTE: when ssl_config is an SSLContext, the client cert has already been
+        # loaded into it (see get_ssl_configuration/_create_ssl_context).
+        cert = get_ssl_client_certificate()
 
         # Get default headers (User-Agent, overridable via LITELLM_USER_AGENT)
         default_headers = get_default_headers() if not disable_default_headers else None
