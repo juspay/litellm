@@ -26,6 +26,7 @@ from litellm.proxy.management_endpoints.internal_user_endpoints import (
     _build_service_account_key_rotation_email,
     _cleanup_service_accounts_on_user_delete,
     _resolve_user_email_metadata,
+    _send_email_via_ses,
     _update_internal_user_params,
     batch_update_user_budgets,
     get_user_key_counts,
@@ -4593,3 +4594,132 @@ async def test_delete_user_still_allows_org_admin_within_scope(mocker, monkeypat
     )
 
     mock_prisma_client.db.litellm_usertable.delete_many.assert_called_once()
+
+
+class TestSendEmailViaSesWorkloadIdentity:
+    """_send_email_via_ses mints its AWS STS web-identity token via GKE
+    Workload Identity (google.oauth2.id_token.fetch_id_token) instead of a
+    mounted GCP service account key. The audience must be sts.amazonaws.com
+    and no GCP_SERVICE_ACCOUNT_KEY may be read.
+    """
+
+    @pytest.mark.asyncio
+    async def test_mints_id_token_with_sts_audience_and_passes_to_assume_role(self, mocker, monkeypatch):
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::111:role/ses")
+        monkeypatch.setenv("SENDER_EMAIL", "sender@example.test")
+        monkeypatch.setenv("AWS_REGION", "ap-south-1")
+        monkeypatch.delenv("GCP_SERVICE_ACCOUNT_KEY", raising=False)
+
+        captured: dict = {}
+
+        def fake_fetch_id_token(request, audience):
+            captured["audience"] = audience
+            return "wi-id-token"
+
+        class FakeSts:
+            def __init__(self, *args, **kwargs):
+                captured["sts_client_args"] = kwargs
+
+            def assume_role_with_web_identity(self, **kwargs):
+                captured["web_identity_token"] = kwargs["WebIdentityToken"]
+                captured["role_arn"] = kwargs["RoleArn"]
+                captured["role_session_name"] = kwargs["RoleSessionName"]
+                return {
+                    "Credentials": {
+                        "AccessKeyId": "AKIA-TEST",
+                        "SecretAccessKey": "secret",
+                        "SessionToken": "token",
+                    }
+                }
+
+        class FakeSes:
+            def send_raw_email(self, **kwargs):
+                captured["send_raw_email"] = kwargs
+                return {"MessageId": "ok"}
+
+        class FakeSession:
+            def __init__(self, **kwargs):
+                captured["session_kwargs"] = kwargs
+
+            def client(self, service, **kwargs):
+                captured["ses_service"] = service
+                captured["ses_client_region"] = kwargs.get("region_name")
+                return FakeSes()
+
+        mocker.patch("google.oauth2.id_token.fetch_id_token", side_effect=fake_fetch_id_token)
+        mocker.patch("boto3.client", side_effect=lambda *a, **k: FakeSts(*a, **k))
+        mocker.patch("boto3.Session", side_effect=lambda *a, **k: FakeSession(*a, **k))
+
+        await _send_email_via_ses(
+            receiver_emails=["owner@example.test"],
+            subject="Action Required",
+            html_body="<p>rotate</p>",
+        )
+
+        assert captured["audience"] == "sts.amazonaws.com"
+        assert captured["web_identity_token"] == "wi-id-token"
+        assert captured["role_arn"] == "arn:aws:iam::111:role/ses"
+        assert captured["role_session_name"] == "litellm-sa-key-rotation"
+        assert captured["sts_client_args"]["region_name"] == "us-east-1"
+        assert captured["session_kwargs"]["region_name"] == "ap-south-1"
+        assert captured["session_kwargs"]["aws_access_key_id"] == "AKIA-TEST"
+        assert captured["ses_service"] == "ses"
+        assert captured["ses_client_region"] == "ap-south-1"
+        assert captured["send_raw_email"]["Source"] == "sender@example.test"
+        assert captured["send_raw_email"]["Destinations"] == ["owner@example.test"]
+        assert "rotate" in captured["send_raw_email"]["RawMessage"]["Data"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "missing_env",
+        ["AWS_ROLE_ARN", "SENDER_EMAIL"],
+    )
+    @pytest.mark.asyncio
+    async def test_skips_when_required_env_vars_missing(self, mocker, monkeypatch, missing_env):
+        env = {
+            "AWS_ROLE_ARN": "arn:aws:iam::111:role/ses",
+            "SENDER_EMAIL": "sender@example.test",
+        }
+        for key, value in env.items():
+            if key == missing_env:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, value)
+        monkeypatch.delenv("GCP_SERVICE_ACCOUNT_KEY", raising=False)
+
+        fetch_id_token = mocker.patch("google.oauth2.id_token.fetch_id_token")
+        boto3_client = mocker.patch("boto3.client")
+        boto3_session = mocker.patch("boto3.Session")
+
+        await _send_email_via_ses(
+            receiver_emails=["owner@example.test"],
+            subject="x",
+            html_body="y",
+        )
+
+        fetch_id_token.assert_not_called()
+        boto3_client.assert_not_called()
+        boto3_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_does_not_read_gcp_service_account_key(self, mocker, monkeypatch):
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::111:role/ses")
+        monkeypatch.setenv("SENDER_EMAIL", "sender@example.test")
+        monkeypatch.setenv("GCP_SERVICE_ACCOUNT_KEY", "should-be-ignored")
+
+        mocker.patch("google.oauth2.id_token.fetch_id_token", return_value="tok")
+        mocker.patch("boto3.client")
+        mocker.patch("boto3.Session")
+
+        import litellm.proxy.management_endpoints.internal_user_endpoints as mod
+
+        getenv = mocker.spy(mod.os, "getenv")
+
+        await _send_email_via_ses(
+            receiver_emails=["owner@example.test"],
+            subject="x",
+            html_body="y",
+        )
+
+        requested = {call.args[0] for call in getenv.call_args_list}
+        assert "GCP_SERVICE_ACCOUNT_KEY" not in requested
