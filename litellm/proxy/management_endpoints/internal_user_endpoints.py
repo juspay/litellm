@@ -88,6 +88,8 @@ router = APIRouter()
 DEFAULT_SERVICE_ACCOUNT_RPM_LIMIT = 150
 DEFAULT_SERVICE_ACCOUNT_PARALLEL_REQUESTS_LIMIT = 10
 
+AWS_STS_AUDIENCE = "sts.amazonaws.com"
+
 
 def _hash_password_in_dict(data: dict) -> None:
     """Hash password field in-place if present."""
@@ -2318,44 +2320,38 @@ async def _send_email_via_ses(
     html_body: str,
 ) -> None:
     """
-    Send email via AWS SES using Google OIDC auth.
-    Expects GCP_SERVICE_ACCOUNT_KEY as a raw JSON service account key.
-    Adapted from grid-ai-onboarding/cronjob/user-emails-sender/main.py
+    Send email via AWS SES using Google OIDC auth. The OIDC ID token for AWS
+    STS is minted from the environment via Workload Identity
+    (google.oauth2.id_token.fetch_id_token), so no GCP service account key
+    needs to be mounted. The pod's Kubernetes service account must be
+    annotated for Workload Identity and its GSA added to the AWS role trust
+    policy.
     """
     try:
         import boto3
         from google.auth.transport import requests as google_requests
-        from google.oauth2 import service_account
+        from google.oauth2 import id_token
     except ImportError as e:
         print("[DEBUG] AWS SES deps missing: %s" % e)  # noqa: T201
         return
 
-    gcp_service_account_key = os.getenv("GCP_SERVICE_ACCOUNT_KEY")
     aws_role_arn = os.getenv("AWS_ROLE_ARN")
     aws_region = os.getenv("AWS_REGION", "ap-south-1")
     sender_email = os.getenv("SENDER_EMAIL")
 
-    if not all([gcp_service_account_key, aws_role_arn, sender_email]):
+    if not all([aws_role_arn, sender_email]):
         print("[DEBUG] Missing env vars, skipping email")  # noqa: T201
         return
 
     try:
-        # Parse GCP service account key and get ID token for AWS STS
-        sa_info = json.loads(gcp_service_account_key)
-        creds = service_account.IDTokenCredentials.from_service_account_info(
-            sa_info,
-            target_audience="sts.amazonaws.com",
-        )
         auth_req = google_requests.Request()
-        creds.refresh(auth_req)
-        id_token = creds.token
+        web_identity_token = id_token.fetch_id_token(auth_req, AWS_STS_AUDIENCE)
 
-        # Exchange Google ID token for temporary AWS credentials
         sts = boto3.client("sts", region_name="us-east-1")
         response = sts.assume_role_with_web_identity(
             RoleArn=aws_role_arn,
             RoleSessionName="litellm-sa-key-rotation",
-            WebIdentityToken=id_token,
+            WebIdentityToken=web_identity_token,
         )
         temp_creds = response["Credentials"]
 
