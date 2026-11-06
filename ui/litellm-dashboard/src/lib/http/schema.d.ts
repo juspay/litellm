@@ -7673,7 +7673,7 @@ export interface paths {
         };
         /**
          * Model Info V1
-         * @description Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)
+         * @description Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
          *
          *     Parameters:
          *         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -7929,7 +7929,7 @@ export interface paths {
         };
         /**
          * Model Group Info
-         * @description Get information about all the deployments on litellm proxy, including config.yaml descriptions (except api key and api base)
+         * @description Get information about all the deployments on litellm proxy, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
          *
          *     - /model_group/info returns all model groups. End users of proxy should use /model_group/info since those models will be used for /chat/completions, /embeddings, etc.
          *     - /model_group/info?model_group=rerank-english-v3.0 returns all model groups for a specific model group (`model_name` in config.yaml)
@@ -17346,7 +17346,7 @@ export interface paths {
         };
         /**
          * Model Info V1
-         * @description Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)
+         * @description Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
          *
          *     Parameters:
          *         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -19333,7 +19333,11 @@ export interface paths {
          * @description Paginated model metadata for proxy deployments (pricing, provider, team access).
          *
          *     Returns configured router deployments with enriched `model_info` (costs, provider,
-         *     context window, etc.). Sensitive fields such as API keys and api_base are omitted.
+         *     context window, etc.). Credential and infra-topology fields (API keys, tokens,
+         *     api_base, cloud role/project identifiers) are omitted. Results are scoped to
+         *     deployments the caller can use: key/team model allowlists, BYOK team
+         *     membership, and experimental-deployment tags are all enforced, including
+         *     for `modelId` lookups.
          *
          *     Query parameters:
          *         model: Filter to a single public `model_name`.

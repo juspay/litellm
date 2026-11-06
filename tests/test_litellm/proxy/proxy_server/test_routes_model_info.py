@@ -147,9 +147,7 @@ def test_v1_model_info_star_wildcard_filter_keeps_provider_expansion(monkeypatch
     router.get_model_list = MagicMock(return_value=[deployment])
     monkeypatch.setattr(model_checks, "get_provider_models", fake_get_provider_models)
 
-    expanded_deployments = proxy_server.expand_wildcard_deployments_for_model_info(
-        [deployment]
-    )
+    expanded_deployments = proxy_server.expand_wildcard_deployments_for_model_info([deployment])
     allowed_model_names = proxy_server._get_v1_model_info_allowed_model_names(
         user_api_key_dict=UserAPIKeyAuth(
             api_key="sk-test",
@@ -262,6 +260,285 @@ def test_model_info_team_key_cannot_see_other_teams_byok_model(
     surfaced_names = [m.get("model_name") for m in data]
     assert _BYOK_PUBLIC_NAME not in surfaced_names
     assert _BYOK_INTERNAL_NAME not in surfaced_names
+
+
+# ---------------------------------------------------------------------------
+# GET /v2/model/info — scoping parity with /v1/model/info
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def v2_scoped_router(monkeypatch):
+    """Router with four deployments: a public model, another ordinary model,
+    team-abc's BYOK model, and an experimental deployment (scaled-down
+    GPUStack replica). The second ordinary row exists so key/team model
+    allowlists have an allowed row to keep and a restricted row to drop."""
+    public_deployment = {
+        "model_name": "public-gpt-4",
+        "litellm_params": {"model": "openai/gpt-4"},
+        "model_info": {"id": "public-id", "db_model": False},
+    }
+    other_deployment = {
+        "model_name": "restricted-claude",
+        "litellm_params": {"model": "anthropic/claude-3"},
+        "model_info": {"id": "restricted-id", "db_model": False},
+    }
+    experimental_deployment = {
+        "model_name": "experimental-gpt-4",
+        "litellm_params": {"model": "openai/gpt-4", "tags": ["experimental"]},
+        "model_info": {"id": "experimental-id", "db_model": False},
+    }
+    byok_deployment = {
+        "model_name": _BYOK_INTERNAL_NAME,
+        "litellm_params": {"model": "openai/gpt-4"},
+        "model_info": {
+            "id": "byok-deployment-id",
+            "db_model": True,
+            "team_id": _BYOK_TEAM_ID,
+            "team_public_model_name": _BYOK_PUBLIC_NAME,
+        },
+    }
+
+    router = MagicMock()
+    router.model_list = [public_deployment, other_deployment, experimental_deployment, byok_deployment]
+    router.get_model_list_from_model_alias = MagicMock(return_value=[])
+    router.get_model_names = MagicMock(return_value=[])
+    router.get_model_access_groups = MagicMock(return_value={})
+    router.get_model_ids = MagicMock(return_value=[])
+
+    monkeypatch.setattr(proxy_server, "llm_router", router)
+    monkeypatch.setattr(proxy_server, "llm_model_list", router.model_list)
+    monkeypatch.setattr(proxy_server, "user_model", None)
+    yield router
+
+
+def test_v2_model_info_default_path_scopes_to_caller(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """The v2 default listing must apply the same scoping as v1: other teams'
+    BYOK rows and experimental deployments are hidden from a non-admin."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None, team_id="other-team"):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    body = response.json()
+    surfaced_ids = [m["model_info"].get("id") for m in body["data"]]
+    assert "public-id" in surfaced_ids
+    assert "experimental-id" not in surfaced_ids
+    assert "byok-deployment-id" not in surfaced_ids
+    assert body["total_count"] >= 1
+
+
+def test_v2_model_info_default_path_enforces_key_model_allowlist(
+    client, auth_as, v2_scoped_router, mock_prisma, monkeypatch
+):
+    """Regression: a non-admin key restricted to specific models must see only
+    those models in the v2 default listing, not every ordinary deployment.
+
+    Before the scoping fix the allowlist filter was absent entirely; this
+    test pins it so a refactor cannot delete the filter silently."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(
+        role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        team_id="other-team",
+        models=["public-gpt-4"],
+    ):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    surfaced_names = [m["model_name"] for m in response.json()["data"]]
+    assert surfaced_names == ["public-gpt-4"]
+
+
+def test_v2_model_info_wildcard_key_sees_expanded_rows(client, auth_as, mock_prisma, monkeypatch):
+    """A key restricted to openai/* must see the concrete expanded rows in the
+    v2 default listing. Without the expansion before scoping, the raw
+    model_name="*" row matches no allowlist entry and the listing is empty."""
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.auth import model_checks
+
+    def fake_get_provider_models(provider, litellm_params=None):
+        if provider == "openai":
+            return ["gpt-4o"]
+        return []
+
+    wildcard_deployment = {
+        "model_name": "*",
+        "litellm_params": {"model": "openai/*"},
+        "model_info": {"id": "wildcard-id", "db_model": False},
+    }
+    router = MagicMock()
+    router.model_list = [wildcard_deployment]
+    router.get_model_list_from_model_alias = MagicMock(return_value=[])
+    router.get_model_names = MagicMock(return_value=["*"])
+    router.get_model_access_groups = MagicMock(return_value={})
+    router.get_model_ids = MagicMock(return_value=[])
+    router.get_model_list = MagicMock(return_value=[{"litellm_params": {"model": "openai/*"}}])
+
+    monkeypatch.setattr(model_checks, "get_provider_models", fake_get_provider_models)
+    monkeypatch.setattr(proxy_server, "llm_router", router)
+    monkeypatch.setattr(proxy_server, "llm_model_list", router.model_list)
+    monkeypatch.setattr(proxy_server, "user_model", None)
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(
+        role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        team_id="other-team",
+        models=["openai/*"],
+    ):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    surfaced_names = [m["model_name"] for m in response.json()["data"]]
+    assert surfaced_names == ["openai/gpt-4o"]
+
+
+def test_v2_model_info_user_model_cli_flag_does_not_500(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """A proxy started with --model (no config.yaml) sets user_model, a bare
+    string, which is appended to all_models. The v2 default listing must not
+    crash on it: it used to be appended as-is and
+    expand_wildcard_deployments_for_model_info called .get() on the string,
+    raising AttributeError -> 500."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    monkeypatch.setattr(proxy_server, "user_model", "gpt-3.5-turbo")
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    surfaced_names = [m["model_name"] for m in response.json()["data"]]
+    assert "gpt-3.5-turbo" in surfaced_names
+
+
+def test_v2_model_info_admin_sees_all_rows(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """PROXY_ADMIN keeps the full listing: BYOK rows and experimental
+    deployments included (the dashboard model page needs them)."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    surfaced_ids = [m["model_info"].get("id") for m in response.json()["data"]]
+    assert "public-id" in surfaced_ids
+    assert "restricted-id" in surfaced_ids
+    assert "experimental-id" in surfaced_ids
+    assert "byok-deployment-id" in surfaced_ids
+
+
+def test_v2_model_info_modelid_scoped_to_caller(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """`modelId` lookups must respect the caller's scope. A non-member
+    fetching another team's BYOK deployment by id gets an empty result,
+    not the row."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    mock_prisma.db.litellm_proxymodeltable.find_unique.return_value = None
+
+    v2_scoped_router.get_model_info = MagicMock(return_value=v2_scoped_router.model_list[3])
+
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None, team_id="other-team"):
+        response = client.get("/v2/model/info", params={"modelId": "byok-deployment-id"})
+
+    assert response.status_code == 200
+    assert response.json()["data"] == []
+    assert response.json()["total_count"] == 0
+
+
+def test_v2_model_info_modelid_member_sees_own_byok(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """A team member fetching their own team's BYOK deployment by id still
+    gets it back under the public name."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    v2_scoped_router.get_model_info = MagicMock(return_value=v2_scoped_router.model_list[3])
+
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None, team_id=_BYOK_TEAM_ID):
+        response = client.get("/v2/model/info", params={"modelId": "byok-deployment-id"})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert len(data) == 1
+    assert data[0]["model_name"] == _BYOK_PUBLIC_NAME
+    assert _BYOK_INTERNAL_NAME not in str(data[0]["model_name"])
+
+
+def test_v1_model_info_specific_id_scoped_to_caller(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """`litellm_model_id` on /v1/model/info must enforce the caller's
+    allowed-models scope: a non-allowed key gets a 400 'not found', not the
+    deployment row."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    byok_row = v2_scoped_router.model_list[3]
+    deployment = MagicMock()
+    deployment.model_dump = MagicMock(return_value=byok_row)
+    v2_scoped_router.get_deployment = MagicMock(return_value=deployment)
+
+    with auth_as(
+        role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        team_id="other-team",
+        models=["public-gpt-4"],
+    ):
+        response = client.get("/v1/model/info", params={"litellm_model_id": "byok-deployment-id"})
+
+    assert response.status_code == 400
+    assert "not found" in response.json()["detail"]["error"]
+
+
+def test_v2_model_info_drops_infra_metadata(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """No caller, including admins, receives infra topology fields in the
+    model-info payload: api_base, cloud role/project ids, bucket names."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    infra_row = {
+        "model_name": "infra-model",
+        "litellm_params": {
+            "model": "openai/gpt-4",
+            "api_base": "https://internal-gw.juspay-prod.internal/v1",
+            "aws_role_name": "arn:aws:iam::123456789012:role/llm-proxy-prod",
+            "vertex_project": "xyne-prod",
+            "s3_bucket_name": "s3://llm-artifacts-prod",
+        },
+        "model_info": {"id": "infra-id", "db_model": False},
+    }
+    v2_scoped_router.model_list = v2_scoped_router.model_list + [infra_row]
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    for row in response.json()["data"]:
+        params = row.get("litellm_params", {})
+        assert "api_base" not in params
+        assert "aws_role_name" not in params
+        assert "vertex_project" not in params
+        assert "s3_bucket_name" not in params
 
 
 # ---------------------------------------------------------------------------
