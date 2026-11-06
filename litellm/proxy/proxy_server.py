@@ -11934,7 +11934,7 @@ async def model_info_v2(
     }
     ```
     """
-    global llm_model_list, general_settings, user_config_file_path, proxy_config, llm_router
+    global llm_model_list, general_settings, user_config_file_path, proxy_config, llm_router, user_model
 
     # Return empty data array when no models are configured (graceful handling for fresh installs)
     if llm_router is None or not llm_router.model_list:
@@ -11971,7 +11971,7 @@ async def model_info_v2(
 
         if user_model is not None:
             # if user does not use a config.yaml, https://github.com/BerriAI/litellm/issues/2061
-            all_models += [user_model]
+            all_models += [{"model_name": user_model, "litellm_params": {"model": user_model}}]
 
         if model is not None:
             all_models = [m for m in all_models if m["model_name"] == model]

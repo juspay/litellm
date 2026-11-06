@@ -358,6 +358,71 @@ def test_v2_model_info_default_path_enforces_key_model_allowlist(
     assert surfaced_names == ["public-gpt-4"]
 
 
+def test_v2_model_info_wildcard_key_sees_expanded_rows(client, auth_as, mock_prisma, monkeypatch):
+    """A key restricted to openai/* must see the concrete expanded rows in the
+    v2 default listing. Without the expansion before scoping, the raw
+    model_name="*" row matches no allowlist entry and the listing is empty."""
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.auth import model_checks
+
+    def fake_get_provider_models(provider, litellm_params=None):
+        if provider == "openai":
+            return ["gpt-4o"]
+        return []
+
+    wildcard_deployment = {
+        "model_name": "*",
+        "litellm_params": {"model": "openai/*"},
+        "model_info": {"id": "wildcard-id", "db_model": False},
+    }
+    router = MagicMock()
+    router.model_list = [wildcard_deployment]
+    router.get_model_list_from_model_alias = MagicMock(return_value=[])
+    router.get_model_names = MagicMock(return_value=["*"])
+    router.get_model_access_groups = MagicMock(return_value={})
+    router.get_model_ids = MagicMock(return_value=[])
+    router.get_model_list = MagicMock(return_value=[{"litellm_params": {"model": "openai/*"}}])
+
+    monkeypatch.setattr(model_checks, "get_provider_models", fake_get_provider_models)
+    monkeypatch.setattr(proxy_server, "llm_router", router)
+    monkeypatch.setattr(proxy_server, "llm_model_list", router.model_list)
+    monkeypatch.setattr(proxy_server, "user_model", None)
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(
+        role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        team_id="other-team",
+        models=["openai/*"],
+    ):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    surfaced_names = [m["model_name"] for m in response.json()["data"]]
+    assert surfaced_names == ["openai/gpt-4o"]
+
+
+def test_v2_model_info_user_model_cli_flag_does_not_500(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
+    """A proxy started with --model (no config.yaml) sets user_model, a bare
+    string, which is appended to all_models. The v2 default listing must not
+    crash on it: it used to be appended as-is and
+    expand_wildcard_deployments_for_model_info called .get() on the string,
+    raising AttributeError -> 500."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    monkeypatch.setattr(proxy_server, "user_model", "gpt-3.5-turbo")
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    surfaced_names = [m["model_name"] for m in response.json()["data"]]
+    assert "gpt-3.5-turbo" in surfaced_names
+
+
 def test_v2_model_info_admin_sees_all_rows(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
     """PROXY_ADMIN keeps the full listing: BYOK rows and experimental
     deployments included (the dashboard model page needs them)."""
