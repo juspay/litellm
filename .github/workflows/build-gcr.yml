@@ -1,4 +1,16 @@
-name: Build and Push to GCR
+name: Build and Push to GHCR
+
+# The xyne GCP projects sit inside a VPC Service Controls perimeter, so
+# GitHub-hosted runners can no longer push to gcr.io/<project>/litellm.
+# CI publishes once to the public GHCR package instead; each GCP project pulls
+# it through its own Artifact Registry remote repository (pull-through cache).
+#
+#   CI pushes:  ghcr.io/juspay/litellm:<sha6>-juspay-build-v<run>
+#   Projects:   xyne-prod, xyne-dev-461113, xyne-infra-external
+#               asia-south1-docker.pkg.dev/<project>/<remote-repo>/juspay/litellm:<tag>
+#
+# File name kept as build-gcr.yml so the run number (part of the tag) keeps
+# counting from the previous builds.
 
 on:
   push:
@@ -8,65 +20,59 @@ on:
       - sync/v*
       - feature/*
       - release/*
+      - feature/ghcr-public  # TEMP: test the GHCR push before merge; remove before merging
   workflow_dispatch:  # allows manual trigger for testing
 
+permissions:
+  contents: read
+  packages: write
+
 env:
-  IMAGE_NAME: litellm
+  IMAGE_REPOSITORY: ghcr.io/juspay/litellm
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    name: "Build & Push to GCR (env: ${{ matrix.environment }}, project: ${{ matrix.project }})"
-    strategy:
-      matrix:
-        include:
-          - environment: prod
-            project: xyne-prod
-            secret_key: SERVICE_ACCOUNT_KEY
-          - environment: sandbox
-            project: xyne-dev-461113
-            secret_key: SERVICE_ACCOUNT_KEY_SANDBOX
-          - environment: prod
-            project: xyne-infra-external
-            secret_key: SERVICE_ACCOUNT_KEY_EXTERNAL
+    name: Build & Push to GHCR
 
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-
-      - name: Get short commit SHA
-        id: commit
-        run: echo "sha=$(git rev-parse --short=6 HEAD)" >> $GITHUB_OUTPUT
+        with:
+          persist-credentials: false
 
       - name: Set image tag
         id: image
         run: |
-          IMAGE_TAG="gcr.io/${{ matrix.project }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.sha }}-juspay-build-v${{ github.run_number }}"
-          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "Image tag: ${IMAGE_TAG}"
+          SHA="$(git rev-parse --short=6 HEAD)"
+          TAG="${SHA}-juspay-build-v${GITHUB_RUN_NUMBER}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Image: ${IMAGE_REPOSITORY}:${TAG}"
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2.1.13
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
         with:
-          credentials_json: ${{ secrets[matrix.secret_key] }}
-
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@77e7a554d41e2ee56fc945c52dfd3f33d12def9a  # v2.1.4
-
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker gcr.io
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0
 
       - name: Build and push image
+        id: build
         uses: docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0  # v5.3.0
         with:
           context: .
           file: ./docker/Dockerfile.non_root
           push: true
           platforms: linux/amd64
-          tags: ${{ steps.image.outputs.tag }}
+          tags: ${{ env.IMAGE_REPOSITORY }}:${{ steps.image.outputs.tag }}
+          # Links the GHCR package to this repo so GITHUB_TOKEN keeps write access.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
@@ -74,24 +80,22 @@ jobs:
 
       - name: Build Summary
         env:
-          BUILD_ENVIRONMENT: ${{ matrix.environment }}
-          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+          TAG: ${{ steps.image.outputs.tag }}
+          SHA: ${{ steps.image.outputs.sha }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          echo "## Build Summary (${BUILD_ENVIRONMENT})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | \`${BUILD_ENVIRONMENT}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commit SHA | \`${COMMIT_SHA}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build Number | \`${{ github.run_number }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Image Pushed" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.image.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ steps.image.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Build Summary"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Commit SHA | \`${SHA}\` |"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
+            echo "| Build Number | \`${GITHUB_RUN_NUMBER}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo ""
+            echo "### Image Pushed"
+            echo "\`\`\`"
+            echo "${IMAGE_REPOSITORY}:${TAG}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
