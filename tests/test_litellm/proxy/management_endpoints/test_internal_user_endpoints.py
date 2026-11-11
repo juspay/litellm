@@ -4675,7 +4675,6 @@ class TestSendEmailViaSesWorkloadIdentity:
         "missing_env",
         ["AWS_ROLE_ARN", "SENDER_EMAIL"],
     )
-    @pytest.mark.asyncio
     async def test_skips_when_required_env_vars_missing(self, mocker, monkeypatch, missing_env):
         env = {
             "AWS_ROLE_ARN": "arn:aws:iam::111:role/ses",

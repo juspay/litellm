@@ -2315,7 +2315,7 @@ async def get_users(
 
 
 def _send_email_via_ses_blocking(
-    receiver_emails: List[str],
+    receiver_emails: list[str],
     subject: str,
     html_body: str,
 ) -> None:
@@ -2332,7 +2332,7 @@ def _send_email_via_ses_blocking(
         from google.auth.transport import requests as google_requests
         from google.oauth2 import id_token
     except ImportError as e:
-        print("[DEBUG] AWS SES deps missing: %s" % e)  # noqa: T201
+        verbose_proxy_logger.debug("AWS SES deps missing: %s", e)
         return
 
     aws_role_arn = os.getenv("AWS_ROLE_ARN")
@@ -2340,7 +2340,7 @@ def _send_email_via_ses_blocking(
     sender_email = os.getenv("SENDER_EMAIL")
 
     if not all([aws_role_arn, sender_email]):
-        print("[DEBUG] Missing env vars, skipping email")  # noqa: T201
+        verbose_proxy_logger.warning("AWS_ROLE_ARN or SENDER_EMAIL not set, skipping key-rotation email")
         return
 
     try:
@@ -2377,8 +2377,8 @@ def _send_email_via_ses_blocking(
             Destinations=receiver_emails,
             RawMessage={"Data": msg.as_string()},
         )
-    except Exception as e:
-        print("[DEBUG] FAILED to send email via AWS SES: %s" % str(e))  # noqa: T201
+    except Exception:
+        verbose_proxy_logger.exception("Failed to send key-rotation email via AWS SES")
 
 
 async def _send_email_via_ses(
