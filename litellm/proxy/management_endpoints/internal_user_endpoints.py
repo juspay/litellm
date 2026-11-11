@@ -2314,18 +2314,18 @@ async def get_users(
     }
 
 
-async def _send_email_via_ses(
+def _send_email_via_ses_blocking(
     receiver_emails: List[str],
     subject: str,
     html_body: str,
 ) -> None:
     """
-    Send email via AWS SES using Google OIDC auth. The OIDC ID token for AWS
-    STS is minted from the environment via Workload Identity
-    (google.oauth2.id_token.fetch_id_token), so no GCP service account key
-    needs to be mounted. The pod's Kubernetes service account must be
-    annotated for Workload Identity and its GSA added to the AWS role trust
-    policy.
+    Blocking half of _send_email_via_ses; must only be run via
+    asyncio.to_thread. Mints the AWS STS web-identity token from the
+    environment via Workload Identity (google.oauth2.id_token.fetch_id_token),
+    so no GCP service account key needs to be mounted. The pod's Kubernetes
+    service account must be annotated for Workload Identity and its GSA added
+    to the AWS role trust policy.
     """
     try:
         import boto3
@@ -2379,6 +2379,24 @@ async def _send_email_via_ses(
         )
     except Exception as e:
         print("[DEBUG] FAILED to send email via AWS SES: %s" % str(e))  # noqa: T201
+
+
+async def _send_email_via_ses(
+    receiver_emails: list[str],
+    subject: str,
+    html_body: str,
+) -> None:
+    """
+    Send email via AWS SES using Google OIDC auth. The blocking token mint,
+    STS AssumeRoleWithWebIdentity, and SES send run in a worker thread so
+    they never stall the proxy event loop.
+    """
+    await asyncio.to_thread(
+        _send_email_via_ses_blocking,
+        receiver_emails,
+        subject,
+        html_body,
+    )
 
 
 async def _cleanup_service_accounts_on_user_delete(

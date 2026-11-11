@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -4723,3 +4724,26 @@ class TestSendEmailViaSesWorkloadIdentity:
 
         requested = {call.args[0] for call in getenv.call_args_list}
         assert "GCP_SERVICE_ACCOUNT_KEY" not in requested
+
+    @pytest.mark.asyncio
+    async def test_runs_blocking_send_in_worker_thread(self, mocker, monkeypatch):
+        monkeypatch.setenv("AWS_ROLE_ARN", "arn:aws:iam::111:role/ses")
+        monkeypatch.setenv("SENDER_EMAIL", "sender@example.test")
+
+        thread_ids: dict = {}
+
+        def fake_fetch_id_token(request, audience):
+            thread_ids["fetch"] = threading.get_ident()
+            return "tok"
+
+        mocker.patch("google.oauth2.id_token.fetch_id_token", side_effect=fake_fetch_id_token)
+        mocker.patch("boto3.client", return_value=None)
+        mocker.patch("boto3.Session")
+
+        await _send_email_via_ses(
+            receiver_emails=["owner@example.test"],
+            subject="x",
+            html_body="y",
+        )
+
+        assert thread_ids["fetch"] != threading.get_ident()
