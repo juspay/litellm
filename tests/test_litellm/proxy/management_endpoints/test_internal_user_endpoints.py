@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 import os
 import sys
 import threading
@@ -4746,3 +4748,52 @@ class TestSendEmailViaSesWorkloadIdentity:
         )
 
         assert thread_ids["fetch"] != threading.get_ident()
+
+    @pytest.mark.asyncio
+    async def test_email_task_failure_is_logged_not_swallowed(self, mocker, caplog):
+        mock_prisma_client = mocker.MagicMock()
+        mock_prisma_client.db.litellm_usertable.find_many = mocker.AsyncMock(
+            return_value=[
+                SimpleNamespace(user_id="deleted-user", user_email="deleted@example.test"),
+                SimpleNamespace(user_id="owner-user", user_email="owner@example.test"),
+            ]
+        )
+        mock_prisma_client.db.litellm_serviceaccounttable.find_many = mocker.AsyncMock(
+            return_value=[SimpleNamespace(user_id="sa-1", owner_ids=["deleted-user", "owner-user"])]
+        )
+        mock_prisma_client.db.litellm_verificationtoken.find_many = mocker.AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    token="tok-1",
+                    key_name="k",
+                    key_alias="a",
+                    blocked=False,
+                    expires=None,
+                )
+            ]
+        )
+        mock_prisma_client.db.litellm_verificationtoken.update = mocker.AsyncMock()
+        mock_prisma_client.db.litellm_serviceaccounttable.update = mocker.AsyncMock()
+        mock_prisma_client.db.litellm_serviceaccounttable.delete_many = mocker.AsyncMock()
+        mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
+            return_value=SimpleNamespace(user_email="sa-1@example.test")
+        )
+
+        mocker.patch(
+            "litellm.proxy.management_endpoints.internal_user_endpoints._send_email_via_ses",
+            new_callable=mocker.AsyncMock,
+            side_effect=RuntimeError("sts unreachable"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            await _cleanup_service_accounts_on_user_delete(
+                deleted_user_ids=["deleted-user"],
+                prisma_client=mock_prisma_client,
+            )
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+        assert any(
+            "Key-rotation email task failed: sts unreachable" in record.message
+            for record in caplog.records
+        ), "fire-and-forget email task exception was swallowed"

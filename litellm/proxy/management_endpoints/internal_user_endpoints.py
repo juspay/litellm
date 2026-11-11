@@ -2399,6 +2399,14 @@ async def _send_email_via_ses(
     )
 
 
+def _log_email_task_exception(task: "asyncio.Task[None]") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        verbose_proxy_logger.warning("Key-rotation email task failed: %s", exc)
+
+
 async def _cleanup_service_accounts_on_user_delete(
     deleted_user_ids: List[str],
     prisma_client: "PrismaClient",
@@ -2501,13 +2509,14 @@ async def _cleanup_service_accounts_on_user_delete(
         )
 
         # Send one email to all remaining owners of this service account
-        asyncio.create_task(
+        email_task = asyncio.create_task(
             _send_email_via_ses(
                 receiver_emails=owner_emails,
                 subject=("Action Required: Service Account Key Rotation Needed"),
                 html_body=html_body,
             )
         )
+        email_task.add_done_callback(_log_email_task_exception)
 
     await prisma_client.db.litellm_serviceaccounttable.delete_many(where={"user_id": {"in": deleted_user_ids}})
 
