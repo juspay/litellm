@@ -1,4 +1,19 @@
-name: Build and Push to GCR
+name: Build and Push (GHCR + GCR)
+
+# The xyne GCP projects sit inside a VPC Service Controls perimeter, so
+# GitHub-hosted runners can no longer push to gcr.io/<project>/litellm.
+#
+# Job `ghcr` (primary): builds once and pushes to ghcr.io/juspay/litellm.
+# GKE pulls it through the central Artifact Registry pull-through cache
+# owned by platform:
+#   asia-south1-docker.pkg.dev/artifactory-494310/ghcr-private/juspay/litellm:<tag>
+#
+# Job `gcr` (legacy): the previous direct push to gcr.io/<project>/litellm.
+# Kept as a separate, non-blocking job; pushes fail while the perimeter
+# blocks GitHub-hosted runners.
+#
+# File name kept as build-gcr.yml so the run number (part of the tag) keeps
+# counting from the previous builds.
 
 on:
   push:
@@ -8,16 +23,104 @@ on:
       - sync/v*
       - feature/*
       - release/*
+      - feature/ghcr-public  # TEMP: test the GHCR push before merge; remove before merging
   workflow_dispatch:  # allows manual trigger for testing
+
+permissions:
+  contents: read
 
 env:
   IMAGE_NAME: litellm
+  GHCR_REPOSITORY: ghcr.io/juspay/litellm
+  DEPLOY_REPOSITORY: asia-south1-docker.pkg.dev/artifactory-494310/ghcr-private/juspay/litellm
 
 jobs:
-  build-and-push:
+  ghcr:
     runs-on: ubuntu-latest
-    name: "Build & Push to GCR (env: ${{ matrix.environment }}, project: ${{ matrix.project }})"
+    name: Build & Push to GHCR
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set image tag
+        id: image
+        run: |
+          SHA="$(git rev-parse --short=6 HEAD)"
+          TAG="${SHA}-juspay-build-v${GITHUB_RUN_NUMBER}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Image: ${GHCR_REPOSITORY}:${TAG}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0  # v5.3.0
+        with:
+          context: .
+          file: ./docker/Dockerfile.non_root
+          push: true
+          platforms: linux/amd64
+          tags: ${{ env.GHCR_REPOSITORY }}:${{ steps.image.outputs.tag }}
+          # Links the GHCR package to this repo so GITHUB_TOKEN keeps write access.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            PROXY_EXTRAS_SOURCE=local
+
+      - name: Build Summary
+        env:
+          TAG: ${{ steps.image.outputs.tag }}
+          SHA: ${{ steps.image.outputs.sha }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "## Build Summary (GHCR)"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Commit SHA | \`${SHA}\` |"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
+            echo "| Build Number | \`${GITHUB_RUN_NUMBER}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo ""
+            echo "### Image pushed (GHCR)"
+            echo "\`\`\`"
+            echo "${GHCR_REPOSITORY}:${TAG}"
+            echo "\`\`\`"
+            echo ""
+            echo "### Image to deploy (infraswitch, via central pull-through cache)"
+            echo "\`\`\`"
+            echo "image_repository: ${DEPLOY_REPOSITORY}"
+            echo "image_tag: ${TAG}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  gcr:
+    runs-on: ubuntu-latest
+    name: "Legacy push to GCR (env: ${{ matrix.environment }}, project: ${{ matrix.project }})"
+    # Non-blocking: the VPC-SC perimeter currently rejects pushes from
+    # GitHub-hosted runners, so a failure here must not fail the run.
+    continue-on-error: true
     strategy:
+      fail-fast: false
       matrix:
         include:
           - environment: prod
@@ -33,17 +136,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-
-      - name: Get short commit SHA
-        id: commit
-        run: echo "sha=$(git rev-parse --short=6 HEAD)" >> $GITHUB_OUTPUT
+        with:
+          persist-credentials: false
 
       - name: Set image tag
         id: image
+        env:
+          PROJECT: ${{ matrix.project }}
         run: |
-          IMAGE_TAG="gcr.io/${{ matrix.project }}/${{ env.IMAGE_NAME }}:${{ steps.commit.outputs.sha }}-juspay-build-v${{ github.run_number }}"
-          echo "tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "Image tag: ${IMAGE_TAG}"
+          SHA="$(git rev-parse --short=6 HEAD)"
+          TAG="gcr.io/${PROJECT}/${IMAGE_NAME}:${SHA}-juspay-build-v${GITHUB_RUN_NUMBER}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: ${TAG}"
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2.1.13
@@ -75,23 +180,21 @@ jobs:
       - name: Build Summary
         env:
           BUILD_ENVIRONMENT: ${{ matrix.environment }}
-          COMMIT_SHA: ${{ steps.commit.outputs.sha }}
+          SHA: ${{ steps.image.outputs.sha }}
+          TAG: ${{ steps.image.outputs.tag }}
         run: |
-          echo "## Build Summary (${BUILD_ENVIRONMENT})" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | \`${BUILD_ENVIRONMENT}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Commit SHA | \`${COMMIT_SHA}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Build Number | \`${{ github.run_number }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Image Pushed" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "${{ steps.image.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Pull Command" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-          echo "docker pull ${{ steps.image.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Legacy GCR push (${BUILD_ENVIRONMENT})"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Environment | \`${BUILD_ENVIRONMENT}\` |"
+            echo "| Commit SHA | \`${SHA}\` |"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
+            echo "| Build Number | \`${GITHUB_RUN_NUMBER}\` |"
+            echo ""
+            echo "### Image Pushed"
+            echo "\`\`\`"
+            echo "${TAG}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
