@@ -283,7 +283,7 @@ constraint-dependencies = [
     "werkzeug>=3.1.9",
     "graphql-core>=3.2.12",
     "restrictedpython>=8.4",
-    "oauthlib>=4.0.0",
+    "oauthlib>=4.0.1",
     "langgraph-sdk>=0.4.6",
     "packaging>=24.0",
     # eMudra CA compromise: certifi <2026.10.19 still trusts emSign ECC Root CA - G3
