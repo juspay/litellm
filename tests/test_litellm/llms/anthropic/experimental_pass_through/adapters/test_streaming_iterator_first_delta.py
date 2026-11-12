@@ -378,12 +378,21 @@ def _assert_deltas_match_block_types(events: List[dict]) -> None:
 
 
 def test_reasoning_bundled_with_first_text_does_not_leak_into_text_block_sync():
-    """Regression for upstream PR #33241.
+    """Regression for upstream PR #33241, extended by the GLM boundary fix.
 
-    NVIDIA NIM Nemotron 3 Ultra can bundle the tail of its reasoning together
-    with the first visible text token. The content-block detector must keep
-    that mixed chunk in the thinking block while the delta translator emits
-    thinking_delta.
+    NVIDIA NIM Nemotron 3 Ultra (and GLM) can bundle the tail of its reasoning
+    together with the first visible text token in a single chunk. PR #33241
+    stopped that first token from leaking into the thinking block as a
+    ``thinking_delta`` — but did so by SILENTLY DROPPING it (the translator's
+    ``reasoning_content`` return precedence preempted the accumulated text).
+
+    ``_CombinedChunkSplitter._split_reasoning_and_content`` now splits the mixed
+    chunk into a reasoning-only chunk followed by a content-only chunk, so the
+    first token is preserved in a properly-typed text block. The invariant that
+    matters to Claude/Codex clients — every ``*_delta`` lands in a block whose
+    type accepts it (``_assert_deltas_match_block_types``) — still holds; the
+    only change is that the previously-lost first token ("! I'm an") is now
+    delivered instead of dropped.
     """
     chunks = [
         _make_chunk(Delta(reasoning_content="The", content=None)),
@@ -403,12 +412,13 @@ def test_reasoning_bundled_with_first_text_does_not_leak_into_text_block_sync():
         and e["delta"].get("type") == "thinking_delta"
     )
     assert thinking == "The assistant."
-    assert "".join(_text_deltas(events)) == " AI assistant."
+    # First token is now preserved (previously silently dropped by #33241).
+    assert "".join(_text_deltas(events)) == "! I'm an AI assistant."
 
 
 @pytest.mark.asyncio
 async def test_reasoning_bundled_with_first_text_does_not_leak_into_text_block_async():
-    """Async path mirrors the sync regression for upstream PR #33241."""
+    """Async path mirrors the sync regression for PR #33241 + the GLM boundary fix."""
     chunks = [
         _make_chunk(Delta(reasoning_content="The", content=None)),
         _make_chunk(Delta(reasoning_content=" assistant.", content="! I'm an")),
@@ -429,4 +439,5 @@ async def test_reasoning_bundled_with_first_text_does_not_leak_into_text_block_a
         and e["delta"].get("type") == "thinking_delta"
     )
     assert thinking == "The assistant."
-    assert "".join(_text_deltas(events)) == " AI assistant."
+    # First token is now preserved (previously silently dropped by #33241).
+    assert "".join(_text_deltas(events)) == "! I'm an AI assistant."
