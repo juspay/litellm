@@ -442,6 +442,132 @@ def test_v2_model_info_admin_sees_all_rows(client, auth_as, v2_scoped_router, mo
     assert "byok-deployment-id" in surfaced_ids
 
 
+@pytest.fixture
+def db_search_rows():
+    """LiteLLM_ProxyModelTable rows the `?search=` DB fetch returns.
+
+    These mimic rows that live only in the DB (not in the router): an
+    experimental deployment (scaled-down GPUStack replica) and a restricted
+    model outside the caller's key allowlist. The DB query matches them by
+    `model_name`-contains; without re-scoping of the combined search result
+    they would reappear in `?search=` responses to a non-admin."""
+    experimental_row = MagicMock()
+    experimental_row.model_id = "db-experimental-id"
+    experimental_row.model_name = "experimental-gpt-4"
+    experimental_row.litellm_params = {
+        "model": "openai/gpt-4",
+        "tags": ["experimental"],
+    }
+    experimental_row.model_info = {"id": "db-experimental-id", "db_model": True}
+
+    restricted_row = MagicMock()
+    restricted_row.model_id = "db-restricted-id"
+    restricted_row.model_name = "restricted-claude"
+    restricted_row.litellm_params = {"model": "anthropic/claude-3"}
+    restricted_row.model_info = {"id": "db-restricted-id", "db_model": True}
+
+    return [experimental_row, restricted_row]
+
+
+def _decrypt_db_search_rows(rows):
+    """Mimic ProxyConfig.decrypt_model_list_from_db for the mock rows."""
+    return [
+        {
+            "model_name": r.model_name,
+            "litellm_params": dict(r.litellm_params),
+            "model_info": dict(r.model_info),
+        }
+        for r in rows
+    ]
+
+
+def test_v2_model_info_search_scopes_db_results_to_caller(
+    client, auth_as, v2_scoped_router, mock_prisma, db_search_rows, monkeypatch
+):
+    """Regression: `/v2/model/info?search=` appends DB search results after
+    the caller-scope filter runs on the listing. The DB fetch is a plain
+    model_name-contains query with no notion of allowlists or experimental
+    tags, so restricted and experimental deployments that the pre-search
+    scoping dropped used to reappear via `?search=`."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    mock_prisma.db.litellm_proxymodeltable.count.return_value = len(db_search_rows)
+    mock_prisma.db.litellm_proxymodeltable.find_many.return_value = db_search_rows
+    monkeypatch.setattr(proxy_server.proxy_config, "decrypt_model_list_from_db", _decrypt_db_search_rows)
+
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None, team_id="other-team"):
+        response = client.get("/v2/model/info", params={"search": "gpt"})
+
+    assert response.status_code == 200
+    surfaced_ids = [m["model_info"].get("id") for m in response.json()["data"]]
+    assert "public-id" in surfaced_ids, "matching router row the caller can see must stay"
+    assert "experimental-id" not in surfaced_ids
+    assert "byok-deployment-id" not in surfaced_ids
+    assert "db-experimental-id" not in surfaced_ids, (
+        "experimental DB row appended by search must not bypass the experimental filter"
+    )
+    # The caller has no model restrictions, so the ordinary DB row stays —
+    # same visibility as the default (unsearched) listing. The allowlist
+    # case is pinned by test_v2_model_info_search_scopes_db_results_for_key_allowlist.
+    assert "db-restricted-id" in surfaced_ids
+
+
+def test_v2_model_info_search_scopes_db_results_for_key_allowlist(
+    client, auth_as, v2_scoped_router, mock_prisma, db_search_rows, monkeypatch
+):
+    """Regression: a key restricted to specific models must not see other
+    models through the search path's DB fetch. The restricted DB row
+    matches the search term by model_name but is outside the allowlist."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    mock_prisma.db.litellm_proxymodeltable.count.return_value = len(db_search_rows)
+    mock_prisma.db.litellm_proxymodeltable.find_many.return_value = db_search_rows
+    monkeypatch.setattr(proxy_server.proxy_config, "decrypt_model_list_from_db", _decrypt_db_search_rows)
+
+    with auth_as(
+        role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        team_id="other-team",
+        models=["public-gpt-4"],
+    ):
+        response = client.get("/v2/model/info", params={"search": "public"})
+
+    assert response.status_code == 200
+    surfaced_names = [m.get("model_name") for m in response.json()["data"]]
+    assert surfaced_names == ["public-gpt-4"], (
+        "a key restricted to public-gpt-4 must see exactly that row, "
+        "even when DB search rows match the term by model_name"
+    )
+
+
+def test_v2_model_info_search_admin_sees_db_results(
+    client, auth_as, v2_scoped_router, mock_prisma, db_search_rows, monkeypatch
+):
+    """Admin search keeps the full combined result: the DB rows the search
+    fetches (experimental and restricted included) stay visible, so the
+    dashboard model page search keeps working."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    mock_prisma.db.litellm_proxymodeltable.count.return_value = len(db_search_rows)
+    mock_prisma.db.litellm_proxymodeltable.find_many.return_value = db_search_rows
+    monkeypatch.setattr(proxy_server.proxy_config, "decrypt_model_list_from_db", _decrypt_db_search_rows)
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get("/v2/model/info", params={"search": "gpt"})
+
+    assert response.status_code == 200
+    surfaced_ids = [m["model_info"].get("id") for m in response.json()["data"]]
+    assert "public-id" in surfaced_ids
+    assert "experimental-id" in surfaced_ids
+    assert "db-experimental-id" in surfaced_ids, "admin search must keep surfacing DB rows, including experimental ones"
+
+
 def test_v2_model_info_modelid_scoped_to_caller(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
     """`modelId` lookups must respect the caller's scope. A non-member
     fetching another team's BYOK deployment by id gets an empty result,

@@ -11235,6 +11235,13 @@ async def _fetch_db_models_for_search(
     `count(...)` of rows matching `search` (not yet team-scoped) so the
     UI's pagination stays accurate without materializing every row.
 
+    Callers must pass the combined (router + DB) result through
+    `_filter_deployments_to_caller_scope` before returning it to a
+    non-admin caller: the `model_name`-contains DB query has no notion
+    of key/team allowlists or experimental tags, so unscoped DB rows
+    would reintroduce restricted and experimental deployments that the
+    pre-search scoping already dropped.
+
     Earlier iterations also OR'd a JSON-path match on
     `model_info.team_public_model_name` to surface BYOK rows that live
     only in the DB. That branch fell back to `string_contains: ""`
@@ -11291,6 +11298,8 @@ async def _apply_search_filter_to_models(
     page: int = 1,
     size: int = 50,
     sort_by: Optional[str] = None,
+    llm_router: Optional[Router] = None,
+    show_experimental: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
     """
     Apply search filter to models, querying database for additional matching models.
@@ -11311,6 +11320,16 @@ async def _apply_search_filter_to_models(
         sort_by: Sort field. When set, results must be sorted across the
             full match set, so the DB fetch is capped at
             ``_SORTED_SEARCH_DB_FETCH_CAP`` instead of one page.
+        llm_router: Router used, together with ``user_api_key_dict``, to
+            re-apply caller scoping to the combined (router + DB) result.
+            DB rows are fetched by a plain ``model_name``-contains query
+            with no notion of key/team allowlists or experimental tags, so
+            without this pass a restricted or experimental deployment that
+            the pre-search scoping dropped would reappear via ``?search=``.
+        show_experimental: Passed through to
+            ``_filter_deployments_to_caller_scope``; callers that already
+            dropped experimental deployments before searching (e.g. the
+            v2 listing) pass the value they used there.
 
     Returns:
         Tuple of (filtered_models, total_count). total_count is None if not searching.
@@ -11388,7 +11407,25 @@ async def _apply_search_filter_to_models(
     else:
         search_total_count = router_models_count
 
-    return filtered_router_models + db_models, search_total_count
+    combined = filtered_router_models + db_models
+
+    # Re-apply caller scoping to the COMBINED result. The DB fetch above
+    # is a plain model_name-contains query: it has no notion of key/team
+    # allowlists or experimental tags, and `all_models` may also contain
+    # pre-scope rows when a caller invokes this helper with an unfiltered
+    # list. Without this pass a restricted or experimental deployment
+    # that earlier scoping dropped reappears via `?search=`. Router rows
+    # already scoped by the handler are idempotent through this filter.
+    if user_api_key_dict is not None and llm_router is not None:
+        combined = await _filter_deployments_to_caller_scope(
+            all_models=combined,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
+            prisma_client=prisma_client,
+            show_experimental=show_experimental,
+        )
+
+    return combined, search_total_count
 
 
 def _normalize_datetime_for_sorting(dt: Any) -> Optional[datetime]:
@@ -12001,6 +12038,8 @@ async def model_info_v2(
             page=page,
             size=size,
             sort_by=sortBy,
+            llm_router=llm_router,
+            show_experimental=user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN,
         )
 
     if user_models_only:
