@@ -1678,6 +1678,103 @@ async def test_apply_search_filter_bounds_db_fetch_by_page_and_cap():
 
 
 @pytest.mark.asyncio
+async def test_apply_search_filter_scopes_db_results_to_caller():
+    """
+    Regression test: `/v2/model/info?search=...` appends DB search results
+    AFTER the caller-scope filter runs on the listing, so a plain
+    model_name-contains DB fetch reintroduced restricted (key/team
+    allowlist miss) and experimental deployments that the pre-search
+    scoping had dropped. The combined (router + DB) result must be scoped
+    by `_filter_deployments_to_caller_scope` too.
+    """
+    from litellm.proxy.proxy_server import _apply_search_filter_to_models
+
+    # Router-side public row the caller is allowed to see.
+    public_model = {
+        "model_name": "gpt-4-public",
+        "litellm_params": {"model": "openai/gpt-4"},
+        "model_info": {"id": "public-id", "db_model": False},
+    }
+
+    # DB-only rows fetched by the search: an experimental deployment and
+    # a restricted model the caller's key does not allow.
+    db_experimental_row = MagicMock()
+    db_experimental_row.model_id = "db-experimental-id"
+    db_experimental_row.model_name = "gpt-4-experimental"
+    db_experimental_row.model_info = {
+        "id": "db-experimental-id",
+        "db_model": True,
+    }
+    db_experimental_row.litellm_params = {
+        "model": "openai/gpt-4",
+        "tags": ["experimental"],
+    }
+    db_restricted_row = MagicMock()
+    db_restricted_row.model_id = "db-restricted-id"
+    db_restricted_row.model_name = "gpt-4-restricted"
+    db_restricted_row.model_info = {
+        "id": "db-restricted-id",
+        "db_model": True,
+    }
+    db_restricted_row.litellm_params = {"model": "openai/gpt-4"}
+
+    prisma_client = MagicMock()
+    prisma_client.db.litellm_proxymodeltable.count = AsyncMock(return_value=2)
+    prisma_client.db.litellm_proxymodeltable.find_many = AsyncMock(
+        return_value=[db_experimental_row, db_restricted_row]
+    )
+    caller_user_row = MagicMock()
+    caller_user_row.teams = []
+    prisma_client.db.litellm_usertable.find_unique = AsyncMock(return_value=caller_user_row)
+
+    def _decrypt(rows):
+        return [
+            {
+                "model_name": r.model_name,
+                "litellm_params": r.litellm_params,
+                "model_info": r.model_info,
+            }
+            for r in rows
+        ]
+
+    proxy_config = MagicMock()
+    proxy_config.decrypt_model_list_from_db = _decrypt
+
+    router = MagicMock()
+    router.get_model_names = MagicMock(return_value=["gpt-4-public", "gpt-4-restricted"])
+    router.get_model_access_groups = MagicMock(return_value={})
+
+    non_admin = MagicMock(spec=UserAPIKeyAuth)
+    non_admin.user_role = LitellmUserRoles.INTERNAL_USER
+    non_admin.user_id = "user-1"
+    non_admin.team_id = None
+    non_admin.team_models = []
+    non_admin.models = ["gpt-4-public"]  # key allowlist: only the public row
+
+    filtered, _ = await _apply_search_filter_to_models(
+        all_models=[public_model],
+        search="gpt-4",
+        prisma_client=prisma_client,
+        proxy_config=proxy_config,
+        user_api_key_dict=non_admin,
+        page=1,
+        size=50,
+        sort_by=None,
+        llm_router=router,
+        show_experimental=False,
+    )
+
+    filtered_ids = {m["model_info"]["id"] for m in filtered}
+    assert "public-id" in filtered_ids, "allowed router row must stay in search results"
+    assert "db-experimental-id" not in filtered_ids, (
+        "experimental DB row appended by search must not bypass the experimental filter"
+    )
+    assert "db-restricted-id" not in filtered_ids, (
+        "DB row outside the key allowlist must not bypass the allowlist via search"
+    )
+
+
+@pytest.mark.asyncio
 async def test_filter_models_by_team_id_excludes_viewer_direct_access():
     """
     Regression test: when the UI picks a specific team in the Current Team

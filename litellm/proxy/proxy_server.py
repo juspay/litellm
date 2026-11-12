@@ -11255,6 +11255,13 @@ async def _fetch_db_models_for_search(
     `count(...)` of rows matching `search` (not yet team-scoped) so the
     UI's pagination stays accurate without materializing every row.
 
+    Callers must pass the combined (router + DB) result through
+    `_filter_deployments_to_caller_scope` before returning it to a
+    non-admin caller: the `model_name`-contains DB query has no notion
+    of key/team allowlists or experimental tags, so unscoped DB rows
+    would reintroduce restricted and experimental deployments that the
+    pre-search scoping already dropped.
+
     Earlier iterations also OR'd a JSON-path match on
     `model_info.team_public_model_name` to surface BYOK rows that live
     only in the DB. That branch fell back to `string_contains: ""`
@@ -11311,6 +11318,8 @@ async def _apply_search_filter_to_models(
     page: int = 1,
     size: int = 50,
     sort_by: Optional[str] = None,
+    llm_router: Optional[Router] = None,
+    show_experimental: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
     """
     Apply search filter to models, querying database for additional matching models.
@@ -11331,6 +11340,16 @@ async def _apply_search_filter_to_models(
         sort_by: Sort field. When set, results must be sorted across the
             full match set, so the DB fetch is capped at
             ``_SORTED_SEARCH_DB_FETCH_CAP`` instead of one page.
+        llm_router: Router used, together with ``user_api_key_dict``, to
+            re-apply caller scoping to the combined (router + DB) result.
+            DB rows are fetched by a plain ``model_name``-contains query
+            with no notion of key/team allowlists or experimental tags, so
+            without this pass a restricted or experimental deployment that
+            the pre-search scoping dropped would reappear via ``?search=``.
+        show_experimental: Passed through to
+            ``_filter_deployments_to_caller_scope``; callers that already
+            dropped experimental deployments before searching (e.g. the
+            v2 listing) pass the value they used there.
 
     Returns:
         Tuple of (filtered_models, total_count). total_count is None if not searching.
@@ -11408,7 +11427,25 @@ async def _apply_search_filter_to_models(
     else:
         search_total_count = router_models_count
 
-    return filtered_router_models + db_models, search_total_count
+    combined = filtered_router_models + db_models
+
+    # Re-apply caller scoping to the COMBINED result. The DB fetch above
+    # is a plain model_name-contains query: it has no notion of key/team
+    # allowlists or experimental tags, and `all_models` may also contain
+    # pre-scope rows when a caller invokes this helper with an unfiltered
+    # list. Without this pass a restricted or experimental deployment
+    # that earlier scoping dropped reappears via `?search=`. Router rows
+    # already scoped by the handler are idempotent through this filter.
+    if user_api_key_dict is not None and llm_router is not None:
+        combined = await _filter_deployments_to_caller_scope(
+            all_models=combined,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
+            prisma_client=prisma_client,
+            show_experimental=show_experimental,
+        )
+
+    return combined, search_total_count
 
 
 def _normalize_datetime_for_sorting(dt: Any) -> Optional[datetime]:
@@ -11764,14 +11801,74 @@ async def _filter_models_by_team_id(
     return filtered_models
 
 
+async def _caller_can_see_deployment(
+    found_model: dict,
+    user_api_key_dict: UserAPIKeyAuth,
+    llm_router: Router,
+    prisma_client: Any,
+) -> bool:
+    """Whether the caller may see this deployment in a model/info response.
+
+    Enforces the same three scopes as the /v2/model/info listing: key/team
+    model allowlists, experimental-deployment tags, and BYOK team membership.
+    """
+    is_proxy_admin = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
+    filtered = await _filter_deployments_to_caller_scope(
+        all_models=[found_model],
+        user_api_key_dict=user_api_key_dict,
+        llm_router=llm_router,
+        prisma_client=prisma_client,
+        show_experimental=is_proxy_admin,
+    )
+    return len(filtered) == 1
+
+
+async def _filter_deployments_to_caller_scope(
+    all_models: list[dict],
+    user_api_key_dict: UserAPIKeyAuth,
+    llm_router: Router,
+    prisma_client: Any,
+    show_experimental: bool = False,
+) -> list[dict]:
+    """Filter a model-info listing to deployments the caller may see.
+
+    Shared by the /v1 and /v2 listings and the id-lookup checks so their
+    scoping cannot drift: key/team model allowlists, experimental-deployment
+    tags (only when show_experimental, e.g. admin opt-in), and BYOK team
+    membership.
+    """
+    allowed_model_names = _get_v1_model_info_allowed_model_names(
+        user_api_key_dict=user_api_key_dict,
+        llm_router=llm_router,
+    )
+    filtered = _filter_v1_model_info_deployments(
+        all_models=all_models,
+        allowed_model_names=allowed_model_names,
+    )
+    if not show_experimental:
+        filtered = [m for m in filtered if not _is_experimental_deployment(m)]
+    allowed_team_ids = await _get_caller_byok_team_scope(
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    )
+    return [m for m in filtered if not _byok_row_outside_caller_teams(m.get("model_info") or {}, allowed_team_ids)]
+
+
 async def _find_model_by_id(
     model_id: str,
     search: Optional[str],
     llm_router,
     prisma_client,
     proxy_config,
+    user_api_key_dict: UserAPIKeyAuth | None = None,
 ) -> tuple[list, Optional[int]]:
-    """Find a model by its ID and optionally filter by search term."""
+    """Find a model by its ID and optionally filter by search term.
+
+    The caller must be allowed to see the deployment: key/team allowlist,
+    experimental tags, and BYOK team scope are all enforced the same way
+    the /v2/model/info listing enforces them, so a modelId learned from
+    another response cannot fetch a row the listing would hide.
+    """
     found_model = None
 
     # First, search in config
@@ -11800,6 +11897,14 @@ async def _find_model_by_id(
             if search_lower not in model_name.lower():
                 # Model found but doesn't match search filter
                 found_model = None
+
+    if (
+        found_model is not None
+        and user_api_key_dict is not None
+        and llm_router is not None
+        and not await _caller_can_see_deployment(found_model, user_api_key_dict, llm_router, prisma_client)
+    ):
+        found_model = None
 
     # Set all_models to the found model or empty list
     all_models = [found_model] if found_model is not None else []
@@ -11841,7 +11946,11 @@ async def model_info_v2(
     Paginated model metadata for proxy deployments (pricing, provider, team access).
 
     Returns configured router deployments with enriched `model_info` (costs, provider,
-    context window, etc.). Sensitive fields such as API keys and api_base are omitted.
+    context window, etc.). Credential and infra-topology fields (API keys, tokens,
+    api_base, cloud role/project identifiers) are omitted. Results are scoped to
+    deployments the caller can use: key/team model allowlists, BYOK team
+    membership, and experimental-deployment tags are all enforced, including
+    for `modelId` lookups.
 
     Query parameters:
         model: Filter to a single public `model_name`.
@@ -11882,7 +11991,7 @@ async def model_info_v2(
     }
     ```
     """
-    global llm_model_list, general_settings, user_config_file_path, proxy_config, llm_router
+    global llm_model_list, general_settings, user_config_file_path, proxy_config, llm_router, user_model
 
     # Return empty data array when no models are configured (graceful handling for fresh installs)
     if llm_router is None or not llm_router.model_list:
@@ -11911,6 +12020,7 @@ async def model_info_v2(
             llm_router=llm_router,
             prisma_client=prisma_client,
             proxy_config=proxy_config,
+            user_api_key_dict=user_api_key_dict,
         )
     else:
         # Normal flow when modelId is not provided
@@ -11918,10 +12028,25 @@ async def model_info_v2(
 
         if user_model is not None:
             # if user does not use a config.yaml, https://github.com/BerriAI/litellm/issues/2061
-            all_models += [user_model]
+            all_models += [{"model_name": user_model, "litellm_params": {"model": user_model}}]
 
         if model is not None:
             all_models = [m for m in all_models if m["model_name"] == model]
+
+        # Scope the default listing the same way /v1/model/info does, so a
+        # key without model restrictions still cannot read rows it cannot
+        # use: other teams' BYOK deployments, key/team allowlist misses, and
+        # experimental deployments. Wildcard deployments are expanded first,
+        # like v1, so a key restricted to openai/* resolves against concrete
+        # names instead of the raw "*" row.
+        all_models = expand_wildcard_deployments_for_model_info(all_models)
+        all_models = await _filter_deployments_to_caller_scope(
+            all_models=all_models,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
+            prisma_client=prisma_client,
+            show_experimental=user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN,
+        )
 
         # Apply search filter if provided
         all_models, search_total_count = await _apply_search_filter_to_models(
@@ -11933,6 +12058,8 @@ async def model_info_v2(
             page=page,
             size=size,
             sort_by=sortBy,
+            llm_router=llm_router,
+            show_experimental=user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN,
         )
 
     if user_models_only:
@@ -12618,7 +12745,7 @@ async def model_info_v1(
     ),
 ):
     """
-    Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)
+    Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
 
     Parameters:
         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -12717,7 +12844,13 @@ async def model_info_v1(
                 status_code=400,
                 detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
             )
-        _deployment_info_dict = _get_proxy_model_info(model=deployment_info.model_dump(exclude_none=True))
+        _single_deployment_dict = deployment_info.model_dump(exclude_none=True)
+        if not await _caller_can_see_deployment(_single_deployment_dict, user_api_key_dict, llm_router, prisma_client):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
+            )
+        _deployment_info_dict = _get_proxy_model_info(model=_single_deployment_dict)
         single_model_list: List[dict] = [_deployment_info_dict]
         if prisma_client is not None:
             single_model_list = await _populate_team_access_on_models(
@@ -12748,34 +12881,13 @@ async def model_info_v1(
 
     all_models = expand_wildcard_deployments_for_model_info(all_models)
 
-    allowed_model_names = _get_v1_model_info_allowed_model_names(
+    all_models = await _filter_deployments_to_caller_scope(
+        all_models=all_models,
         user_api_key_dict=user_api_key_dict,
         llm_router=llm_router,
-    )
-
-    all_models = _filter_v1_model_info_deployments(
-        all_models=all_models,
-        allowed_model_names=allowed_model_names,
-    )
-
-    # Deployments tagged "experimental" (or "experimental:<id>") are hidden by
-    # default. Only a proxy admin can explicitly include them.
-    show_experimental = include_experimental and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
-    if not show_experimental:
-        all_models = [model for model in all_models if not _is_experimental_deployment(model)]
-
-    # Team BYOK deployments carry an internal routing key and other teams'
-    # public name/team_id/api_base; drop the ones the caller cannot access so
-    # listing the full router model_list does not leak cross-team metadata.
-    allowed_team_ids = await _get_caller_byok_team_scope(
-        user_api_key_dict=user_api_key_dict,
         prisma_client=prisma_client,
+        show_experimental=include_experimental and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN,
     )
-    all_models = [
-        model
-        for model in all_models
-        if not _byok_row_outside_caller_teams(model.get("model_info") or {}, allowed_team_ids)
-    ]
 
     if prisma_client is not None:
         all_models = await _populate_team_access_on_models(
@@ -12850,7 +12962,7 @@ async def model_group_info(
     model_group: Optional[str] = None,
 ):
     """
-    Get information about all the deployments on litellm proxy, including config.yaml descriptions (except api key and api base)
+    Get information about all the deployments on litellm proxy, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
 
     - /model_group/info returns all model groups. End users of proxy should use /model_group/info since those models will be used for /chat/completions, /embeddings, etc.
     - /model_group/info?model_group=rerank-english-v3.0 returns all model groups for a specific model group (`model_name` in config.yaml)
