@@ -90,27 +90,17 @@ def _tcp_keepalive_socket_factory(
     # Linux: TCP_KEEPIDLE is idle-before-first-probe.
     # macOS/Darwin: TCP_KEEPALIVE is the equivalent.
     if hasattr(socket, "TCP_KEEPIDLE"):
-        sock.setsockopt(
-            socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, AIOHTTP_TCP_KEEPALIVE_IDLE
-        )
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, AIOHTTP_TCP_KEEPALIVE_IDLE)
     elif hasattr(socket, "TCP_KEEPALIVE"):
-        sock.setsockopt(
-            socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, AIOHTTP_TCP_KEEPALIVE_IDLE
-        )
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, AIOHTTP_TCP_KEEPALIVE_IDLE)
     if hasattr(socket, "TCP_KEEPINTVL"):
-        sock.setsockopt(
-            socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, AIOHTTP_TCP_KEEPALIVE_INTVL
-        )
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, AIOHTTP_TCP_KEEPALIVE_INTVL)
     if hasattr(socket, "TCP_KEEPCNT"):
-        sock.setsockopt(
-            socket.IPPROTO_TCP, socket.TCP_KEEPCNT, AIOHTTP_TCP_KEEPALIVE_CNT
-        )
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, AIOHTTP_TCP_KEEPALIVE_CNT)
     return sock
 
 
-def _build_aiohttp_keepalive_socket_factory() -> Optional[
-    Callable[[Tuple[Any, ...]], socket.socket]
-]:
+def _build_aiohttp_keepalive_socket_factory() -> Optional[Callable[[Tuple[Any, ...]], socket.socket]]:
     """
     Return the aiohttp socket_factory when keepalive is enabled and supported.
     """
@@ -157,6 +147,7 @@ _STREAMING_ERROR_BODY_READ_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     thread_name_prefix="litellm-streaming-error-body-read",
 )
 
+
 def _prepare_request_data_and_content(
     data: Optional[Union[dict, str, bytes]] = None,
     content: Any = None,
@@ -198,21 +189,81 @@ def _prepare_request_data_and_content(
 
 
 # Cache for SSL contexts to avoid creating duplicate contexts with the same configuration
-# Key: tuple of (cafile, ssl_security_level, ssl_ecdh_curve)
+# Key: tuple of (cafile, ssl_security_level, ssl_ecdh_curve, client_cert)
 # Value: ssl.SSLContext
-_ssl_context_cache: Dict[Tuple[Optional[str], Optional[str], Optional[str]], ssl.SSLContext] = {}
+_ssl_context_cache: dict[tuple[str | None, str | None, str | None, str | None], ssl.SSLContext] = {}
+
+
+class SSLCertificateError(ValueError):
+    """Raised when a configured client certificate cannot be used.
+
+    We intentionally do NOT silently degrade to one-way TLS when an
+    operator has explicitly configured mutual TLS: a strict mTLS server
+    would reject the handshake, and a permissive server must not silently
+    accept ordinary TLS when mTLS was requested.
+    """
+
+
+def get_ssl_client_certificate() -> str | None:
+    """Resolve the client certificate (cert + key) used for mutual TLS.
+
+    Priority:
+    1. os.environ["SSL_CERTIFICATE"]
+    2. litellm.ssl_certificate (settable via `litellm_settings.ssl_certificate`)
+
+    Returns a path to a PEM file (cert + unencrypted private key).
+
+    Returns None only when mTLS is not configured at all.  When configured,
+    the path is validated to exist - otherwise we raise SSLCertificateError
+    so misconfiguration is surfaced instead of masked by the cert cache.
+    """
+    client_cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
+    if client_cert is None or client_cert == "":
+        return None
+    if not os.path.exists(client_cert):
+        raise SSLCertificateError(
+            f"SSL_CERTIFICATE is configured at '{client_cert}' but the file "
+            f"does not exist. Fix the mount path so the mTLS client identity "
+            f"is present, or unset SSL_CERTIFICATE/litellm.ssl_certificate."
+        )
+    return client_cert
+
+
+def _load_client_cert(context: ssl.SSLContext, client_cert: str) -> None:
+    try:
+        context.load_cert_chain(certfile=client_cert)
+    except (ssl.SSLError, OSError, ValueError) as e:
+        raise SSLCertificateError(
+            f"Failed to load the configured mTLS client certificate from "
+            f"'{client_cert}': {e}. The PEM must contain both the "
+            f"certificate and its unencrypted private key, and the file "
+            f"must be readable."
+        ) from e
 
 
 def _create_ssl_context(
     cafile: Optional[str],
     ssl_security_level: Optional[str],
     ssl_ecdh_curve: Optional[str],
+    client_cert: str | None = None,
 ) -> ssl.SSLContext:
     """
     Create an SSL context with the given configuration.
     This is separated from get_ssl_configuration to enable caching.
+
+    If `client_cert` is provided, the certificate chain (and private key) is
+    loaded into the context so it can be used for mutual TLS. Both the
+    httpx and aiohttp transports share this context, so loading it here
+    makes mTLS work on either transport without per-transport customization.
+
+    Any failure to load raises SSLCertificateError - the operator explicitly
+    configured TLS-client-auth and we must not silently downgrade.
     """
     custom_ssl_context = ssl.create_default_context(cafile=cafile)
+
+    # Enable mutual TLS: present the client certificate on every handshake.
+    if client_cert:
+        _load_client_cert(custom_ssl_context, client_cert)
 
     # Optimize SSL handshake performance
     # Set minimum TLS version to 1.2 for better performance
@@ -319,7 +370,9 @@ def get_ssl_configuration(
         Union[bool, str, ssl.SSLContext]: Appropriate SSL configuration
     """
     if isinstance(ssl_verify, ssl.SSLContext):
-        # If ssl_verify is already an SSLContext, return it directly
+        caller_client_cert = get_ssl_client_certificate()
+        if caller_client_cert:
+            _load_client_cert(ssl_verify, caller_client_cert)
         return ssl_verify
 
     # Get resolved ssl_verify
@@ -339,8 +392,12 @@ def get_ssl_configuration(
             cafile = certifi.where()
 
     if ssl_verify is not False:
+        # Resolve any configured client certificate (raises if the operator
+        # explicitly configured a path that cannot be used).
+        client_cert = get_ssl_client_certificate()
+
         # Create cache key from configuration parameters
-        cache_key = (cafile, ssl_security_level, ssl_ecdh_curve)
+        cache_key = (cafile, ssl_security_level, ssl_ecdh_curve, client_cert)
 
         # Check if we have a cached SSL context for this configuration
         if cache_key not in _ssl_context_cache:
@@ -348,6 +405,7 @@ def get_ssl_configuration(
                 cafile=cafile,
                 ssl_security_level=ssl_security_level,
                 ssl_ecdh_curve=ssl_ecdh_curve,
+                client_cert=client_cert,
             )
 
         # Return the cached SSL context
@@ -551,7 +609,7 @@ class AsyncHTTPHandler:
 
         # An SSL certificate used by the requested host to authenticate the client.
         # /path/to/client.pem
-        cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
+        cert = None if isinstance(ssl_config, ssl.SSLContext) else get_ssl_client_certificate()
 
         if timeout is None:
             timeout = _DEFAULT_TIMEOUT
@@ -1093,7 +1151,7 @@ class HTTPHandler:
 
         # An SSL certificate used by the requested host to authenticate the client.
         # /path/to/client.pem
-        cert = os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate)
+        cert = None if isinstance(ssl_config, ssl.SSLContext) else get_ssl_client_certificate()
 
         # Get default headers (User-Agent, overridable via LITELLM_USER_AGENT)
         default_headers = get_default_headers() if not disable_default_headers else None
