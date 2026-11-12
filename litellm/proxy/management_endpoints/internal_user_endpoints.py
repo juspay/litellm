@@ -88,6 +88,8 @@ router = APIRouter()
 DEFAULT_SERVICE_ACCOUNT_RPM_LIMIT = 150
 DEFAULT_SERVICE_ACCOUNT_PARALLEL_REQUESTS_LIMIT = 10
 
+AWS_STS_AUDIENCE = "sts.amazonaws.com"
+
 
 def _hash_password_in_dict(data: dict) -> None:
     """Hash password field in-place if present."""
@@ -2312,50 +2314,44 @@ async def get_users(
     }
 
 
-async def _send_email_via_ses(
-    receiver_emails: List[str],
+def _send_email_via_ses_blocking(
+    receiver_emails: list[str],
     subject: str,
     html_body: str,
 ) -> None:
     """
-    Send email via AWS SES using Google OIDC auth.
-    Expects GCP_SERVICE_ACCOUNT_KEY as a raw JSON service account key.
-    Adapted from grid-ai-onboarding/cronjob/user-emails-sender/main.py
+    Blocking half of _send_email_via_ses; must only be run via
+    asyncio.to_thread. Mints the AWS STS web-identity token from the
+    environment via Workload Identity (google.oauth2.id_token.fetch_id_token),
+    so no GCP service account key needs to be mounted. The pod's Kubernetes
+    service account must be annotated for Workload Identity and its GSA added
+    to the AWS role trust policy.
     """
     try:
         import boto3
         from google.auth.transport import requests as google_requests
-        from google.oauth2 import service_account
+        from google.oauth2 import id_token
     except ImportError as e:
-        print("[DEBUG] AWS SES deps missing: %s" % e)  # noqa: T201
+        verbose_proxy_logger.debug("AWS SES deps missing: %s", e)
         return
 
-    gcp_service_account_key = os.getenv("GCP_SERVICE_ACCOUNT_KEY")
     aws_role_arn = os.getenv("AWS_ROLE_ARN")
     aws_region = os.getenv("AWS_REGION", "ap-south-1")
     sender_email = os.getenv("SENDER_EMAIL")
 
-    if not all([gcp_service_account_key, aws_role_arn, sender_email]):
-        print("[DEBUG] Missing env vars, skipping email")  # noqa: T201
+    if not all([aws_role_arn, sender_email]):
+        verbose_proxy_logger.warning("AWS_ROLE_ARN or SENDER_EMAIL not set, skipping key-rotation email")
         return
 
     try:
-        # Parse GCP service account key and get ID token for AWS STS
-        sa_info = json.loads(gcp_service_account_key)
-        creds = service_account.IDTokenCredentials.from_service_account_info(
-            sa_info,
-            target_audience="sts.amazonaws.com",
-        )
         auth_req = google_requests.Request()
-        creds.refresh(auth_req)
-        id_token = creds.token
+        web_identity_token = id_token.fetch_id_token(auth_req, AWS_STS_AUDIENCE)
 
-        # Exchange Google ID token for temporary AWS credentials
         sts = boto3.client("sts", region_name="us-east-1")
         response = sts.assume_role_with_web_identity(
             RoleArn=aws_role_arn,
             RoleSessionName="litellm-sa-key-rotation",
-            WebIdentityToken=id_token,
+            WebIdentityToken=web_identity_token,
         )
         temp_creds = response["Credentials"]
 
@@ -2381,8 +2377,34 @@ async def _send_email_via_ses(
             Destinations=receiver_emails,
             RawMessage={"Data": msg.as_string()},
         )
-    except Exception as e:
-        print("[DEBUG] FAILED to send email via AWS SES: %s" % str(e))  # noqa: T201
+    except Exception:
+        verbose_proxy_logger.exception("Failed to send key-rotation email via AWS SES")
+
+
+async def _send_email_via_ses(
+    receiver_emails: list[str],
+    subject: str,
+    html_body: str,
+) -> None:
+    """
+    Send email via AWS SES using Google OIDC auth. The blocking token mint,
+    STS AssumeRoleWithWebIdentity, and SES send run in a worker thread so
+    they never stall the proxy event loop.
+    """
+    await asyncio.to_thread(
+        _send_email_via_ses_blocking,
+        receiver_emails,
+        subject,
+        html_body,
+    )
+
+
+def _log_email_task_exception(task: "asyncio.Task[None]") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        verbose_proxy_logger.warning("Key-rotation email task failed: %s", exc)
 
 
 async def _cleanup_service_accounts_on_user_delete(
@@ -2487,13 +2509,14 @@ async def _cleanup_service_accounts_on_user_delete(
         )
 
         # Send one email to all remaining owners of this service account
-        asyncio.create_task(
+        email_task = asyncio.create_task(
             _send_email_via_ses(
                 receiver_emails=owner_emails,
                 subject=("Action Required: Service Account Key Rotation Needed"),
                 html_body=html_body,
             )
         )
+        email_task.add_done_callback(_log_email_task_exception)
 
     await prisma_client.db.litellm_serviceaccounttable.delete_many(where={"user_id": {"in": deleted_user_ids}})
 
