@@ -9240,6 +9240,19 @@ class TestRewriteUiFilesForRootPath:
         assert (ui_dir / "blob.txt").read_bytes() == b"\xff\xfe not utf8"
 
 
+@pytest.mark.asyncio
+async def test_setup_prisma_client_supports_startup_class_call() -> None:
+    from litellm.proxy.proxy_server import ProxyStartupEvent
+
+    result = await ProxyStartupEvent._setup_prisma_client(
+        database_url=None,
+        proxy_logging_obj=MagicMock(),
+        user_api_key_cache=MagicMock(),
+    )
+
+    assert result is None
+
+
 class TestTokenPepperStartupCheck:
     def test_missing_pepper_fails_startup(self, monkeypatch) -> None:
         from litellm.proxy.proxy_server import ProxyStartupEvent
