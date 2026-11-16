@@ -10,6 +10,8 @@ import httpx
 
 import litellm
 from litellm._logging import verbose_logger
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
+from litellm.litellm_core_utils.url_utils import validate_credential_destination
 from litellm.llms.anthropic.common_utils import AnthropicError
 from litellm.llms.anthropic.count_tokens.transformation import (
     AnthropicCountTokensConfig,
@@ -64,10 +66,14 @@ class AnthropicCountTokensHandler(AnthropicCountTokensConfig):
                 system=system,
             )
 
-            verbose_logger.debug(f"Transformed request: {request_body}")
+            verbose_logger.debug(
+                "Transformed count_tokens request: model={}, num_messages={}".format(model, len(messages))
+            )
 
             # Get endpoint URL
             endpoint_url = api_base or self.get_anthropic_count_tokens_endpoint()
+
+            validate_credential_destination(endpoint_url)
 
             verbose_logger.debug(f"Making request to: {endpoint_url}")
 
@@ -91,7 +97,7 @@ class AnthropicCountTokensHandler(AnthropicCountTokensConfig):
 
             if response.status_code != 200:
                 error_text = response.text
-                verbose_logger.error(f"Anthropic API error: {error_text}")
+                verbose_logger.error("Anthropic count_tokens API error: status={}".format(response.status_code))
                 raise AnthropicError(
                     status_code=response.status_code,
                     message=error_text,
@@ -99,7 +105,11 @@ class AnthropicCountTokensHandler(AnthropicCountTokensConfig):
 
             anthropic_response = response.json()
 
-            verbose_logger.debug(f"Anthropic response: {anthropic_response}")
+            verbose_logger.debug(
+                "Anthropic count_tokens response received: {}".format(
+                    list(anthropic_response.keys()) if isinstance(anthropic_response, dict) else "non-dict"
+                )
+            )
 
             # Return Anthropic response directly - no transformation needed
             return anthropic_response
@@ -109,14 +119,14 @@ class AnthropicCountTokensHandler(AnthropicCountTokensConfig):
             raise
         except httpx.HTTPStatusError as e:
             # HTTP errors - preserve the actual status code
-            verbose_logger.error(f"HTTP error in CountTokens handler: {str(e)}")
+            verbose_logger.error("HTTP error in CountTokens handler: status={}".format(e.response.status_code))
             raise AnthropicError(
                 status_code=e.response.status_code,
                 message=e.response.text,
             )
         except Exception as e:
-            verbose_logger.error(f"Error in CountTokens handler: {str(e)}")
+            verbose_logger.error("Error in CountTokens handler: {}".format(truncate_error_str(e)))
             raise AnthropicError(
                 status_code=500,
-                message=f"CountTokens processing error: {str(e)}",
+                message="CountTokens processing error: {}".format(truncate_error_str(e)),
             )

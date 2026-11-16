@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 import ast
 import sys
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Tuple
 

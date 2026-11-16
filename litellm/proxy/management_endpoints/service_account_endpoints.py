@@ -227,9 +227,7 @@ def _gpg_encrypt(plaintext: str, public_key_armored: str) -> str:
         ) from e
 
 
-async def _cleanup_failed_creation_key(
-    prisma_client: Any, user_id: str, key_token: Optional[Any]
-) -> None:
+async def _cleanup_failed_creation_key(prisma_client: Any, user_id: str, key_token: Optional[Any]) -> None:
     """Best-effort cleanup when creation approval minted a key but cannot finish.
 
     The plaintext key cannot be safely returned unless it was encrypted to the
@@ -261,9 +259,7 @@ async def _cleanup_failed_creation_key(
         )
 
 
-def _build_sa_list_item(
-    sa: Any, keys: List[Any]
-) -> ServiceAccountListItem:
+def _build_sa_list_item(sa: Any, keys: List[Any]) -> ServiceAccountListItem:
     """Adapt a LiteLLM_ServiceAccountTable row + its VerificationToken keys
     into the ServiceAccountListItem response model."""
     key_infos: List[ServiceAccountKeyInfo] = []
@@ -286,13 +282,9 @@ def _build_sa_list_item(
         requested_models=list(getattr(sa, "requested_models", []) or []),
         use_case=getattr(sa, "use_case", None),
         requested_rpm_limit=getattr(sa, "requested_rpm_limit", None),
-        requested_parallel_requests_limit=getattr(
-            sa, "requested_parallel_requests_limit", None
-        ),
+        requested_parallel_requests_limit=getattr(sa, "requested_parallel_requests_limit", None),
         is_active=bool(getattr(sa, "is_active", False)),
-        is_key_rotation_requested=bool(
-            getattr(sa, "is_key_rotation_requested", False)
-        ),
+        is_key_rotation_requested=bool(getattr(sa, "is_key_rotation_requested", False)),
         public_key=getattr(sa, "public_key", None),
         requester=getattr(sa, "requester", None),
         created_at=getattr(sa, "created_at", None),
@@ -302,15 +294,11 @@ def _build_sa_list_item(
 
 async def _fetch_sa_keys(prisma_client: Any, user_id: str) -> List[Any]:
     """Fetch all VerificationToken keys for a service account user."""
-    return await prisma_client.db.litellm_verificationtoken.find_many(
-        where={"user_id": user_id}
-    )
+    return await prisma_client.db.litellm_verificationtoken.find_many(where={"user_id": user_id})
 
 
 async def _get_sa_or_404(prisma_client: Any, user_id: str) -> Any:
-    sa = await prisma_client.db.litellm_serviceaccounttable.find_unique(
-        where={"user_id": user_id}
-    )
+    sa = await prisma_client.db.litellm_serviceaccounttable.find_unique(where={"user_id": user_id})
     if sa is None:
         raise HTTPException(
             status_code=http_status.HTTP_404_NOT_FOUND,
@@ -324,9 +312,7 @@ async def _resolve_user_email(prisma_client: Any, user_id: Optional[str]) -> Opt
     if not user_id:
         return None
     try:
-        row = await prisma_client.db.litellm_usertable.find_unique(
-            where={"user_id": user_id}
-        )
+        row = await prisma_client.db.litellm_usertable.find_unique(where={"user_id": user_id})
         return getattr(row, "user_email", None) if row else None
     except Exception:
         return None
@@ -338,17 +324,14 @@ async def _resolve_owner_emails(prisma_client: Any, sa: Any) -> List[str]:
     emails: List[str] = []
     try:
         if owner_ids:
-            owners = await prisma_client.db.litellm_usertable.find_many(
-                where={"user_id": {"in": owner_ids}}
-            )
+            owners = await prisma_client.db.litellm_usertable.find_many(where={"user_id": {"in": owner_ids}})
             for o in owners:
                 email = getattr(o, "user_email", None)
                 if email:
                     emails.append(email)
     except Exception as e:
         verbose_proxy_logger.warning(
-            "service_account_endpoints: failed to resolve owner emails "
-            f"(continuing with owner IDs): {e}"
+            f"service_account_endpoints: failed to resolve owner emails (continuing with owner IDs): {e}"
         )
     return emails
 
@@ -367,9 +350,7 @@ def _slack_value(value: Any) -> str:
 
 def _service_account_status(sa: Any) -> str:
     is_active = bool(getattr(sa, "is_active", False))
-    is_key_rotation_requested = bool(
-        getattr(sa, "is_key_rotation_requested", False)
-    )
+    is_key_rotation_requested = bool(getattr(sa, "is_key_rotation_requested", False))
     if not is_active and not is_key_rotation_requested:
         return "Creation pending"
     if is_active and is_key_rotation_requested:
@@ -421,14 +402,11 @@ def _format_service_account_details(
         f"Use case: {_slack_value(getattr(sa, 'use_case', None))}",
         f"Requested models: {_slack_value(getattr(sa, 'requested_models', None))}",
         f"Requested RPM limit: {_slack_value(getattr(sa, 'requested_rpm_limit', None))}",
-        "Requested parallel requests limit: "
-        f"{_slack_value(getattr(sa, 'requested_parallel_requests_limit', None))}",
+        f"Requested parallel requests limit: {_slack_value(getattr(sa, 'requested_parallel_requests_limit', None))}",
         f"Status: {_service_account_status(sa)}",
         f"Active: {_slack_value(bool(getattr(sa, 'is_active', False)))}",
-        "Key rotation requested: "
-        f"{_slack_value(bool(getattr(sa, 'is_key_rotation_requested', False)))}",
-        "GPG public key on file: "
-        f"{_slack_value(bool(getattr(sa, 'public_key', None)))}",
+        f"Key rotation requested: {_slack_value(bool(getattr(sa, 'is_key_rotation_requested', False)))}",
+        f"GPG public key on file: {_slack_value(bool(getattr(sa, 'public_key', None)))}",
     ]
     created_at = getattr(sa, "created_at", None)
     if created_at:
@@ -459,16 +437,12 @@ async def _send_sa_slack_dm(emails: List[str], message: str) -> None:
                     sent = await instance.send_dm(user_email=email, message=message)
                 except Exception as dm_error:
                     verbose_proxy_logger.warning(
-                        "service_account_endpoints: Slack DM failed for "
-                        f"{email} (continuing): {dm_error}"
+                        f"service_account_endpoints: Slack DM failed for {email} (continuing): {dm_error}"
                     )
                     continue
                 if sent:
                     sent_count += 1
-                    verbose_proxy_logger.info(
-                        "service_account_endpoints: Slack DM sent to "
-                        f"{email}"
-                    )
+                    verbose_proxy_logger.info(f"service_account_endpoints: Slack DM sent to {email}")
                 else:
                     verbose_proxy_logger.warning(
                         "service_account_endpoints: Slack DM skipped/failed for "
@@ -488,9 +462,7 @@ async def _send_sa_slack_dm(emails: List[str], message: str) -> None:
             alerting_metadata={},
         )
     except Exception as e:  # non-blocking
-        verbose_proxy_logger.warning(
-            f"service_account_endpoints: Slack notify failed (non-blocking): {e}"
-        )
+        verbose_proxy_logger.warning(f"service_account_endpoints: Slack notify failed (non-blocking): {e}")
 
 
 async def _notify_sa_event_slack(
@@ -512,10 +484,7 @@ async def _notify_sa_event_slack(
         requester_email = await _resolve_user_email(prisma_client, requester_id)
         owner_emails = await _resolve_owner_emails(prisma_client, sa)
 
-        message = (
-            f"`Service Account {event}`\n"
-            f"{_format_service_account_details(sa, requester_email, owner_emails)}"
-        )
+        message = f"`Service Account {event}`\n{_format_service_account_details(sa, requester_email, owner_emails)}"
         if extra:
             message += f"\n{extra}"
 
@@ -538,9 +507,7 @@ async def _notify_sa_event_slack(
         )
         await _send_sa_slack_dm(recipients, message)
     except Exception as e:  # non-blocking
-        verbose_proxy_logger.warning(
-            f"service_account_endpoints: Slack notify failed (non-blocking): {e}"
-        )
+        verbose_proxy_logger.warning(f"service_account_endpoints: Slack notify failed (non-blocking): {e}")
 
 
 async def _notify_requester_encrypted_key_slack(
@@ -561,7 +528,6 @@ async def _notify_requester_encrypted_key_slack(
     try:
         from litellm.proxy.proxy_server import proxy_logging_obj
 
-        sa_name = getattr(sa, "name", None) or getattr(sa, "user_id", "")
         requester_email = await _resolve_user_email(prisma_client, requester_id)
         owner_emails = await _resolve_owner_emails(prisma_client, sa)
         recipients: List[str] = []
@@ -569,9 +535,7 @@ async def _notify_requester_encrypted_key_slack(
             if email and email not in recipients:
                 recipients.append(email)
 
-        expires_line = (
-            f"Key expires: {expires}\n" if expires else "Key never expires.\n"
-        )
+        expires_line = f"Key expires: {expires}\n" if expires else "Key never expires.\n"
         details = _format_service_account_details(sa, requester_email, owner_emails)
         if extra:
             details += f"\n{extra}"
@@ -599,10 +563,7 @@ async def _notify_requester_encrypted_key_slack(
                 )
                 if sent:
                     file_sent = True
-                    verbose_proxy_logger.info(
-                        "service_account_endpoints: encrypted key file sent to "
-                        f"{email}"
-                    )
+                    verbose_proxy_logger.info(f"service_account_endpoints: encrypted key file sent to {email}")
                 else:
                     verbose_proxy_logger.warning(
                         "service_account_endpoints: encrypted key file failed for "
@@ -620,10 +581,7 @@ async def _notify_requester_encrypted_key_slack(
         )
         await _send_sa_slack_dm(recipients, fallback_message)
     except Exception as e:  # non-blocking
-        verbose_proxy_logger.warning(
-            f"service_account_endpoints: encrypted-key Slack DM failed "
-            f"(non-blocking): {e}"
-        )
+        verbose_proxy_logger.warning(f"service_account_endpoints: encrypted-key Slack DM failed (non-blocking): {e}")
 
 
 # ─── Endpoint 1: list ────────────────────────────────────────────────────────
@@ -677,9 +635,7 @@ async def list_service_accounts(
         where = {"is_active": True, "is_key_rotation_requested": True}
 
     try:
-        sa_rows = await prisma_client.db.litellm_serviceaccounttable.find_many(
-            where=where
-        )
+        sa_rows = await prisma_client.db.litellm_serviceaccounttable.find_many(where=where)
         # Batch-fetch keys for each SA.
         items: List[ServiceAccountListItem] = []
         for sa in sa_rows:
@@ -806,12 +762,8 @@ async def approve_service_account(
     try:
         sa = await _get_sa_or_404(prisma_client, data.user_id)
 
-        is_creation_pending = (
-            sa.is_active is False and sa.is_key_rotation_requested is False
-        )
-        is_rotation_pending = (
-            sa.is_active is True and sa.is_key_rotation_requested is True
-        )
+        is_creation_pending = sa.is_active is False and sa.is_key_rotation_requested is False
+        is_rotation_pending = sa.is_active is True and sa.is_key_rotation_requested is True
         if not is_creation_pending and not is_rotation_pending:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
@@ -839,9 +791,7 @@ async def approve_service_account(
             if data.requested_rpm_limit is not None:
                 update_fields["requested_rpm_limit"] = data.requested_rpm_limit
             if data.requested_parallel_requests_limit is not None:
-                update_fields["requested_parallel_requests_limit"] = (
-                    data.requested_parallel_requests_limit
-                )
+                update_fields["requested_parallel_requests_limit"] = data.requested_parallel_requests_limit
             if data.owner_ids is not None:
                 if len(data.owner_ids) < 2:
                     raise HTTPException(
@@ -865,13 +815,11 @@ async def approve_service_account(
         # new key is minted and no prior key is blocked. (Creation approval
         # below still mints a new key, since there is no key to extend yet.)
         if is_rotation_pending:
-            existing_keys = await prisma_client.db.litellm_verificationtoken.find_many(
-                where={"user_id": data.user_id}
-            )
+            existing_keys = await prisma_client.db.litellm_verificationtoken.find_many(where={"user_id": data.user_id})
             # The key to extend is the active (non-blocked) one; fall back to any.
-            active_key = next(
-                (k for k in existing_keys if not getattr(k, "blocked", False)), None
-            ) or (existing_keys[0] if existing_keys else None)
+            active_key = next((k for k in existing_keys if not getattr(k, "blocked", False)), None) or (
+                existing_keys[0] if existing_keys else None
+            )
             if active_key is None:
                 raise HTTPException(
                     status_code=http_status.HTTP_400_BAD_REQUEST,
@@ -945,9 +893,7 @@ async def approve_service_account(
 
         # Generate the new key. generate_key_helper_fn returns key_data where
         # `token` is the actual sk-... key value and `token_id` is the hash.
-        requested_rpm_limit = update_fields.get(
-            "requested_rpm_limit", getattr(sa, "requested_rpm_limit", None)
-        )
+        requested_rpm_limit = update_fields.get("requested_rpm_limit", getattr(sa, "requested_rpm_limit", None))
         requested_parallel_requests_limit = update_fields.get(
             "requested_parallel_requests_limit",
             getattr(sa, "requested_parallel_requests_limit", None),
@@ -1099,12 +1045,8 @@ async def reject_service_account(
     try:
         sa = await _get_sa_or_404(prisma_client, data.user_id)
 
-        is_creation_pending = (
-            sa.is_active is False and sa.is_key_rotation_requested is False
-        )
-        is_rotation_pending = (
-            sa.is_active is True and sa.is_key_rotation_requested is True
-        )
+        is_creation_pending = sa.is_active is False and sa.is_key_rotation_requested is False
+        is_rotation_pending = sa.is_active is True and sa.is_key_rotation_requested is True
         if not is_creation_pending and not is_rotation_pending:
             raise HTTPException(
                 status_code=http_status.HTTP_409_CONFLICT,
@@ -1115,13 +1057,9 @@ async def reject_service_account(
             # Delete the SA row, then the LiteLLM user row to avoid an orphan
             # user with no key. Best-effort user deletion — if it fails we still
             # removed the SA entry (the request record), which is the contract.
-            await prisma_client.db.litellm_serviceaccounttable.delete(
-                where={"user_id": data.user_id}
-            )
+            await prisma_client.db.litellm_serviceaccounttable.delete(where={"user_id": data.user_id})
             try:
-                await prisma_client.db.litellm_usertable.delete(
-                    where={"user_id": data.user_id}
-                )
+                await prisma_client.db.litellm_usertable.delete(where={"user_id": data.user_id})
             except Exception as e:
                 verbose_proxy_logger.warning(
                     f"service_account_endpoints: failed to delete orphan user "

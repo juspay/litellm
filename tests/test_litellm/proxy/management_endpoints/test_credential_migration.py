@@ -15,9 +15,22 @@ import pytest
 from litellm.proxy import proxy_server
 from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     _V2_GCM_PREFIX,
+    _V3_HKDF_PREFIX,
+    _V4_CTX_PREFIX,
+    _derive_key,
+    _seal_aes_gcm,
+    decrypt_value_helper,
     encrypt_value_helper,
 )
 from litellm.proxy.management_endpoints import credential_migration as cm
+
+
+def _v2_ct(value: str) -> str:
+    """Mint a genuine legacy v2:gcm ciphertext (unsalted-SHA-256 KDF)."""
+    import base64
+
+    sealed = _seal_aes_gcm(value=value, key=_derive_key("sk-migration-salt-1234"), aad=None)
+    return _V2_GCM_PREFIX + base64.urlsafe_b64encode(sealed).decode("utf-8")
 
 
 @pytest.fixture
@@ -28,8 +41,10 @@ def salt_key(monkeypatch):
 
 
 def _legacy_ct(value: str, monkeypatch) -> str:
-    """Produce a legacy (nacl) ciphertext with the AES gate off."""
-    monkeypatch.setattr(proxy_server, "general_settings", {})
+    """Produce a legacy (nacl) ciphertext via explicit legacy opt-in."""
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
     return encrypt_value_helper(value)
 
 
@@ -70,6 +85,22 @@ def test_is_migrated(salt_key, monkeypatch):
     assert cm.is_migrated(encrypt_value_helper("x")) is True
     assert cm.is_migrated("plaintext") is False
     assert cm.is_migrated(5) is False
+    assert cm.is_migrated(_v2_ct("x")) is False
+
+
+def test_v2_gcm_counts_as_unmigrated_and_reencrypts_to_hkdf(salt_key, monkeypatch):
+    """A v2:gcm ciphertext is AES-GCM under the legacy unsalted-SHA-256 KDF:
+    it must be reported as needing migration and re-encrypted to v3:hkdf
+    (HKDF), not left on the legacy KDF indefinitely."""
+    _enable_aes(monkeypatch)
+    v2 = _v2_ct("secret")
+    assert cm.classify_value(v2) == "legacy"
+    assert cm.is_migrated(v2) is False
+
+    out = cm.reencrypt_value(v2)
+    assert out != v2
+    assert str(out).startswith(_V3_HKDF_PREFIX)
+    assert decrypt_value_helper(value=str(out), key="test") == "secret"
 
 
 def test_reencrypt_value_legacy_to_v2(salt_key, monkeypatch):
@@ -78,7 +109,7 @@ def test_reencrypt_value_legacy_to_v2(salt_key, monkeypatch):
 
     out = cm.reencrypt_value(legacy)
     assert out != legacy
-    assert out.startswith(_V2_GCM_PREFIX)
+    assert out.startswith((_V2_GCM_PREFIX, _V3_HKDF_PREFIX, _V4_CTX_PREFIX))
 
 
 def test_reencrypt_value_is_idempotent(salt_key, monkeypatch):
@@ -109,7 +140,7 @@ def test_reencrypt_selective_dict(salt_key, monkeypatch):
     data = {"api_key": legacy_key, "base_url": "https://x", "integration_token": None}
     out = cm.reencrypt_selective_dict(data, ["api_key", "integration_token"])
 
-    assert out["api_key"].startswith(_V2_GCM_PREFIX)
+    assert out["api_key"].startswith((_V2_GCM_PREFIX, _V3_HKDF_PREFIX, _V4_CTX_PREFIX))
     assert out["base_url"] == "https://x"  # untouched non-sensitive
     assert out["integration_token"] is None  # null skipped
 
@@ -160,7 +191,7 @@ async def test_vantage_walker_migrates_legacy_field(salt_key, monkeypatch):
     written = json.loads(
         client.db.litellm_config.update.call_args.kwargs["data"]["param_value"]
     )
-    assert written["api_key"].startswith(_V2_GCM_PREFIX)
+    assert written["api_key"].startswith((_V2_GCM_PREFIX, _V3_HKDF_PREFIX, _V4_CTX_PREFIX))
     assert written["base_url"] == "https://api.vantage.sh"  # non-sensitive untouched
 
 
@@ -304,8 +335,10 @@ async def test_callback_vars_walker_migrates_team_metadata(salt_key, monkeypatch
     """A team row with a legacy-encrypted callback var is rewritten to v2."""
     from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
 
-    # Legacy-encrypt a callback var via the real callback path (gate off).
-    monkeypatch.setattr(proxy_server, "general_settings", {})
+    # Legacy-encrypt a callback var via the real callback path (explicit legacy opt-in).
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
     legacy_meta = encrypt_callback_vars(
         {"logging": [{"callback_vars": {"gcs_path_service_account": "sa-secret"}}]}
     )
@@ -325,7 +358,9 @@ async def test_callback_vars_walker_migrates_team_metadata(salt_key, monkeypatch
         client.db.litellm_teamtable.update.call_args.kwargs["data"]["metadata"]
     )
     inner = written["logging"][0]["callback_vars"]["gcs_path_service_account"]
-    assert "v2:gcm:" in inner
+    assert any(
+        p in inner for p in ("v2:gcm:", "v3:hkdf:", "v4:ctx:")
+    )
 
 
 @pytest.mark.asyncio
@@ -333,7 +368,9 @@ async def test_callback_vars_walker_dry_run_reports_legacy(salt_key, monkeypatch
     """In --check (dry-run) mode, a legacy callback var counts as residual legacy."""
     from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
 
-    monkeypatch.setattr(proxy_server, "general_settings", {})
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
     legacy_meta = encrypt_callback_vars(
         {"logging": [{"callback_vars": {"gcs_path_service_account": "sa-secret"}}]}
     )
@@ -365,7 +402,9 @@ async def test_callback_vars_walker_migrates_callback_settings_shape(
     """
     from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
 
-    monkeypatch.setattr(proxy_server, "general_settings", {})
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
     legacy_meta = encrypt_callback_vars(
         {
             "callback_settings": {
@@ -390,7 +429,9 @@ async def test_callback_vars_walker_migrates_callback_settings_shape(
         client.db.litellm_teamtable.update.call_args.kwargs["data"]["metadata"]
     )
     inner = written["callback_settings"]["callback_vars"]["gcs_path_service_account"]
-    assert "v2:gcm:" in inner
+    assert any(
+        p in inner for p in ("v2:gcm:", "v3:hkdf:", "v4:ctx:")
+    )
 
 
 @pytest.mark.asyncio
@@ -406,7 +447,9 @@ async def test_check_reports_callback_var_legacy_with_gate_off(salt_key, monkeyp
     from litellm.proxy.common_utils.callback_utils import encrypt_callback_vars
 
     # Legacy-encrypt a callback var, and leave the gate OFF for the check itself.
-    monkeypatch.setattr(proxy_server, "general_settings", {})
+    monkeypatch.setattr(
+        proxy_server, "general_settings", {"encryption_algorithm": "xsalsa20-poly1305"}
+    )
     legacy_meta = encrypt_callback_vars(
         {"logging": [{"callback_vars": {"gcs_path_service_account": "sa-secret"}}]}
     )

@@ -103,15 +103,14 @@ def _user_id_from_session_cookie(request: Request) -> Optional[str]:
     if not token:
         return None
     try:
-        payload = jwt.decode(
-            token,
-            master_key,
-            algorithms=["HS256"],
-            # Require an expiry claim so a leaked UI session cookie has a
-            # bounded lifetime. PyJWT verifies exp by default when present;
-            # require=["exp"] additionally rejects tokens that omit it.
-            options={"require": ["exp"]},
+        from litellm.proxy.common_utils.session_cookie_utils import (
+            decode_ui_session_jwt,
         )
+
+        # Require an expiry claim so a leaked UI session cookie has a bounded
+        # lifetime. PyJWT verifies exp by default when present; require=["exp"]
+        # additionally rejects tokens that omit it.
+        payload = decode_ui_session_jwt(token, master_key, require_exp=True)
     except jwt.InvalidTokenError:
         return None
     if payload.get("type") == "byok_session":
@@ -864,12 +863,16 @@ async def byok_token(
         "server_id": server_id,
         # "type" distinguishes this from regular proxy auth tokens.
         # The proxy's SSO JWT path uses asymmetric keys (RS256/ES256), so an
-        # HS256 token signed with master_key cannot be accepted there.
+        # HS256 token signed with a byok-specific key derived from
+        # master_key cannot be accepted as a UI session (separate HKDF
+        # info strings mean neither key verifies the other's tokens).
         "type": "byok_session",
         "iat": now,
         "exp": now + 3600,
     }
-    access_token = jwt.encode(payload, cast(str, master_key), algorithm="HS256")
+    from litellm.proxy.common_utils.session_cookie_utils import encode_byok_session_jwt
+
+    access_token = encode_byok_session_jwt(payload, cast(str, master_key))
 
     return JSONResponse(
         {

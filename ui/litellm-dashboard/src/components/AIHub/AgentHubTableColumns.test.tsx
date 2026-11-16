@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
 import { flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { getAgentHubTableColumns, AgentHubData } from "./AgentHubTableColumns";
 
@@ -30,8 +30,8 @@ function TestTable({
 }: {
   data: AgentHubData[];
   publicPage?: boolean;
-  showModal?: ReturnType<typeof vi.fn>;
-  copyToClipboard?: ReturnType<typeof vi.fn>;
+  showModal?: Mock<(agent: AgentHubData) => void>;
+  copyToClipboard?: Mock<(text: string) => void>;
 }) {
   const columns = getAgentHubTableColumns(showModal, copyToClipboard, publicPage);
   const table = useReactTable({ data, columns, getCoreRowModel: getCoreRowModel() });

@@ -47,6 +47,7 @@ from backend.routes.allowlist import (
     BACKEND_MOUNT_PATHS,
     BACKEND_PATH_PREFIXES,
 )
+from component_route_match import path_matches_any
 from gateway.routes.allowlist import GATEWAY_EXACT_PATHS, GATEWAY_PATH_PREFIXES
 from litellm.proxy.proxy_server import app
 
@@ -66,7 +67,7 @@ def _component_paths(routes, exact_paths, path_prefixes) -> set[str]:
         path = getattr(route, "path", None)
         if path is None:
             continue
-        if path in exact_paths or any(path.startswith(p) for p in path_prefixes):
+        if path in exact_paths or path_matches_any(path, path_prefixes):
             out.add(path)
     return out
 
@@ -133,3 +134,46 @@ def test_backend_drops_non_allowlisted_mounts():
     for mount_path in non_backend_mounts:
         assert mount_path not in BACKEND_MOUNT_PATHS, \
             f"Mount {mount_path} should not be in BACKEND_MOUNT_PATHS"
+
+
+def test_path_matches_prefix_requires_segment_boundary():
+    """A prefix must match only on whole path segments: ``/get/`` must not
+    match ``/gets``, and ``/login`` must not match ``/loginfoo``."""
+    from component_route_match import path_matches_prefix
+
+    assert path_matches_prefix("/get/config/callbacks", "/get/")
+    assert not path_matches_prefix("/gets", "/get/")
+    assert path_matches_prefix("/login", "/login")
+    assert path_matches_prefix("/login/renew", "/login")
+    assert not path_matches_prefix("/loginfoo", "/login")
+    assert not path_matches_prefix("/loginx/y", "/login")
+
+
+def test_allowlists_contain_no_templated_prefix_entries():
+    """Templated catch-all entries (``/{provider}/``, ``/{mcp_server_name}/``)
+    must not appear in the literal prefix lists; concrete route templates are
+    enumerated in the exact-path sets instead."""
+    for prefix in BACKEND_PATH_PREFIXES:
+        assert not prefix.startswith("/{"), (
+            f"templated entry in BACKEND_PATH_PREFIXES: {prefix}"
+        )
+    for prefix in GATEWAY_PATH_PREFIXES:
+        assert not prefix.startswith("/{"), (
+            f"templated entry in GATEWAY_PATH_PREFIXES: {prefix}"
+        )
+    for exact in (
+        "/{mcp_server_name}/authorize",
+        "/{mcp_server_name}/token",
+        "/{mcp_server_name}/register",
+        "/{mcp_server_name}/mcp",
+    ):
+        assert exact in BACKEND_EXACT_PATHS, f"{exact} missing from BACKEND_EXACT_PATHS"
+    for exact in (
+        "/{provider}/v1/batches",
+        "/{provider}/v1/batches/{batch_id:path}",
+        "/{provider}/v1/batches/{batch_id:path}/cancel",
+        "/{provider}/v1/files",
+        "/{provider}/v1/files/{file_id:path}",
+        "/{provider}/v1/files/{file_id:path}/content",
+    ):
+        assert exact in GATEWAY_EXACT_PATHS, f"{exact} missing from GATEWAY_EXACT_PATHS"

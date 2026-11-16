@@ -4,10 +4,10 @@ import hashlib
 import json
 import mimetypes
 import re
-import xml.etree.ElementTree as ET
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple, TypedDict, Union, cast, overload
 
+import defusedxml.ElementTree as DefusedET
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
 import litellm
@@ -2817,7 +2817,7 @@ def parse_xml_params(xml_content, json_schema: Optional[dict] = None):
 
     check if a value is a list - if so, get it's child elements
     """
-    root = ET.fromstring(xml_content)
+    root = DefusedET.fromstring(xml_content)
     params = {}
 
     if json_schema is not None:  # check if we have a json schema for this function call

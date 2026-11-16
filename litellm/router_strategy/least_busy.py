@@ -7,7 +7,6 @@
 #   - in get_available_deployment, for a given model group name -> pick based on traffic
 
 import random
-from typing import List, Optional
 
 from litellm.caching.caching import DualCache
 from litellm.integrations.custom_logger import CustomLogger

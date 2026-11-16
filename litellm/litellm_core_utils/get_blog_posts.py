@@ -11,11 +11,11 @@ Disable remote fetching entirely:
 import json
 import os
 import time
-import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from importlib.resources import files
 from typing import Dict, List, Optional
 
+import defusedxml.ElementTree as ET
 import httpx
 from pydantic import BaseModel
 

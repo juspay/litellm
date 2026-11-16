@@ -46,7 +46,7 @@ async def _set_cloudzero_settings(api_key: str, connection_id: str, timezone: st
         )
 
     # Encrypt the API key before storing
-    encrypted_api_key = encrypt_value_helper(api_key)
+    encrypted_api_key = encrypt_value_helper(api_key, context="LiteLLM_Config:cloudzero_settings.api_key")
 
     cloudzero_settings = {
         "api_key": encrypted_api_key,
@@ -98,7 +98,12 @@ async def _get_cloudzero_settings():
     # Decrypt the API key
     encrypted_api_key = settings.get("api_key")
     if encrypted_api_key:
-        decrypted_api_key = decrypt_value_helper(encrypted_api_key, key="cloudzero_api_key", exception_type="error")
+        decrypted_api_key = decrypt_value_helper(
+            encrypted_api_key,
+            key="cloudzero_api_key",
+            exception_type="error",
+            context="LiteLLM_Config:cloudzero_settings.api_key",
+        )
         if decrypted_api_key is None:
             raise HTTPException(
                 status_code=500,

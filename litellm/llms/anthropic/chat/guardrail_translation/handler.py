@@ -12,7 +12,6 @@ Pattern Overview:
 4. Apply guardrail responses back to the original structure
 """
 
-import asyncio
 import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
@@ -581,9 +580,7 @@ class AnthropicMessagesHandler(BaseTranslation):
             # build the model response from the responses_so_far
             from litellm.litellm_core_utils.asyncify import asyncify
 
-            built_response = await asyncify(
-                AnthropicPassthroughLoggingHandler._build_complete_streaming_response
-            )(
+            built_response = await asyncify(AnthropicPassthroughLoggingHandler._build_complete_streaming_response)(
                 all_chunks=responses_so_far,
                 litellm_logging_obj=cast("LiteLLMLoggingObj", litellm_logging_obj),
                 model="",

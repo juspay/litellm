@@ -14,6 +14,36 @@ from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 
 
+def _validate_a2a_agent_destination(url: str, agent_name: str) -> None:
+    """SSRF re-check on the agent's upstream URL at call time.
+
+    Registration validates the URL, but the value is read back from the
+    registry/DB on every request, so re-validate here: this catches rows
+    created before the registration check existed and DNS rebinding between
+    registration and call. The proxy forwards credentials to this URL, so the
+    same ``provider_url_destination_allowed_hosts`` allowlist and blocked-IP
+    policy as provider api_base apply.
+    """
+    from litellm.litellm_core_utils.url_utils import (
+        SSRFError,
+        validate_credential_destination,
+        validate_url,
+    )
+
+    try:
+        validate_credential_destination(url)
+        validate_url(url)
+    except (SSRFError, ValueError) as e:
+        verbose_proxy_logger.error("[A2A] Agent '%s' URL rejected at call time: %s", agent_name, e)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Agent '{agent_name}' URL failed destination validation; "
+                "contact the proxy admin to fix or allowlist the agent's endpoint."
+            ),
+        ) from e
+
+
 async def route_a2a_agent_request(
     data: dict,
     route_type: str,
@@ -72,8 +102,11 @@ async def route_a2a_agent_request(
         route_name = ROUTE_ENDPOINT_MAPPING.get(route_type, route_type)
         raise ProxyModelNotFoundError(route=route_name, model_name=model_name)
 
+    agent_url = agent.agent_card_params["url"]
+    _validate_a2a_agent_destination(agent_url, agent_name)
+
     # Inject API base and route to litellm
-    data["api_base"] = agent.agent_card_params["url"]
+    data["api_base"] = agent_url
     verbose_proxy_logger.debug(f"[A2A] Routing {model_name} to {data['api_base']}")
 
     return getattr(litellm, f"{route_type}")(**data)

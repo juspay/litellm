@@ -555,7 +555,7 @@ class TestSigV4CredentialEncryption:
 
         with patch(
             "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-            side_effect=lambda value, new_encryption_key: f"enc:{value}",
+            side_effect=lambda value, context=None, new_encryption_key=None: f"enc:{value}",
         ):
             result = encrypt_credentials(credentials=creds, encryption_key="test-key")
 
@@ -578,7 +578,7 @@ class TestSigV4CredentialEncryption:
 
         with patch(
             "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-            side_effect=lambda value, new_encryption_key: f"enc:{value}",
+            side_effect=lambda value, context=None, new_encryption_key=None: f"enc:{value}",
         ):
             result = encrypt_credentials(credentials=creds, encryption_key="test-key")
 
@@ -626,7 +626,7 @@ class TestCredentialMergeOnUpdate:
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-                side_effect=lambda value, new_encryption_key: value,
+                side_effect=lambda value, context=None, new_encryption_key=None: value,
             ),
         ):
             await update_mcp_server(mock_prisma, data, "test-user")
@@ -699,7 +699,7 @@ class TestCredentialMergeOnUpdate:
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-                side_effect=lambda value, new_encryption_key: value,
+                side_effect=lambda value, context=None, new_encryption_key=None: value,
             ),
         ):
             await update_mcp_server(mock_prisma, data, "test-user")
@@ -745,7 +745,7 @@ class TestCredentialMergeOnUpdate:
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-                side_effect=lambda value, new_encryption_key: f"enc:{value}",
+                side_effect=lambda value, context=None, new_encryption_key=None: f"enc:{value}",
             ),
         ):
             await update_mcp_server(mock_prisma, data, "test-user")
@@ -792,7 +792,7 @@ class TestCredentialMergeOnUpdate:
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-                side_effect=lambda value, new_encryption_key: value,
+                side_effect=lambda value, context=None, new_encryption_key=None: value,
             ),
         ):
             await update_mcp_server(mock_prisma, data, "test-user")
@@ -863,7 +863,7 @@ class TestSigV4BuildFromTable:
 
         with patch(
             "litellm.proxy._experimental.mcp_server.mcp_server_manager.decrypt_value_helper",
-            side_effect=lambda value, key, exception_type, return_original_value: value.replace(
+            side_effect=lambda value, key, context=None, exception_type="error", return_original_value=False: value.replace(
                 "enc:", ""
             ),
         ):
@@ -922,7 +922,7 @@ class TestSigV4BuildFromTable:
 
         with patch(
             "litellm.proxy._experimental.mcp_server.mcp_server_manager.decrypt_value_helper",
-            side_effect=lambda value, key, exception_type, return_original_value: value.replace(
+            side_effect=lambda value, key, context=None, exception_type="error", return_original_value=False: value.replace(
                 "enc:", ""
             ),
         ):
@@ -956,7 +956,7 @@ class TestDecryptCredentials:
 
         with patch(
             "litellm.proxy._experimental.mcp_server.db.decrypt_value_helper",
-            side_effect=lambda value, key, exception_type="error", return_original_value=False: value.replace(
+            side_effect=lambda value, key, context=None, exception_type="error", return_original_value=False: value.replace(
                 "enc:", ""
             ),
         ):
@@ -980,7 +980,7 @@ class TestDecryptCredentials:
 
         with patch(
             "litellm.proxy._experimental.mcp_server.db.decrypt_value_helper",
-            side_effect=lambda value, key, exception_type="error", return_original_value=False: value.replace(
+            side_effect=lambda value, key, context=None, exception_type="error", return_original_value=False: value.replace(
                 "enc:", ""
             ),
         ):
@@ -1022,13 +1022,13 @@ class TestRotateCredentials:
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.decrypt_value_helper",
-                side_effect=lambda value, key, exception_type="error", return_original_value=False: value.replace(
+                side_effect=lambda value, key, context=None, exception_type="error", return_original_value=False: value.replace(
                     "enc_old:", ""
                 ),
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-                side_effect=lambda value, new_encryption_key: f"enc_new:{value}",
+                side_effect=lambda value, context=None, new_encryption_key=None: f"enc_new:{value}",
             ),
         ):
             await rotate_mcp_server_credentials_master_key(
@@ -1073,13 +1073,13 @@ class TestRotateCredentials:
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.decrypt_value_helper",
-                side_effect=lambda value, key, exception_type="error", return_original_value=False: value.replace(
+                side_effect=lambda value, key, context=None, exception_type="error", return_original_value=False: value.replace(
                     "enc_old:", ""
                 ),
             ),
             patch(
                 "litellm.proxy._experimental.mcp_server.db.encrypt_value_helper",
-                side_effect=lambda value, new_encryption_key: f"enc_new:{value}",
+                side_effect=lambda value, context=None, new_encryption_key=None: f"enc_new:{value}",
             ),
         ):
             await rotate_mcp_server_credentials_master_key(

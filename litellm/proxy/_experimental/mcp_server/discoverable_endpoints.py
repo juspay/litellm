@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ValidationError
 
 from litellm._logging import verbose_logger
+from litellm.litellm_core_utils.url_utils import async_safe_get, async_safe_post
 from litellm.llms.custom_httpx.http_handler import (
     get_async_httpx_client,
     httpxSpecialProvider,
@@ -546,7 +547,8 @@ async def exchange_token_with_server(
             token_data["code_verifier"] = code_verifier
 
     async_client = get_async_httpx_client(llm_provider=httpxSpecialProvider.Oauth2Check)
-    response = await async_client.post(
+    response = await async_safe_post(
+        async_client,
         mcp_server.token_url,
         headers={"Accept": "application/json", **client_auth.headers},
         data=token_data,
@@ -830,7 +832,8 @@ async def register_client_with_server(
     }
 
     async_client = get_async_httpx_client(llm_provider=httpxSpecialProvider.Oauth2Register)
-    response = await async_client.post(
+    response = await async_safe_post(
+        async_client,
         mcp_server.registration_url,
         headers=headers,
         json=register_data,
@@ -1146,7 +1149,8 @@ async def fetch_upstream_oauth_protected_resource(
         network_errors: list[Exception] = []
         for candidate in candidates:
             try:
-                response = await async_client.get(
+                response = await async_safe_get(
+                    async_client,
                     candidate,
                     headers={"Accept": "application/json"},
                 )

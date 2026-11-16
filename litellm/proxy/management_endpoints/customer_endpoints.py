@@ -11,7 +11,7 @@ All /customer management endpoints
 
 #### END-USER/CUSTOMER MANAGEMENT ####
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import fastapi
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -408,6 +408,26 @@ async def new_end_user(
         raise handle_exception_on_proxy(e)
 
 
+def _require_end_user_admin(user_api_key_dict: UserAPIKeyAuth, allow_view_only: bool) -> None:
+    """Gate end-user (customer) records on admin roles.
+
+    End-user rows carry budget limits, blocked state, and object permissions
+    for a tenant, so reading or mutating another tenant's record must not be
+    reachable with a low-privilege virtual key. Reads additionally accept
+    PROXY_ADMIN_VIEW_ONLY to stay consistent with /customer/list.
+    """
+    allowed_roles = (
+        (LitellmUserRoles.PROXY_ADMIN, LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY)
+        if allow_view_only
+        else (LitellmUserRoles.PROXY_ADMIN,)
+    )
+    if user_api_key_dict.user_role not in allowed_roles:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": f"Admin-only endpoint. Your user role={user_api_key_dict.user_role}"},
+        )
+
+
 @router.get(
     "/customer/info",
     tags=["Customer Management"],
@@ -421,7 +441,8 @@ async def new_end_user(
     dependencies=[Depends(user_api_key_auth)],
 )
 async def end_user_info(
-    end_user_id: str = fastapi.Query(description="End User ID in the request parameters"),
+    end_user_id: Annotated[str, fastapi.Query(description="End User ID in the request parameters")],
+    user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
 ) -> CustomerResponse:
     """
     Get information about an end-user. An `end_user` is a customer (external user) of the proxy.
@@ -436,6 +457,8 @@ async def end_user_info(
     ```
     """
     try:
+        _require_end_user_admin(user_api_key_dict, allow_view_only=True)
+
         from litellm.proxy.proxy_server import prisma_client
 
         if prisma_client is None:
@@ -537,6 +560,8 @@ async def update_end_user(
     """
 
     from litellm.proxy.proxy_server import litellm_proxy_admin_name, prisma_client
+
+    _require_end_user_admin(user_api_key_dict, allow_view_only=False)
 
     try:
         data_json: dict = data.json()

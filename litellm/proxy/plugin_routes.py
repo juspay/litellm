@@ -17,7 +17,10 @@ Plugin iframe auth:
   derived as HMAC-SHA256(LITELLM_SALT_KEY, plugin_name).  The claim carries no
   litellm bearer token, so a compromised plugin learns only the caller's
   identity, never their credential.  LITELLM_SALT_KEY itself is never shared
-  with plugins — each plugin holds only its own derived key.
+  with plugins — each plugin holds only its own derived key.  On top of the
+  encryption, the proxy signs each claim with an issuer key the plugin
+  cannot derive, so a plugin can read claims but never mint one naming a
+  different user.
 """
 
 import base64
@@ -25,12 +28,14 @@ import hashlib
 import hmac as _hmac
 import json
 import os
+import posixpath
 import time
 from collections.abc import Mapping
 
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import PluginConfig, SpecialHeaders, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
@@ -129,13 +134,53 @@ def _plugin_fernet(plugin_name: str) -> Fernet:
     Key material: HMAC-SHA256(LITELLM_SALT_KEY, plugin_name).
     A plugin possessing its own key cannot derive the master salt or
     forge claims intended for a different plugin.
+
+    Raises ValueError when LITELLM_SALT_KEY is unset: falling back to an
+    empty HMAC key would make the derived key publicly computable from the
+    plugin name, so both issuance and verification fail closed instead.
     """
-    salt = os.getenv("LITELLM_SALT_KEY", "").encode()
-    derived = _hmac.new(salt, plugin_name.encode(), hashlib.sha256).digest()
+    salt = os.getenv("LITELLM_SALT_KEY")
+    if not salt:
+        raise ValueError("LITELLM_SALT_KEY is not configured; plugin session claims are unavailable")
+    derived = _hmac.new(salt.encode(), plugin_name.encode(), hashlib.sha256).digest()
     return Fernet(base64.urlsafe_b64encode(derived))
 
 
 _CLAIM_TTL_SECONDS = 30  # identity claims expire after 30 s
+
+# Purpose string for the proxy-side issuer key. The per-plugin Fernet key
+# above is shared with the plugin, so alone it proves nothing about who
+# minted a claim: a plugin could re-encrypt any {user_id, ...} payload it
+# likes. Claims are additionally signed with a key derived from a distinct
+# purpose string that never leaves the proxy, so only the proxy can issue
+# claims the proxy will accept.
+_CLAIM_ISSUER_PURPOSE = "litellm-plugin-claim-issuer-v1:"
+
+
+def _claim_issuer_key(plugin_name: str) -> bytes:
+    """Proxy-side HMAC key for signing issued claims. Distinct from the
+    per-plugin Fernet key and never shared with the plugin."""
+    salt = os.getenv("LITELLM_SALT_KEY")
+    if not salt:
+        raise ValueError("LITELLM_SALT_KEY is not configured; plugin session claims are unavailable")
+    return _hmac.new(salt.encode(), (_CLAIM_ISSUER_PURPOSE + plugin_name).encode(), hashlib.sha256).digest()
+
+
+def _sign_claim(plugin_name: str, ciphertext: str) -> str:
+    mac = _hmac.new(_claim_issuer_key(plugin_name), ciphertext.encode(), hashlib.sha256).digest()
+    return f"{ciphertext}.{base64.urlsafe_b64encode(mac).decode().rstrip('=')}"
+
+
+def _claim_signature_is_valid(plugin_name: str, token: str) -> bool:
+    ciphertext, sep, mac_b64 = token.rpartition(".")
+    if not sep or not mac_b64 or "." in mac_b64:
+        return False
+    try:
+        mac = base64.urlsafe_b64decode(mac_b64 + "=" * (-len(mac_b64) % 4))
+    except (ValueError, TypeError):
+        return False
+    expected = _hmac.new(_claim_issuer_key(plugin_name), ciphertext.encode(), hashlib.sha256).digest()
+    return _hmac.compare_digest(mac, expected)
 
 
 def issue_plugin_session_claim(plugin_name: str, user_id: str | None, user_role: str | None) -> str:
@@ -144,6 +189,12 @@ def issue_plugin_session_claim(plugin_name: str, user_id: str | None, user_role:
     The claim contains {user_id, user_role, plugin, exp}.  Crucially it
     contains NO litellm bearer token — the plugin can only derive the
     caller's identity, not act as them against the proxy.
+
+    The token is <fernet-ciphertext>.<issuer-mac>: the Fernet layer is
+    decryptable by the plugin (it holds the per-plugin key), while the
+    issuer MAC is verifiable only by the proxy. A plugin can therefore read
+    claims but cannot mint one naming a different user, because it cannot
+    compute the issuer MAC.
     """
     claim = {
         "plugin": plugin_name,
@@ -151,15 +202,60 @@ def issue_plugin_session_claim(plugin_name: str, user_id: str | None, user_role:
         "user_role": user_role or "",
         "exp": int(time.time()) + _CLAIM_TTL_SECONDS,
     }
-    return _plugin_fernet(plugin_name).encrypt(json.dumps(claim).encode()).decode()
+    ciphertext = _plugin_fernet(plugin_name).encrypt(json.dumps(claim).encode()).decode()
+    return _sign_claim(plugin_name, ciphertext)
 
 
-def verify_plugin_session_claim(plugin_name: str, ciphertext: str) -> dict:
+async def _resolve_live_user_role(user_id: str) -> str | None:
+    """Re-resolve a user's role from the live user cache / DB at claim-verify time.
+
+    The claim's user_role is only a routing hint from the moment it was minted;
+    this is the value that actually decides authorization.  A demoted or
+    deactivated user fails verification immediately instead of riding the
+    claim's TTL.
+    """
+    if not user_id:
+        return None
+    from litellm.proxy.auth.user_api_key_auth import user_api_key_cache
+
+    cached = await user_api_key_cache.async_get_cache(key=user_id)
+    if cached is not None:
+        from litellm.models.user import LiteLLM_UserTable
+        from litellm.proxy.common_utils.cache_pydantic_utils import CacheCodec
+
+        row = CacheCodec.deserialize(cached, LiteLLM_UserTable)
+        if row is not None:
+            return row.user_role
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        return None
+    from prisma.errors import PrismaError
+
+    try:
+        row = await prisma_client.db.litellm_usertable.find_first(where={"user_id": user_id})
+    except PrismaError:
+        return None
+    if row is None:
+        return None
+    if getattr(row, "disabled", False):
+        return None
+    return getattr(row, "user_role", None)
+
+
+async def verify_plugin_session_claim(plugin_name: str, token: str) -> dict:
     """Verify and decode a plugin session claim.
 
-    Raises ValueError if the HMAC is invalid, the audience is wrong, or
-    the claim is expired.  Returns the decoded claim dict on success.
+    Raises ValueError if the issuer signature is missing or invalid (the
+    token was not minted by the proxy), the Fernet layer is invalid, the
+    audience is wrong, the claim is expired, or the caller's role changed
+    since issuance (demotion and deactivation take effect immediately rather
+    than at claim expiry). Returns the decoded claim dict with the freshly
+    resolved user_role.
     """
+    if not _claim_signature_is_valid(plugin_name, token):
+        raise ValueError("Plugin session claim is not proxy-issued")
+    ciphertext = token.rpartition(".")[0]
     try:
         raw = _plugin_fernet(plugin_name).decrypt(ciphertext.encode(), ttl=_CLAIM_TTL_SECONDS)
         claim = json.loads(raw)
@@ -170,6 +266,11 @@ def verify_plugin_session_claim(plugin_name: str, ciphertext: str) -> dict:
         raise ValueError("Plugin claim audience mismatch")
     if int(claim.get("exp", 0)) < int(time.time()):
         raise ValueError("Plugin session claim expired")
+
+    live_role = await _resolve_live_user_role(str(claim.get("user_id") or ""))
+    if not live_role:
+        raise ValueError("Plugin session claim user is unknown, disabled, or removed")
+    claim["user_role"] = live_role
     return claim
 
 
@@ -185,13 +286,35 @@ def register_plugins_from_config(general_settings: dict[str, object]) -> None:
     raw = general_settings.get("plugins")
     entries: list[object] = raw if isinstance(raw, list) else []
     new_registry = {p.name: p for p in (PluginConfig.model_validate(entry) for entry in entries)}
-    _plugin_registry.clear()
-    _plugin_registry.update(new_registry)
+    global _plugin_registry  # noqa: PLW0603  # atomic rebind is the fix: readers never see a cleared registry
+    _plugin_registry = new_registry
 
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+def _build_plugin_proxy_target_url(plugin_url: str, path: str, query: str) -> str:
+    """Build the upstream target URL for a plugin-proxy request.
+
+    Resolves ``..`` segments in the captured path so a request like
+    ``/plugin-proxy/<name>/../../admin`` cannot climb out of the plugin's
+    configured base URL. The effective target stays pinned to the
+    operator-configured prefix regardless of how the plugin's own server
+    normalizes dot segments. A trailing slash on the original path is
+    preserved since some upstreams treat ``/foo`` and ``/foo/`` as
+    different resources.
+    """
+    safe_path = posixpath.normpath("/" + path).lstrip("/")
+    if safe_path == ".":
+        safe_path = ""
+    if path.endswith("/") and safe_path and not safe_path.endswith("/"):
+        safe_path += "/"
+    target_url = f"{plugin_url.rstrip('/')}/{safe_path}"
+    if query:
+        target_url = f"{target_url}?{query}"
+    return target_url
+
+
 @router.get("/api/plugins", tags=["plugins"])
 async def list_plugins(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
@@ -276,10 +399,12 @@ async def plugin_proxy(
             status_code=404,
         )
 
-    target_url = f"{plugin.url.rstrip('/')}/{path}"
-    query = request.url.query
-    if query:
-        target_url = f"{target_url}?{query}"
+    # Resolve '..' segments in the captured path so a request like
+    # /plugin-proxy/<name>/../../admin cannot climb out of the plugin's
+    # configured base URL — the effective target stays pinned to the
+    # operator-configured prefix regardless of how the plugin's own server
+    # normalizes dot segments.
+    target_url = _build_plugin_proxy_target_url(plugin_url=plugin.url, path=path, query=request.url.query)
 
     body = await request.body()
 
@@ -314,8 +439,9 @@ async def plugin_proxy(
         # the plugin to SSRF the proxy into fetching arbitrary internal services.
         resp = await handler.client.send(req, follow_redirects=False)
     except Exception:
+        verbose_proxy_logger.exception(f"Plugin proxy connection failure for plugin '{plugin_name}'")
         return Response(
-            content=f"Cannot connect to plugin '{plugin_name}' at {plugin.url}",
+            content=f"Cannot connect to plugin '{plugin_name}'.",
             status_code=502,
         )
 

@@ -61,6 +61,35 @@ def _validate_protocol_version(upstream_card: Mapping[str, Any] | None) -> None:
         )
 
 
+def _validate_agent_upstream_url(upstream_card: Mapping[str, Any] | None) -> None:
+    """Validate the agent card's upstream ``url`` at registration time.
+
+    The runtime A2A invocation path forwards the proxy's credentials to this
+    URL, so it gets the same destination checks as provider api_base values:
+    ``validate_credential_destination`` (admin allowlist via
+    ``provider_url_destination_allowed_hosts``) and SSRF validation
+    (loopback/link-local/RFC1918/cloud-metadata refused unless the host is
+    admin-allowlisted in ``user_url_allowed_hosts``).
+    """
+    url = upstream_card.get("url") if upstream_card else None
+    if not isinstance(url, str) or not url:
+        return
+    from litellm.litellm_core_utils.url_utils import SSRFError, validate_credential_destination, validate_url
+
+    try:
+        validate_credential_destination(url)
+        validate_url(url)
+    except (SSRFError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Agent card URL rejected: {e}. The URL receives the proxy's "
+                "credentials; point it at a public endpoint or add the host to "
+                "`user_url_allowed_hosts` / `provider_url_destination_allowed_hosts`."
+            ),
+        ) from e
+
+
 def _build_merged_agent_card(
     upstream_card: Mapping[str, Any] | None,
     *,
@@ -71,6 +100,7 @@ def _build_merged_agent_card(
     """Apply the LiteLLM-fronting merge to ``upstream_card`` for ``agent_id``."""
     proxy_base = _proxy_base_url(http_request)
     _validate_protocol_version(upstream_card)
+    _validate_agent_upstream_url(upstream_card)
     # Prefer a card-supplied ``name`` (the discovery UI exposes an editable
     # "Name (shown to API clients)" field that flows into
     # ``agent_card_params.name``) over the internal ``agent_name`` identifier.

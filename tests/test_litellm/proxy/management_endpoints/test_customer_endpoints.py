@@ -782,3 +782,84 @@ def test_char_delete_body(mock_prisma_client, mock_user_api_key_auth):
         "deleted_customers": 2,
         "message": "Successfully deleted customers with ids: ['c1', 'c2']",
     }
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        LitellmUserRoles.INTERNAL_USER,
+        LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+        LitellmUserRoles.TEAM,
+        LitellmUserRoles.CUSTOMER,
+        LitellmUserRoles.ORG_ADMIN,
+    ],
+)
+def test_end_user_info_rejects_non_admin_roles(mock_prisma_client, role):
+    """/customer/info must 403 for any non-admin role: it exposes another
+    tenant's end-user record (budget, blocked state, metadata)."""
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_id="some-user", user_role=role
+    )
+    try:
+        response = client.get(
+            "/customer/info?end_user_id=c1",
+            headers={"Authorization": "Bearer k"},
+        )
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides = original_overrides
+
+
+def test_end_user_info_allows_admin_viewer(mock_prisma_client, mock_user_api_key_auth):
+    """Reads stay consistent with /customer/list: PROXY_ADMIN_VIEW_ONLY may
+    view end-user records."""
+    from litellm.proxy._types import LiteLLM_EndUserTable
+
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_id="viewer", user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY
+    )
+    try:
+        mock_end_user = LiteLLM_EndUserTable(user_id="c1", alias="Cust", blocked=False)
+        mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(
+            return_value=mock_end_user
+        )
+        response = client.get(
+            "/customer/info?end_user_id=c1",
+            headers={"Authorization": "Bearer k"},
+        )
+        assert response.status_code == 200
+        assert response.json()["user_id"] == "c1"
+    finally:
+        app.dependency_overrides = original_overrides
+
+
+@pytest.mark.parametrize(
+    "role",
+    [
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+        LitellmUserRoles.INTERNAL_USER,
+        LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+        LitellmUserRoles.TEAM,
+        LitellmUserRoles.CUSTOMER,
+        LitellmUserRoles.ORG_ADMIN,
+    ],
+)
+def test_update_end_user_rejects_non_admin_roles(mock_prisma_client, role):
+    """/customer/update must 403 for every role except PROXY_ADMIN, including
+    the read-only viewer: it mutates another tenant's end-user record."""
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_id="some-user", user_role=role
+    )
+    try:
+        response = client.post(
+            "/customer/update",
+            json={"user_id": "c1", "alias": "Hacked"},
+            headers={"Authorization": "Bearer k"},
+        )
+        assert response.status_code == 403
+        mock_prisma_client.db.litellm_endusertable.update.assert_not_called()
+    finally:
+        app.dependency_overrides = original_overrides

@@ -88,6 +88,8 @@ router = APIRouter()
 DEFAULT_SERVICE_ACCOUNT_RPM_LIMIT = 150
 DEFAULT_SERVICE_ACCOUNT_PARALLEL_REQUESTS_LIMIT = 10
 
+AWS_STS_AUDIENCE = "sts.amazonaws.com"
+
 
 def _hash_password_in_dict(data: dict) -> None:
     """Hash password field in-place if present."""
@@ -467,9 +469,7 @@ async def new_user(
         teams = data.teams
         if teams is None:
             teams = check_if_default_team_set()
-        organization_ids = cast(
-            Optional[List[str]], data_json.pop("organizations", None)
-        )
+        organization_ids = cast(Optional[List[str]], data_json.pop("organizations", None))
         owner_ids = cast(Optional[List[str]], data_json.pop("owner_ids", None))
         # Service account fields are stored on LiteLLM_ServiceAccountTable, not
         # the user/key tables, so they must be popped before generate_key_helper_fn
@@ -479,9 +479,7 @@ async def new_user(
             "requested_models": data_json.pop("requested_models", None),
             "use_case": data_json.pop("use_case", None),
             "requested_rpm_limit": data_json.pop("requested_rpm_limit", None),
-            "requested_parallel_requests_limit": data_json.pop(
-                "requested_parallel_requests_limit", None
-            ),
+            "requested_parallel_requests_limit": data_json.pop("requested_parallel_requests_limit", None),
             # GPG key delivery: the requester's ASCII-armored OpenPGP public key
             # (used at approve time to encrypt the issued key) and the requester's
             # user_id (the Slack DM recipient). `public_key` is validated by the
@@ -545,9 +543,7 @@ async def new_user(
             service_account_fields["public_key"] = _validate_openpgp_public_key(
                 service_account_fields.get("public_key")
             )
-            if not service_account_fields.get("requester") and isinstance(
-                user_api_key_dict, UserAPIKeyAuth
-            ):
+            if not service_account_fields.get("requester") and isinstance(user_api_key_dict, UserAPIKeyAuth):
                 service_account_fields["requester"] = user_api_key_dict.user_id
 
             create_data: dict = {"user_id": user_id, "owner_ids": owner_ids}
@@ -555,13 +551,8 @@ async def new_user(
             # didn't specify them, so the SA row always carries concrete limits
             # (the DB columns are nullable with no default).
             if service_account_fields.get("requested_rpm_limit") is None:
-                service_account_fields["requested_rpm_limit"] = (
-                    DEFAULT_SERVICE_ACCOUNT_RPM_LIMIT
-                )
-            if (
-                service_account_fields.get("requested_parallel_requests_limit")
-                is None
-            ):
+                service_account_fields["requested_rpm_limit"] = DEFAULT_SERVICE_ACCOUNT_RPM_LIMIT
+            if service_account_fields.get("requested_parallel_requests_limit") is None:
                 service_account_fields["requested_parallel_requests_limit"] = (
                     DEFAULT_SERVICE_ACCOUNT_PARALLEL_REQUESTS_LIMIT
                 )
@@ -862,7 +853,7 @@ async def user_info(
     --header 'Authorization: Bearer sk-1234'
     ```
     """
-    from litellm.proxy.proxy_server import _invalidate_spend_counter, prisma_client
+    from litellm.proxy.proxy_server import prisma_client
 
     try:
         user_id = _normalize_user_info_user_id(request=request, user_id=user_id)
@@ -912,7 +903,9 @@ async def user_info(
 
         return response_data
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.user_info(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.user_info(): Exception occured - {}".format(truncate_error_str(e))
+        )
         raise handle_exception_on_proxy(e)
 
 
@@ -1250,6 +1243,17 @@ async def _schedule_user_update_audit_log(
         verbose_proxy_logger.warning(f"Failed to create audit log for user {response.get('user_id')}: {audit_error}")
 
 
+_SELF_SERVICE_ALLOWED_FIELDS = frozenset(
+    {
+        "user_id",
+        "user_email",
+        "user_alias",
+        "password",
+        "metadata",
+    }
+)
+
+
 def _check_user_update_authz(
     user_request: UpdateUserRequest,
     user_api_key_dict: UserAPIKeyAuth,
@@ -1268,6 +1272,19 @@ def _check_user_update_authz(
                     "error": "User does not have permission to update this user. Only PROXY_ADMIN can update other users."
                 },
             )
+        if user_api_key_dict.user_id == typed_row.user_id and user_api_key_dict.user_role != (
+            LitellmUserRoles.PROXY_ADMIN.value
+        ):
+            disallowed = user_request.model_fields_set - _SELF_SERVICE_ALLOWED_FIELDS
+            if disallowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "Non-admin users can only update their own user_alias, user_email, "
+                        f"password, and metadata. Fields not permitted on self-update: {sorted(disallowed)}. "
+                        "Contact your proxy admin."
+                    },
+                )
     elif user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value:
         # Silent-create guard: only PROXY_ADMIN may create via /user/update.
         raise HTTPException(
@@ -1883,9 +1900,7 @@ async def batch_update_user_budgets(
 
     try:
         operation_type = "spend reset" if data.reset_spend else "budget update"
-        verbose_proxy_logger.info(
-            f"Batch {operation_type} request from {user_api_key_dict.user_id}"
-        )
+        verbose_proxy_logger.info(f"Batch {operation_type} request from {user_api_key_dict.user_id}")
         verbose_proxy_logger.info(
             f"Target type: {data.target_type}, Reset spend: {data.reset_spend}, "
             f"Budget: {data.budget_limit}, Duration: {data.budget_duration}"
@@ -1908,9 +1923,7 @@ async def batch_update_user_budgets(
                     get_budget_reset_time,
                 )
 
-                update_data["budget_reset_at"] = get_budget_reset_time(
-                    budget_duration=data.budget_duration
-                )
+                update_data["budget_reset_at"] = get_budget_reset_time(budget_duration=data.budget_duration)
 
         # Add updated_at timestamp
         update_data["updated_at"] = datetime.now(timezone.utc)
@@ -1921,8 +1934,7 @@ async def batch_update_user_budgets(
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "error": "No budget update fields provided. "
-                    "Specify reset_spend, budget_limit, or budget_duration."
+                    "error": "No budget update fields provided. Specify reset_spend, budget_limit, or budget_duration."
                 },
             )
 
@@ -1950,9 +1962,7 @@ async def batch_update_user_budgets(
             )
 
         # Perform the batch update using Prisma ORM
-        verbose_proxy_logger.info(
-            f"Executing batch update with where clause: {where_clause}"
-        )
+        verbose_proxy_logger.info(f"Executing batch update with where clause: {where_clause}")
 
         users_to_invalidate = []
         if data.reset_spend:
@@ -1976,9 +1986,7 @@ async def batch_update_user_budgets(
                 if user_id:
                     await _invalidate_spend_counter(counter_key=f"spend:user:{user_id}")
 
-        verbose_proxy_logger.info(
-            f"Batch {operation_type} completed. Affected rows: {affected_rows}"
-        )
+        verbose_proxy_logger.info(f"Batch {operation_type} completed. Affected rows: {affected_rows}")
 
         response_message = (
             f"Successfully reset spend for {affected_rows} users"
@@ -2306,50 +2314,44 @@ async def get_users(
     }
 
 
-async def _send_email_via_ses(
-    receiver_emails: List[str],
+def _send_email_via_ses_blocking(
+    receiver_emails: list[str],
     subject: str,
     html_body: str,
 ) -> None:
     """
-    Send email via AWS SES using Google OIDC auth.
-    Expects GCP_SERVICE_ACCOUNT_KEY as a raw JSON service account key.
-    Adapted from grid-ai-onboarding/cronjob/user-emails-sender/main.py
+    Blocking half of _send_email_via_ses; must only be run via
+    asyncio.to_thread. Mints the AWS STS web-identity token from the
+    environment via Workload Identity (google.oauth2.id_token.fetch_id_token),
+    so no GCP service account key needs to be mounted. The pod's Kubernetes
+    service account must be annotated for Workload Identity and its GSA added
+    to the AWS role trust policy.
     """
     try:
         import boto3
         from google.auth.transport import requests as google_requests
-        from google.oauth2 import service_account
+        from google.oauth2 import id_token
     except ImportError as e:
-        print("[DEBUG] AWS SES deps missing: %s" % e)
+        verbose_proxy_logger.debug("AWS SES deps missing: %s", e)
         return
 
-    gcp_service_account_key = os.getenv("GCP_SERVICE_ACCOUNT_KEY")
     aws_role_arn = os.getenv("AWS_ROLE_ARN")
     aws_region = os.getenv("AWS_REGION", "ap-south-1")
     sender_email = os.getenv("SENDER_EMAIL")
 
-    if not all([gcp_service_account_key, aws_role_arn, sender_email]):
-        print("[DEBUG] Missing env vars, skipping email")
+    if not all([aws_role_arn, sender_email]):
+        verbose_proxy_logger.warning("AWS_ROLE_ARN or SENDER_EMAIL not set, skipping key-rotation email")
         return
 
     try:
-        # Parse GCP service account key and get ID token for AWS STS
-        sa_info = json.loads(gcp_service_account_key)
-        creds = service_account.IDTokenCredentials.from_service_account_info(
-            sa_info,
-            target_audience="sts.amazonaws.com",
-        )
         auth_req = google_requests.Request()
-        creds.refresh(auth_req)
-        id_token = creds.token
+        web_identity_token = id_token.fetch_id_token(auth_req, AWS_STS_AUDIENCE)
 
-        # Exchange Google ID token for temporary AWS credentials
         sts = boto3.client("sts", region_name="us-east-1")
         response = sts.assume_role_with_web_identity(
             RoleArn=aws_role_arn,
             RoleSessionName="litellm-sa-key-rotation",
-            WebIdentityToken=id_token,
+            WebIdentityToken=web_identity_token,
         )
         temp_creds = response["Credentials"]
 
@@ -2375,8 +2377,34 @@ async def _send_email_via_ses(
             Destinations=receiver_emails,
             RawMessage={"Data": msg.as_string()},
         )
-    except Exception as e:
-        print("[DEBUG] FAILED to send email via AWS SES: %s" % str(e))
+    except Exception:
+        verbose_proxy_logger.exception("Failed to send key-rotation email via AWS SES")
+
+
+async def _send_email_via_ses(
+    receiver_emails: list[str],
+    subject: str,
+    html_body: str,
+) -> None:
+    """
+    Send email via AWS SES using Google OIDC auth. The blocking token mint,
+    STS AssumeRoleWithWebIdentity, and SES send run in a worker thread so
+    they never stall the proxy event loop.
+    """
+    await asyncio.to_thread(
+        _send_email_via_ses_blocking,
+        receiver_emails,
+        subject,
+        html_body,
+    )
+
+
+def _log_email_task_exception(task: "asyncio.Task[None]") -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        verbose_proxy_logger.warning("Key-rotation email task failed: %s", exc)
 
 
 async def _cleanup_service_accounts_on_user_delete(
@@ -2393,22 +2421,14 @@ async def _cleanup_service_accounts_on_user_delete(
         return
 
     # Fetch emails for deleted users so we can show human-readable names in emails
-    deleted_users = await prisma_client.db.litellm_usertable.find_many(
-        where={"user_id": {"in": deleted_user_ids}}
-    )
-    deleted_user_email_map = {
-        u.user_id: (u.user_email or u.user_id) for u in deleted_users
-    }
-    deleted_user_display_list = [
-        deleted_user_email_map.get(uid, uid) for uid in deleted_user_ids
-    ]
+    deleted_users = await prisma_client.db.litellm_usertable.find_many(where={"user_id": {"in": deleted_user_ids}})
+    deleted_user_email_map = {u.user_id: (u.user_email or u.user_id) for u in deleted_users}
+    deleted_user_display_list = [deleted_user_email_map.get(uid, uid) for uid in deleted_user_ids]
 
     # Find all service accounts where any deleted user is an owner
     affected_sas = []
     for user_id in deleted_user_ids:
-        sas = await prisma_client.db.litellm_serviceaccounttable.find_many(
-            where={"owner_ids": {"has": user_id}}
-        )
+        sas = await prisma_client.db.litellm_serviceaccounttable.find_many(where={"owner_ids": {"has": user_id}})
         affected_sas.extend(sas)
 
     # Deduplicate by user_id
@@ -2437,35 +2457,29 @@ async def _cleanup_service_accounts_on_user_delete(
             continue
 
         # Find active keys for this service account
-        keys = await prisma_client.db.litellm_verificationtoken.find_many(
-            where={"user_id": sa.user_id}
-        )
+        keys = await prisma_client.db.litellm_verificationtoken.find_many(where={"user_id": sa.user_id})
 
         active_keys = [
-            k for k in keys
-            if (k.blocked is None or k.blocked is False)
-            and (k.expires is None or k.expires > now)
+            k for k in keys if (k.blocked is None or k.blocked is False) and (k.expires is None or k.expires > now)
         ]
 
         keys_info = []
         for key in active_keys:
             current_expiry = key.expires
-            new_expiry = (
-                seven_days_later
-                if current_expiry is None
-                else min(current_expiry, seven_days_later)
-            )
+            new_expiry = seven_days_later if current_expiry is None else min(current_expiry, seven_days_later)
 
             await prisma_client.db.litellm_verificationtoken.update(
                 where={"token": key.token},
                 data={"expires": new_expiry},
             )
 
-            keys_info.append({
-                "key_name": key.key_name or "—",
-                "key_alias": key.key_alias or "—",
-                "new_expiry": new_expiry.isoformat(),
-            })
+            keys_info.append(
+                {
+                    "key_name": key.key_name or "—",
+                    "key_alias": key.key_alias or "—",
+                    "new_expiry": new_expiry.isoformat(),
+                }
+            )
 
         # Update service account with new owner_ids
         await prisma_client.db.litellm_serviceaccounttable.update(
@@ -2477,20 +2491,14 @@ async def _cleanup_service_accounts_on_user_delete(
             continue
 
         # Get emails of all remaining owners for this service account
-        owner_users = await prisma_client.db.litellm_usertable.find_many(
-            where={"user_id": {"in": new_owner_ids}}
-        )
-        owner_emails = [
-            owner.user_email for owner in owner_users if owner.user_email
-        ]
+        owner_users = await prisma_client.db.litellm_usertable.find_many(where={"user_id": {"in": new_owner_ids}})
+        owner_emails = [owner.user_email for owner in owner_users if owner.user_email]
 
         if not owner_emails:
             continue
 
         # Fetch service account email for human-readable identifier
-        sa_user_row = await prisma_client.db.litellm_usertable.find_unique(
-            where={"user_id": sa.user_id}
-        )
+        sa_user_row = await prisma_client.db.litellm_usertable.find_unique(where={"user_id": sa.user_id})
         sa_identifier = sa_user_row.user_email if sa_user_row and sa_user_row.user_email else sa.user_id
 
         # Build email for this specific service account
@@ -2501,19 +2509,16 @@ async def _cleanup_service_accounts_on_user_delete(
         )
 
         # Send one email to all remaining owners of this service account
-        asyncio.create_task(
+        email_task = asyncio.create_task(
             _send_email_via_ses(
                 receiver_emails=owner_emails,
-                subject=(
-                    "Action Required: Service Account Key Rotation Needed"
-                ),
+                subject=("Action Required: Service Account Key Rotation Needed"),
                 html_body=html_body,
             )
         )
+        email_task.add_done_callback(_log_email_task_exception)
 
-    await prisma_client.db.litellm_serviceaccounttable.delete_many(
-        where={"user_id": {"in": deleted_user_ids}}
-    )
+    await prisma_client.db.litellm_serviceaccounttable.delete_many(where={"user_id": {"in": deleted_user_ids}})
 
 
 def _build_service_account_key_rotation_email(
@@ -2522,10 +2527,7 @@ def _build_service_account_key_rotation_email(
     deleted_user_identifiers: List[str],
 ) -> str:
     """Build HTML email body for key rotation notification for a single SA."""
-    escaped_deleted_users = [
-        html_escape(str(identifier), quote=True)
-        for identifier in deleted_user_identifiers
-    ]
+    escaped_deleted_users = [html_escape(str(identifier), quote=True) for identifier in deleted_user_identifiers]
     escaped_sa_identifier = html_escape(str(sa_identifier), quote=True)
 
     html = "<h2>Service Account Owner Removed — Action Required</h2>"
@@ -2540,19 +2542,12 @@ def _build_service_account_key_rotation_email(
         "they will become unusable.</p>"
     )
     html += "<hr>"
-    html += (
-        "<table border='1' cellpadding='8'>"
-        "<tr><th>Key Name</th><th>Key Alias</th><th>New Expiry (UTC)</th></tr>"
-    )
+    html += "<table border='1' cellpadding='8'><tr><th>Key Name</th><th>Key Alias</th><th>New Expiry (UTC)</th></tr>"
     for key in keys_info:
         key_name = html_escape(str(key.get("key_name", "")), quote=True)
         key_alias = html_escape(str(key.get("key_alias", "")), quote=True)
         new_expiry = html_escape(str(key.get("new_expiry", "")), quote=True)
-        html += (
-            f"<tr><td>{key_name}</td>"
-            f"<td>{key_alias}</td>"
-            f"<td>{new_expiry}</td></tr>"
-        )
+        html += f"<tr><td>{key_name}</td><td>{key_alias}</td><td>{new_expiry}</td></tr>"
     html += "</table>"
     html += "<p><em>This is an automated message from the LiteLLM Proxy.</em></p>"
     return html
@@ -3217,7 +3212,9 @@ async def get_user_daily_activity_aggregated(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.exception("/user/daily/activity/aggregated: Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "/user/daily/activity/aggregated: Exception occured - {}".format(truncate_error_str(e))
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to fetch analytics: {str(e)}"},

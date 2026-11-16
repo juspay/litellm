@@ -11,12 +11,15 @@ Covers the security behavior of:
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import jwt
 import pytest
 from fastapi import HTTPException
 
 import litellm
 from litellm.proxy._types import InvitationClaim
+from litellm.proxy.common_utils.session_cookie_utils import (
+    decode_ui_session_jwt,
+    encode_ui_session_jwt,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -73,7 +76,7 @@ def _make_onboarding_token(
     token_type: str = "litellm_onboarding",
     master_key: str = "sk-test",
 ) -> str:
-    return jwt.encode(
+    return encode_ui_session_jwt(
         {
             "token_type": token_type,
             "invitation_link": invitation_link,
@@ -81,7 +84,6 @@ def _make_onboarding_token(
             "exp": litellm.utils.get_utc_datetime() + timedelta(minutes=15),
         },
         master_key,
-        algorithm="HS256",
     )
 
 
@@ -200,9 +202,9 @@ async def test_get_token_returns_onboarding_token_without_minting_ui_key():
     assert "token" in result
     assert "login_url" in result
 
-    outer_claims = jwt.decode(result["token"], "sk-test", algorithms=["HS256"])
+    outer_claims = decode_ui_session_jwt(result["token"], "sk-test", verify_exp=False)
     onboarding_token = outer_claims["key"]
-    onboarding_claims = jwt.decode(onboarding_token, "sk-test", algorithms=["HS256"])
+    onboarding_claims = decode_ui_session_jwt(onboarding_token, "sk-test", verify_exp=False)
     assert onboarding_claims["token_type"] == "litellm_onboarding"
     assert onboarding_claims["invitation_link"] == "invite-abc"
     assert onboarding_claims["user_id"] == "user-123"
@@ -460,7 +462,7 @@ async def test_claim_token_sets_accepted_at_after_password_written():
     link_update_data = prisma.db.litellm_invitationlink.update.call_args.kwargs["data"]
     assert "is_accepted" not in link_update_data
     assert link_update_data["accepted_at"] is not None
-    outer_claims = jwt.decode(result["token"], "sk-test", algorithms=["HS256"])
+    outer_claims = decode_ui_session_jwt(result["token"], "sk-test", verify_exp=False)
     assert outer_claims["key"] == "sk-generated-key"
 
 

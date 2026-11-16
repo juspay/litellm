@@ -62,6 +62,7 @@ from litellm.constants import (
 from litellm.litellm_core_utils.litellm_logging import (
     _init_custom_logger_compatible_class,
 )
+from litellm.litellm_core_utils.asyncify import asyncify
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.proxy._types import (
@@ -238,8 +239,8 @@ from litellm.integrations.custom_guardrail import ModifyResponseException
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.SlackAlerting.slack_alerting import SlackAlerting
 from litellm.litellm_core_utils.core_helpers import (
-    _truncate_str,
     _get_parent_otel_span_from_kwargs,
+    _truncate_str,
     get_litellm_metadata_from_kwargs,
     truncate_error_str,
 )
@@ -316,6 +317,11 @@ from litellm.proxy.common_utils.openai_endpoint_utils import (
 )
 from litellm.proxy.common_utils.proxy_state import ProxyState
 from litellm.proxy.common_utils.reset_budget_job import ResetBudgetJob
+from litellm.proxy.common_utils.session_cookie_utils import (
+    decode_ui_session_jwt,
+    encode_ui_session_jwt,
+    set_ui_session_cookie,
+)
 from litellm.proxy.common_utils.swagger_utils import ERROR_RESPONSES
 from litellm.proxy.common_utils.timezone_utils import get_budget_reset_time
 from litellm.proxy.common_utils.user_api_key_cache import (
@@ -355,11 +361,14 @@ from litellm.proxy.litellm_pre_call_utils import add_litellm_data_to_request
 from litellm.proxy.logging_endpoints.callback_logs_endpoints import (
     rust_control_plane_router,
 )
-from litellm.proxy.management_endpoints.budget_management_endpoints import (
-    router as budget_management_router,
-)
 from litellm.proxy.management_endpoints.audit_log_endpoints import (
     router as audit_log_router,
+)
+from litellm.proxy.management_endpoints.bench_run_endpoints import (
+    router as bench_run_router,
+)
+from litellm.proxy.management_endpoints.budget_management_endpoints import (
+    router as budget_management_router,
 )
 from litellm.proxy.management_endpoints.cache_settings_endpoints import (
     router as cache_settings_router,
@@ -374,6 +383,9 @@ from litellm.proxy.management_endpoints.common_utils import (
 )
 from litellm.proxy.management_endpoints.cost_tracking_settings import (
     router as cost_tracking_settings_router,
+)
+from litellm.proxy.management_endpoints.custom_team_endpoints import (
+    router as custom_team_router,
 )
 from litellm.proxy.management_endpoints.customer_endpoints import (
     router as customer_router,
@@ -409,23 +421,17 @@ from litellm.proxy.management_endpoints.model_management_endpoints import (
 from litellm.proxy.management_endpoints.organization_endpoints import (
     router as organization_router,
 )
-from litellm.proxy.management_endpoints.service_account_endpoints import (
-    router as service_account_router,
-)
-from litellm.proxy.management_endpoints.bench_run_endpoints import (
-    router as bench_run_router,
-)
 from litellm.proxy.management_endpoints.router_settings_endpoints import (
     router as router_settings_router,
+)
+from litellm.proxy.management_endpoints.service_account_endpoints import (
+    router as service_account_router,
 )
 from litellm.proxy.management_endpoints.tag_management_endpoints import (
     router as tag_management_router,
 )
 from litellm.proxy.management_endpoints.team_callback_endpoints import (
     router as team_callback_router,
-)
-from litellm.proxy.management_endpoints.custom_team_endpoints import (
-    router as custom_team_router,
 )
 from litellm.proxy.management_endpoints.team_endpoints import router as team_router
 from litellm.proxy.management_endpoints.team_endpoints import (
@@ -447,10 +453,6 @@ from litellm.proxy.management_helpers.audit_logs import (
     create_object_audit_log,
 )
 from litellm.proxy.memory.memory_endpoints import router as memory_router
-from litellm.proxy.plugin_routes import (
-    router as plugin_router,
-    register_plugins_from_config,
-)
 from litellm.proxy.middleware.in_flight_requests_middleware import (
     InFlightRequestsMiddleware,
 )
@@ -470,18 +472,22 @@ from litellm.proxy.openai_files_endpoints.files_endpoints import (
 )
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     passthrough_endpoint_router,
+    vertex_ai_live_websocket_passthrough,
 )
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     router as llm_passthrough_router,
-)
-from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
-    vertex_ai_live_websocket_passthrough,
 )
 from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     initialize_pass_through_endpoints,
 )
 from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     router as pass_through_router,
+)
+from litellm.proxy.plugin_routes import (
+    register_plugins_from_config,
+)
+from litellm.proxy.plugin_routes import (
+    router as plugin_router,
 )
 from litellm.proxy.public_endpoints import router as public_endpoints_router
 from litellm.proxy.rag_endpoints.endpoints import router as rag_router
@@ -561,21 +567,18 @@ from litellm.types.proxy.management_endpoints.ui_sso import (
 from litellm.types.realtime import RealtimeQueryParams
 from litellm.types.router import (
     DeploymentTypedDict,
-)
-from litellm.types.router import ModelInfo as RouterModelInfo
-from litellm.types.router import (
     RouterGeneralSettings,
     SearchToolTypedDict,
     updateDeployment,
 )
+from litellm.types.router import ModelInfo as RouterModelInfo
 from litellm.types.scheduler import DefaultPriorities
 from litellm.types.secret_managers.main import (
     KeyManagementSettings,
     KeyManagementSystem,
 )
-from litellm.types.utils import CredentialItem, CustomHuggingfaceTokenizer
+from litellm.types.utils import CredentialItem, CustomHuggingfaceTokenizer, RawRequestTypedDict, StandardLoggingPayload
 from litellm.types.utils import ModelInfo as ModelMapInfo
-from litellm.types.utils import RawRequestTypedDict, StandardLoggingPayload
 from litellm.utils import _add_custom_logger_callback_to_specific_event
 
 try:
@@ -824,7 +827,9 @@ async def _initialize_shared_aiohttp_session():
         )
         return session
     except Exception as e:
-        verbose_proxy_logger.warning(f"Failed to create shared aiohttp session: {truncate_error_str(e)}. Continuing without session reuse.")
+        verbose_proxy_logger.warning(
+            f"Failed to create shared aiohttp session: {truncate_error_str(e)}. Continuing without session reuse."
+        )
         return None
 
 
@@ -930,6 +935,7 @@ async def proxy_startup_event(app: FastAPI):
         )
 
     if prisma_client is not None:
+        ProxyStartupEvent._check_token_pepper_configured()
 
         async def _run_pw_migration():
             try:
@@ -971,11 +977,11 @@ async def proxy_startup_event(app: FastAPI):
         if is_otel_v2_enabled():
             from opentelemetry import trace as _otel_trace
 
-            from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
             from litellm.integrations.otel.logger import (
                 OpenTelemetryV2,
                 publish_global_otel_v2_provider,
             )
+            from litellm.litellm_core_utils.litellm_logging import _in_memory_loggers
 
             registered = open_telemetry_logger if isinstance(open_telemetry_logger, OpenTelemetryV2) else None
             publish_global_otel_v2_provider(
@@ -1428,6 +1434,65 @@ async def otel_unhandled_exception_handler(request: Request, exc: Exception):
 router = APIRouter()
 
 
+def _rewrite_ui_files_for_root_path(ui_path: str, litellm_asset_prefix: str, server_root_path: str) -> None:
+    """
+    Rewrite the packaged dashboard files in place so the asset prefix and the
+    well-known config path honor ``server_root_path``.
+
+    ``followlinks=False`` plus a realpath containment check keep a symlink
+    planted inside the UI directory from making this rewrite touch files
+    outside it.
+    """
+    real_ui_root = os.path.realpath(ui_path)
+    for root, dirs, files in os.walk(ui_path, followlinks=False):
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            real_file_path = os.path.realpath(file_path)
+            if os.path.commonpath((real_file_path, real_ui_root)) != real_ui_root:
+                verbose_proxy_logger.warning(
+                    f"Skipping UI path rewrite for {filename}: resolved path escapes the UI directory"
+                )
+                continue
+            file_path = real_file_path
+            if filename.endswith(
+                (
+                    ".png",
+                    ".jpg",
+                    ".jpeg",
+                    ".gif",
+                    ".ico",
+                    ".woff",
+                    ".woff2",
+                    ".ttf",
+                    ".eot",
+                )
+            ):
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                modified_content = content.replace(
+                    f"{litellm_asset_prefix}",
+                    f"{server_root_path}",
+                )
+
+                modified_content = modified_content.replace(
+                    "/litellm/.well-known/litellm-ui-config",
+                    f"{server_root_path}/.well-known/litellm-ui-config",
+                )
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(modified_content)
+            except UnicodeDecodeError:
+                continue
+            except (PermissionError, OSError) as rewrite_err:
+                verbose_proxy_logger.warning(
+                    f"Failed to rewrite UI file {file_path} for server_root_path: {rewrite_err}"
+                )
+                continue
+
+
 def _get_cors_config(
     cors_origins_env: Optional[str] = None,
     cors_credentials_env: Optional[str] = None,
@@ -1660,46 +1725,7 @@ try:
                 f"UI files in Dockerfile with custom server_root_path."
             )
         else:
-            # Iterate through files in the UI directory
-            for root, dirs, files in os.walk(ui_path):
-                for filename in files:
-                    file_path = os.path.join(root, filename)
-                    # Skip binary files and files that don't need path replacement
-                    if filename.endswith(
-                        (
-                            ".png",
-                            ".jpg",
-                            ".jpeg",
-                            ".gif",
-                            ".ico",
-                            ".woff",
-                            ".woff2",
-                            ".ttf",
-                            ".eot",
-                        )
-                    ):
-                        continue
-                    try:
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            content = f.read()
-
-                        # Replace the asset prefix with the server root path
-                        modified_content = content.replace(
-                            f"{litellm_asset_prefix}",
-                            f"{server_root_path}",
-                        )
-
-                        # Replace the /.well-known/litellm-ui-config with the server root path
-                        modified_content = modified_content.replace(
-                            "/litellm/.well-known/litellm-ui-config",
-                            f"{server_root_path}/.well-known/litellm-ui-config",
-                        )
-
-                        with open(file_path, "w", encoding="utf-8") as f:
-                            f.write(modified_content)
-                    except (UnicodeDecodeError, PermissionError, OSError):
-                        # Skip binary files or files we can't write to
-                        continue
+            _rewrite_ui_files_for_root_path(ui_path, litellm_asset_prefix, server_root_path)
 
     # # Mount the _next directory at the root level
     app.mount(
@@ -1762,7 +1788,9 @@ try:
             _restructure_ui_html_files(ui_path)
             verbose_proxy_logger.info(f"Restructured UI directory: {ui_path}")
     except PermissionError as e:
-        verbose_proxy_logger.exception(f"Permission error while restructuring UI directory {ui_path}: {truncate_error_str(e)}")
+        verbose_proxy_logger.exception(
+            f"Permission error while restructuring UI directory {ui_path}: {truncate_error_str(e)}"
+        )
     except Exception as e:
         verbose_proxy_logger.exception(f"Error while restructuring UI directory {ui_path}: {truncate_error_str(e)}")
 
@@ -3430,16 +3458,10 @@ async def _poll_redis_pool_metrics():
                         "pool_type": pool_type,
                         "pod_worker": pod_worker,
                     }
-                    prometheus_logger.litellm_redis_pool_active_connections.labels(
-                        **labels
-                    ).set(stat.get("active", 0))
-                    prometheus_logger.litellm_redis_pool_max_connections.labels(
-                        **labels
-                    ).set(stat.get("max", 0))
+                    prometheus_logger.litellm_redis_pool_active_connections.labels(**labels).set(stat.get("active", 0))
+                    prometheus_logger.litellm_redis_pool_max_connections.labels(**labels).set(stat.get("max", 0))
             except Exception as e:
-                verbose_proxy_logger.debug(
-                    "Error reading pool stats for %s: %s", pool_name, e
-                )
+                verbose_proxy_logger.debug("Error reading pool stats for %s: %s", pool_name, e)
     except Exception as e:
         verbose_proxy_logger.debug("Error polling Redis pool metrics: %s", e)
 
@@ -5022,7 +5044,12 @@ class ProxyConfig:
         if not isinstance(value, str):
             return value
 
-        decrypted_value = decrypt_value_helper(value=value, key=key, return_original_value=True)
+        decrypted_value = decrypt_value_helper(
+            value=value,
+            key=key,
+            return_original_value=True,
+            context=f"LiteLLM_ProxyModelTable:litellm_params.{key}",
+        )
         if isinstance(decrypted_value, str) and decrypted_value.startswith("os.environ/"):
             return get_secret(decrypted_value)
         return decrypted_value
@@ -5234,18 +5261,30 @@ class ProxyConfig:
                     existing_callbacks=litellm.callbacks,
                 )
 
-    def _encrypt_env_variables(self, environment_variables: dict, new_encryption_key: Optional[str] = None) -> dict:
+    def _encrypt_env_variables(
+        self,
+        environment_variables: dict,
+        new_encryption_key: Optional[str] = None,
+        context_prefix: str = "LiteLLM_Config:environment_variables",
+    ) -> dict:
         """
         Encrypts a dictionary of environment variables and returns them.
         """
         encrypted_env_vars = {}
         for k, v in environment_variables.items():
-            encrypted_value = encrypt_value_helper(value=v, new_encryption_key=new_encryption_key)
+            encrypted_value = encrypt_value_helper(
+                value=v,
+                new_encryption_key=new_encryption_key,
+                context=f"{context_prefix}.{k}",
+            )
             encrypted_env_vars[k] = encrypted_value
         return encrypted_env_vars
 
     def _decrypt_and_set_db_env_variables(
-        self, environment_variables: dict, return_original_value: bool = False
+        self,
+        environment_variables: dict,
+        return_original_value: bool = False,
+        context_prefix: str = "LiteLLM_Config:environment_variables",
     ) -> dict:
         """
         Decrypts a dictionary of environment variables and then sets them in the environment
@@ -5257,7 +5296,12 @@ class ProxyConfig:
         decrypted_env_vars = {}
         for k, v in environment_variables.items():
             try:
-                decrypted_value = decrypt_value_helper(value=v, key=k, return_original_value=return_original_value)
+                decrypted_value = decrypt_value_helper(
+                    value=v,
+                    key=k,
+                    return_original_value=return_original_value,
+                    context=f"{context_prefix}.{k}",
+                )
                 if decrypted_value is not None:
                     os.environ[k] = decrypted_value
                     decrypted_env_vars[k] = decrypted_value
@@ -5271,7 +5315,12 @@ class ProxyConfig:
         """
         decrypted_variables = {}
         for k, v in variables_dict.items():
-            decrypted_value = decrypt_value_helper(value=v, key=k, return_original_value=True)
+            decrypted_value = decrypt_value_helper(
+                value=v,
+                key=k,
+                return_original_value=True,
+                context=f"LiteLLM_Config:environment_variables.{k}",
+            )
             decrypted_variables[k] = decrypted_value
         return decrypted_variables
 
@@ -5784,7 +5833,9 @@ class ProxyConfig:
             return new_models
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy_server.py::add_deployment() - Error getting new models from DB - {}".format(truncate_error_str(e))
+                "litellm.proxy_server.py::add_deployment() - Error getting new models from DB - {}".format(
+                    truncate_error_str(e)
+                )
             )
             return None
 
@@ -5956,7 +6007,9 @@ class ProxyConfig:
             self._last_semantic_filter_config = mcp_semantic_filter_config.copy()
 
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error initializing semantic filter settings from DB: {truncate_error_str(e)}")
+            verbose_proxy_logger.exception(
+                f"Error initializing semantic filter settings from DB: {truncate_error_str(e)}"
+            )
 
     async def _init_sso_settings_in_db(self, prisma_client: PrismaClient):
         """
@@ -5974,7 +6027,10 @@ class ProxyConfig:
                 sso_settings.sso_settings.pop("team_mappings", None)
                 sso_settings.sso_settings.pop("ui_access_mode", None)
                 uppercase_sso_settings = {key.upper(): value for key, value in sso_settings.sso_settings.items()}
-                self._decrypt_and_set_db_env_variables(environment_variables=uppercase_sso_settings)
+                self._decrypt_and_set_db_env_variables(
+                    environment_variables=uppercase_sso_settings,
+                    context_prefix="LiteLLM_SSOConfig:sso_settings",
+                )
         except Exception as e:
             verbose_proxy_logger.exception(
                 "litellm.proxy.proxy_server.py::ProxyConfig:_init_sso_settings_in_db - {}".format(truncate_error_str(e))
@@ -6232,7 +6288,9 @@ class ProxyConfig:
                 )
 
         except Exception as e:
-            verbose_proxy_logger.exception(f"Error in _check_and_reload_anthropic_beta_headers: {truncate_error_str(e)}")
+            verbose_proxy_logger.exception(
+                f"Error in _check_and_reload_anthropic_beta_headers: {truncate_error_str(e)}"
+            )
 
     def _get_prompt_spec_for_db_prompt(self, db_prompt):
         """
@@ -6358,7 +6416,9 @@ class ProxyConfig:
                     litellm.vector_store_registry.add_vector_store_to_registry(vector_store=vector_store)
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(truncate_error_str(e))
+                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(
+                    truncate_error_str(e)
+                )
             )
 
     async def _init_vector_store_indexes_in_db(self, prisma_client: PrismaClient):
@@ -6382,7 +6442,9 @@ class ProxyConfig:
                     litellm.vector_store_index_registry.upsert_vector_store_index(vector_store_index=vector_store_index)
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(truncate_error_str(e))
+                "litellm.proxy.proxy_server.py::ProxyConfig:_init_vector_stores_in_db - {}".format(
+                    truncate_error_str(e)
+                )
             )
 
     async def _init_mcp_servers_in_db(self):
@@ -6475,7 +6537,14 @@ class ProxyConfig:
 
         decrypted_credential_values = {}
         for k, v in credential_object.credential_values.items():
-            decrypted_credential_values[k] = decrypt_value_helper(value=v, key=k) or v
+            decrypted_credential_values[k] = (
+                decrypt_value_helper(
+                    value=v,
+                    key=k,
+                    context=f"LiteLLM_CredentialsTable:credential_values.{k}",
+                )
+                or v
+            )
 
         credential_object.credential_values = decrypted_credential_values
         return credential_object
@@ -6509,7 +6578,9 @@ class ProxyConfig:
             CredentialAccessor.upsert_credentials(credentials)  # upsert credentials that are in the all-up list
         except Exception as e:
             verbose_proxy_logger.exception(
-                "litellm.proxy_server.py::get_credentials() - Error getting credentials from DB - {}".format(truncate_error_str(e))
+                "litellm.proxy_server.py::get_credentials() - Error getting credentials from DB - {}".format(
+                    truncate_error_str(e)
+                )
             )
             return []
 
@@ -6696,7 +6767,9 @@ async def async_assistants_data_generator(response, user_api_key_dict: UserAPIKe
         yield f"data: {done_message}\n\n"
     except Exception as e:
         verbose_proxy_logger.exception(
-            "litellm.proxy.proxy_server.async_assistants_data_generator(): Exception occured - {}".format(truncate_error_str(e))
+            "litellm.proxy.proxy_server.async_assistants_data_generator(): Exception occured - {}".format(
+                truncate_error_str(e)
+            )
         )
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict,
@@ -7159,9 +7232,7 @@ async def async_data_generator(
         except asyncio.CancelledError:
             pass
         except Exception:
-            verbose_proxy_logger.exception(
-                "async_data_generator: failure hook errored during exception cleanup"
-            )
+            verbose_proxy_logger.exception("async_data_generator: failure hook errored during exception cleanup")
         verbose_proxy_logger.debug(
             f"\033[1;31mAn error occurred: {e}\n\n Debug this by setting `--debug`, e.g. `litellm --model gpt-3.5-turbo --debug`"
         )
@@ -7990,7 +8061,9 @@ class ProxyStartupEvent:
                         "Expired UI session key cleanup enabled but prisma_client not available"
                     )
             except Exception as e:
-                verbose_proxy_logger.warning(f"Failed to setup expired UI session key cleanup job: {truncate_error_str(e)}")
+                verbose_proxy_logger.warning(
+                    f"Failed to setup expired UI session key cleanup job: {truncate_error_str(e)}"
+                )
         else:
             verbose_proxy_logger.debug(
                 "Expired UI session key cleanup disabled (set "
@@ -8050,6 +8123,36 @@ class ProxyStartupEvent:
                     replace_existing=True,
                 )
                 await proxy_logging_obj.slack_alerting_instance.send_fallback_stats_from_prometheus()
+
+    @classmethod
+    def _check_token_pepper_configured(cls) -> None:
+        """Fail startup on a DB-backed proxy without a token pepper.
+
+        A DB-backed virtual-key store digests keys with ``hash_token``; without
+        ``LITELLM_SALT_KEY`` those digests are bare SHA-256, so a database leak
+        allows offline key confirmation. Refuse to start (unless the operator
+        explicitly accepts the legacy mode via
+        ``LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS``) instead of silently minting
+        unsalted digests.
+        """
+        import os as _os
+
+        if _os.getenv("LITELLM_SALT_KEY"):
+            return
+        if _os.getenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "").lower() in ("1", "true"):
+            verbose_proxy_logger.warning(
+                "LITELLM_SALT_KEY is not set; running with legacy bare-SHA-256 token "
+                "digests because LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS is set. A database "
+                "leak would allow offline key confirmation; deploy LITELLM_SALT_KEY "
+                "and remove the flag."
+            )
+            return
+        raise ValueError(
+            "LITELLM_SALT_KEY is not set on a DB-backed proxy; virtual-key digests "
+            "would be bare SHA-256. Set LITELLM_SALT_KEY (see "
+            "https://docs.litellm.ai/docs/proxy/prod#5-set-litellm-salt-key) or set "
+            "LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS=1 to explicitly accept the legacy mode."
+        )
 
     @classmethod
     async def _setup_prisma_client(
@@ -8618,9 +8721,7 @@ async def chat_completion(
         except asyncio.CancelledError:
             pass
         except Exception:
-            verbose_proxy_logger.exception(
-                "chat_completion(): failure hook errored during cancellation cleanup"
-            )
+            verbose_proxy_logger.exception("chat_completion(): failure hook errored during cancellation cleanup")
         # Write the 499 client-disconnect spend log row before unwinding —
         # without this, cancelled non-streaming requests release their MPR
         # slot but never appear in spend_logs.
@@ -8876,7 +8977,9 @@ async def completion(
             original_exception=e,
             request_data=base_llm_response_processor.data,
         )
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.completion(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.completion(): Exception occured - {}".format(truncate_error_str(e))
+        )
         error_msg = f"{str(e)}"
         raise ProxyException(
             message=getattr(e, "message", error_msg),
@@ -9263,7 +9366,9 @@ async def audio_speech(
             original_exception=e,
             request_data=data,
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.audio_speech(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.audio_speech(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         raise e
 
@@ -9693,7 +9798,9 @@ async def get_assistants(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.get_assistants(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.get_assistants(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -9966,7 +10073,9 @@ async def create_threads(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.create_threads(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.create_threads(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10053,7 +10162,9 @@ async def get_thread(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.get_thread(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.get_thread(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10144,7 +10255,9 @@ async def add_messages(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.add_messages(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.add_messages(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10231,7 +10344,9 @@ async def get_messages(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.get_messages(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.get_messages(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10332,7 +10447,9 @@ async def run_thread(
         await proxy_logging_obj.post_call_failure_hook(
             user_api_key_dict=user_api_key_dict, original_exception=e, request_data=data
         )
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.run_thread(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.run_thread(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -10478,6 +10595,30 @@ async def _try_provider_token_count(
     return result
 
 
+def _select_tokenizer_and_count(
+    model: str,
+    custom_tokenizer: CustomHuggingfaceTokenizer | None,
+    text: str | None,
+    messages: list[dict] | None,
+) -> tuple[int, str]:
+    """Select the tokenizer and count tokens in one blocking unit.
+
+    ``_select_tokenizer`` can download Hugging Face tokenizer files and
+    ``token_counter`` walks every message, so both belong on a worker thread.
+    Returns ``(total_tokens, tokenizer_type)``.
+    """
+    from litellm import token_counter
+
+    _tokenizer_used = litellm.utils._select_tokenizer(model=model, custom_tokenizer=custom_tokenizer)
+    total_tokens = token_counter(
+        model=model,
+        text=text,
+        messages=messages,
+        custom_tokenizer=_tokenizer_used,  # type: ignore
+    )
+    return total_tokens, str(_tokenizer_used["type"])
+
+
 @router.post(
     "/utils/token_counter",
     tags=["llm utils"],
@@ -10493,8 +10634,6 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
     Returns:
         TokenCountResponse
     """
-    from litellm import token_counter
-
     global llm_router
 
     prompt = request.prompt
@@ -10576,14 +10715,11 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
             Optional[CustomHuggingfaceTokenizer],
             model_info.get("custom_tokenizer", None),
         )
-    _tokenizer_used = litellm.utils._select_tokenizer(model=model_to_use, custom_tokenizer=custom_tokenizer)
-
-    tokenizer_used = str(_tokenizer_used["type"])
-    total_tokens = token_counter(
+    total_tokens, tokenizer_used = await asyncify(_select_tokenizer_and_count)(
         model=model_to_use,
+        custom_tokenizer=custom_tokenizer,
         text=prompt,
         messages=messages,
-        custom_tokenizer=_tokenizer_used,  # type: ignore
     )
     return TokenCountResponse(
         total_tokens=total_tokens,
@@ -10640,7 +10776,7 @@ async def transform_request(request: TransformRequestBody):
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e)})
 
-    return return_raw_request(endpoint=request.call_type, kwargs=request.request_body)
+    return await asyncify(return_raw_request)(endpoint=request.call_type, kwargs=request.request_body)
 
 
 async def _check_if_model_is_user_added(
@@ -11120,6 +11256,13 @@ async def _fetch_db_models_for_search(
     `count(...)` of rows matching `search` (not yet team-scoped) so the
     UI's pagination stays accurate without materializing every row.
 
+    Callers must pass the combined (router + DB) result through
+    `_filter_deployments_to_caller_scope` before returning it to a
+    non-admin caller: the `model_name`-contains DB query has no notion
+    of key/team allowlists or experimental tags, so unscoped DB rows
+    would reintroduce restricted and experimental deployments that the
+    pre-search scoping already dropped.
+
     Earlier iterations also OR'd a JSON-path match on
     `model_info.team_public_model_name` to surface BYOK rows that live
     only in the DB. That branch fell back to `string_contains: ""`
@@ -11176,6 +11319,8 @@ async def _apply_search_filter_to_models(
     page: int = 1,
     size: int = 50,
     sort_by: Optional[str] = None,
+    llm_router: Optional[Router] = None,
+    show_experimental: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
     """
     Apply search filter to models, querying database for additional matching models.
@@ -11196,6 +11341,16 @@ async def _apply_search_filter_to_models(
         sort_by: Sort field. When set, results must be sorted across the
             full match set, so the DB fetch is capped at
             ``_SORTED_SEARCH_DB_FETCH_CAP`` instead of one page.
+        llm_router: Router used, together with ``user_api_key_dict``, to
+            re-apply caller scoping to the combined (router + DB) result.
+            DB rows are fetched by a plain ``model_name``-contains query
+            with no notion of key/team allowlists or experimental tags, so
+            without this pass a restricted or experimental deployment that
+            the pre-search scoping dropped would reappear via ``?search=``.
+        show_experimental: Passed through to
+            ``_filter_deployments_to_caller_scope``; callers that already
+            dropped experimental deployments before searching (e.g. the
+            v2 listing) pass the value they used there.
 
     Returns:
         Tuple of (filtered_models, total_count). total_count is None if not searching.
@@ -11273,7 +11428,25 @@ async def _apply_search_filter_to_models(
     else:
         search_total_count = router_models_count
 
-    return filtered_router_models + db_models, search_total_count
+    combined = filtered_router_models + db_models
+
+    # Re-apply caller scoping to the COMBINED result. The DB fetch above
+    # is a plain model_name-contains query: it has no notion of key/team
+    # allowlists or experimental tags, and `all_models` may also contain
+    # pre-scope rows when a caller invokes this helper with an unfiltered
+    # list. Without this pass a restricted or experimental deployment
+    # that earlier scoping dropped reappears via `?search=`. Router rows
+    # already scoped by the handler are idempotent through this filter.
+    if user_api_key_dict is not None and llm_router is not None:
+        combined = await _filter_deployments_to_caller_scope(
+            all_models=combined,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
+            prisma_client=prisma_client,
+            show_experimental=show_experimental,
+        )
+
+    return combined, search_total_count
 
 
 def _normalize_datetime_for_sorting(dt: Any) -> Optional[datetime]:
@@ -11629,14 +11802,74 @@ async def _filter_models_by_team_id(
     return filtered_models
 
 
+async def _caller_can_see_deployment(
+    found_model: dict,
+    user_api_key_dict: UserAPIKeyAuth,
+    llm_router: Router,
+    prisma_client: Any,
+) -> bool:
+    """Whether the caller may see this deployment in a model/info response.
+
+    Enforces the same three scopes as the /v2/model/info listing: key/team
+    model allowlists, experimental-deployment tags, and BYOK team membership.
+    """
+    is_proxy_admin = user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
+    filtered = await _filter_deployments_to_caller_scope(
+        all_models=[found_model],
+        user_api_key_dict=user_api_key_dict,
+        llm_router=llm_router,
+        prisma_client=prisma_client,
+        show_experimental=is_proxy_admin,
+    )
+    return len(filtered) == 1
+
+
+async def _filter_deployments_to_caller_scope(
+    all_models: list[dict],
+    user_api_key_dict: UserAPIKeyAuth,
+    llm_router: Router,
+    prisma_client: Any,
+    show_experimental: bool = False,
+) -> list[dict]:
+    """Filter a model-info listing to deployments the caller may see.
+
+    Shared by the /v1 and /v2 listings and the id-lookup checks so their
+    scoping cannot drift: key/team model allowlists, experimental-deployment
+    tags (only when show_experimental, e.g. admin opt-in), and BYOK team
+    membership.
+    """
+    allowed_model_names = _get_v1_model_info_allowed_model_names(
+        user_api_key_dict=user_api_key_dict,
+        llm_router=llm_router,
+    )
+    filtered = _filter_v1_model_info_deployments(
+        all_models=all_models,
+        allowed_model_names=allowed_model_names,
+    )
+    if not show_experimental:
+        filtered = [m for m in filtered if not _is_experimental_deployment(m)]
+    allowed_team_ids = await _get_caller_byok_team_scope(
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    )
+    return [m for m in filtered if not _byok_row_outside_caller_teams(m.get("model_info") or {}, allowed_team_ids)]
+
+
 async def _find_model_by_id(
     model_id: str,
     search: Optional[str],
     llm_router,
     prisma_client,
     proxy_config,
+    user_api_key_dict: UserAPIKeyAuth | None = None,
 ) -> tuple[list, Optional[int]]:
-    """Find a model by its ID and optionally filter by search term."""
+    """Find a model by its ID and optionally filter by search term.
+
+    The caller must be allowed to see the deployment: key/team allowlist,
+    experimental tags, and BYOK team scope are all enforced the same way
+    the /v2/model/info listing enforces them, so a modelId learned from
+    another response cannot fetch a row the listing would hide.
+    """
     found_model = None
 
     # First, search in config
@@ -11665,6 +11898,14 @@ async def _find_model_by_id(
             if search_lower not in model_name.lower():
                 # Model found but doesn't match search filter
                 found_model = None
+
+    if (
+        found_model is not None
+        and user_api_key_dict is not None
+        and llm_router is not None
+        and not await _caller_can_see_deployment(found_model, user_api_key_dict, llm_router, prisma_client)
+    ):
+        found_model = None
 
     # Set all_models to the found model or empty list
     all_models = [found_model] if found_model is not None else []
@@ -11706,7 +11947,11 @@ async def model_info_v2(
     Paginated model metadata for proxy deployments (pricing, provider, team access).
 
     Returns configured router deployments with enriched `model_info` (costs, provider,
-    context window, etc.). Sensitive fields such as API keys and api_base are omitted.
+    context window, etc.). Credential and infra-topology fields (API keys, tokens,
+    api_base, cloud role/project identifiers) are omitted. Results are scoped to
+    deployments the caller can use: key/team model allowlists, BYOK team
+    membership, and experimental-deployment tags are all enforced, including
+    for `modelId` lookups.
 
     Query parameters:
         model: Filter to a single public `model_name`.
@@ -11747,7 +11992,7 @@ async def model_info_v2(
     }
     ```
     """
-    global llm_model_list, general_settings, user_config_file_path, proxy_config, llm_router
+    global llm_model_list, general_settings, user_config_file_path, proxy_config, llm_router, user_model
 
     # Return empty data array when no models are configured (graceful handling for fresh installs)
     if llm_router is None or not llm_router.model_list:
@@ -11776,6 +12021,7 @@ async def model_info_v2(
             llm_router=llm_router,
             prisma_client=prisma_client,
             proxy_config=proxy_config,
+            user_api_key_dict=user_api_key_dict,
         )
     else:
         # Normal flow when modelId is not provided
@@ -11783,10 +12029,25 @@ async def model_info_v2(
 
         if user_model is not None:
             # if user does not use a config.yaml, https://github.com/BerriAI/litellm/issues/2061
-            all_models += [user_model]
+            all_models += [{"model_name": user_model, "litellm_params": {"model": user_model}}]
 
         if model is not None:
             all_models = [m for m in all_models if m["model_name"] == model]
+
+        # Scope the default listing the same way /v1/model/info does, so a
+        # key without model restrictions still cannot read rows it cannot
+        # use: other teams' BYOK deployments, key/team allowlist misses, and
+        # experimental deployments. Wildcard deployments are expanded first,
+        # like v1, so a key restricted to openai/* resolves against concrete
+        # names instead of the raw "*" row.
+        all_models = expand_wildcard_deployments_for_model_info(all_models)
+        all_models = await _filter_deployments_to_caller_scope(
+            all_models=all_models,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
+            prisma_client=prisma_client,
+            show_experimental=user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN,
+        )
 
         # Apply search filter if provided
         all_models, search_total_count = await _apply_search_filter_to_models(
@@ -11798,6 +12059,8 @@ async def model_info_v2(
             page=page,
             size=size,
             sort_by=sortBy,
+            llm_router=llm_router,
+            show_experimental=user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN,
         )
 
     if user_models_only:
@@ -12394,11 +12657,7 @@ def _is_experimental_deployment(model: dict) -> bool:
     from the default /model/info listing.
     """
     tags = (model.get("litellm_params") or {}).get("tags") or []
-    return any(
-        isinstance(tag, str)
-        and (tag == "experimental" or tag.startswith("experimental:"))
-        for tag in tags
-    )
+    return any(isinstance(tag, str) and (tag == "experimental" or tag.startswith("experimental:")) for tag in tags)
 
 
 def _fully_experimental_model_names(llm_router: Optional[Router]) -> Set[str]:
@@ -12487,7 +12746,7 @@ async def model_info_v1(
     ),
 ):
     """
-    Provides more info about each model in /models, including config.yaml descriptions (except api key and api base)
+    Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
 
     Parameters:
         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -12586,7 +12845,13 @@ async def model_info_v1(
                 status_code=400,
                 detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
             )
-        _deployment_info_dict = _get_proxy_model_info(model=deployment_info.model_dump(exclude_none=True))
+        _single_deployment_dict = deployment_info.model_dump(exclude_none=True)
+        if not await _caller_can_see_deployment(_single_deployment_dict, user_api_key_dict, llm_router, prisma_client):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
+            )
+        _deployment_info_dict = _get_proxy_model_info(model=_single_deployment_dict)
         single_model_list: List[dict] = [_deployment_info_dict]
         if prisma_client is not None:
             single_model_list = await _populate_team_access_on_models(
@@ -12617,34 +12882,13 @@ async def model_info_v1(
 
     all_models = expand_wildcard_deployments_for_model_info(all_models)
 
-    allowed_model_names = _get_v1_model_info_allowed_model_names(
+    all_models = await _filter_deployments_to_caller_scope(
+        all_models=all_models,
         user_api_key_dict=user_api_key_dict,
         llm_router=llm_router,
-    )
-
-    all_models = _filter_v1_model_info_deployments(
-        all_models=all_models,
-        allowed_model_names=allowed_model_names,
-    )
-
-    # Deployments tagged "experimental" (or "experimental:<id>") are hidden by
-    # default. Only a proxy admin can explicitly include them.
-    show_experimental = include_experimental and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN
-    if not show_experimental:
-        all_models = [model for model in all_models if not _is_experimental_deployment(model)]
-
-    # Team BYOK deployments carry an internal routing key and other teams'
-    # public name/team_id/api_base; drop the ones the caller cannot access so
-    # listing the full router model_list does not leak cross-team metadata.
-    allowed_team_ids = await _get_caller_byok_team_scope(
-        user_api_key_dict=user_api_key_dict,
         prisma_client=prisma_client,
+        show_experimental=include_experimental and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN,
     )
-    all_models = [
-        model
-        for model in all_models
-        if not _byok_row_outside_caller_teams(model.get("model_info") or {}, allowed_team_ids)
-    ]
 
     if prisma_client is not None:
         all_models = await _populate_team_access_on_models(
@@ -12719,7 +12963,7 @@ async def model_group_info(
     model_group: Optional[str] = None,
 ):
     """
-    Get information about all the deployments on litellm proxy, including config.yaml descriptions (except api key and api base)
+    Get information about all the deployments on litellm proxy, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
 
     - /model_group/info returns all model groups. End users of proxy should use /model_group/info since those models will be used for /chat/completions, /embeddings, etc.
     - /model_group/info?model_group=rerank-english-v3.0 returns all model groups for a specific model group (`model_name` in config.yaml)
@@ -13169,7 +13413,7 @@ async def fallback_login(request: Request):
     from litellm.proxy.proxy_server import ui_link
 
     # get url from request
-    redirect_url = get_custom_url(str(request.base_url))
+    redirect_url = get_custom_url(str(request.base_url), request=request)
     if redirect_url.endswith("/"):
         redirect_url += "sso/callback"
     else:
@@ -13194,6 +13438,7 @@ async def fallback_login(request: Request):
 async def login(request: Request):
     global premium_user, general_settings, master_key
     from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
     from litellm.proxy.utils import get_custom_url
 
     form = await request.form()
@@ -13216,16 +13461,10 @@ async def login(request: Request):
     )
 
     # Generate JWT token
-    import jwt
-
-    jwt_token = jwt.encode(
-        cast(dict, returned_ui_token_object),
-        cast(str, master_key),
-        algorithm="HS256",
-    )
+    jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), cast(str, master_key))
 
     # Build redirect URL
-    litellm_dashboard_ui = get_custom_url(str(request.base_url))
+    litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
     if litellm_dashboard_ui.endswith("/"):
         litellm_dashboard_ui += "ui/"
     else:
@@ -13234,7 +13473,7 @@ async def login(request: Request):
 
     # Create redirect response with cookie
     redirect_response = RedirectResponse(url=litellm_dashboard_ui, status_code=303)
-    redirect_response.set_cookie(key="token", value=jwt_token)
+    set_ui_session_cookie(redirect_response, jwt_token, request=request)
     return redirect_response
 
 
@@ -13242,6 +13481,7 @@ async def login(request: Request):
 async def login_v2(request: Request):
     global premium_user, general_settings, master_key
     from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
     from litellm.proxy.utils import get_custom_url
 
     try:
@@ -13262,15 +13502,9 @@ async def login_v2(request: Request):
             premium_user=premium_user,
         )
 
-        import jwt
+        jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), cast(str, master_key))
 
-        jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
-            cast(str, master_key),
-            algorithm="HS256",
-        )
-
-        litellm_dashboard_ui = get_custom_url(str(request.base_url))
+        litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
             litellm_dashboard_ui += "ui/"
         else:
@@ -13284,10 +13518,12 @@ async def login_v2(request: Request):
             content={"redirect_url": litellm_dashboard_ui, "token": jwt_token},
             status_code=status.HTTP_200_OK,
         )
-        json_response.set_cookie(key="token", value=jwt_token)
+        set_ui_session_cookie(json_response, jwt_token, request=request)
         return json_response
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.login_v2(): Exception occurred - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.login_v2(): Exception occurred - {}".format(truncate_error_str(e))
+        )
         if isinstance(e, ProxyException):
             raise e
         elif isinstance(e, HTTPException):
@@ -13313,6 +13549,7 @@ async def login_v2(request: Request):
 async def login_v3(request: Request):
     global premium_user, general_settings, master_key
     from litellm.proxy.auth.login_utils import authenticate_user, create_ui_token_object
+    from litellm.proxy.common_utils.session_cookie_utils import set_ui_session_cookie
     from litellm.proxy.utils import get_custom_url
 
     try:
@@ -13341,15 +13578,9 @@ async def login_v3(request: Request):
             premium_user=premium_user,
         )
 
-        import jwt
+        jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), cast(str, master_key))
 
-        jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
-            cast(str, master_key),
-            algorithm="HS256",
-        )
-
-        litellm_dashboard_ui = get_custom_url(str(request.base_url))
+        litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
         if litellm_dashboard_ui.endswith("/"):
             litellm_dashboard_ui += "ui/"
         else:
@@ -13370,7 +13601,9 @@ async def login_v3(request: Request):
             status_code=status.HTTP_200_OK,
         )
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.login_v3(): Exception occurred - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.login_v3(): Exception occurred - {}".format(truncate_error_str(e))
+        )
         if isinstance(e, ProxyException):
             raise e
         elif isinstance(e, HTTPException):
@@ -13438,7 +13671,7 @@ async def login_v3_exchange(request: Request):
             },
             status_code=status.HTTP_200_OK,
         )
-        json_response.set_cookie(key="token", value=cached_data["token"])
+        set_ui_session_cookie(json_response, cast(str, cached_data["token"]), request=request)
         return json_response
     except ProxyException:
         raise
@@ -13503,15 +13736,13 @@ async def onboarding(invite_link: str, request: Request):
     if user_obj is None:
         raise HTTPException(status_code=401, detail={"error": "User does not exist in db."})
 
-    litellm_dashboard_ui = get_custom_url(str(request.base_url))
+    litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
     if litellm_dashboard_ui.endswith("/"):
         litellm_dashboard_ui += "ui/onboarding"
     else:
         litellm_dashboard_ui += "/ui/onboarding"
-    import jwt
-
     user_email = user_obj.user_email
-    onboarding_token = jwt.encode(  # type: ignore
+    onboarding_token = encode_ui_session_jwt(
         {
             "token_type": "litellm_onboarding",
             "invitation_link": invite_link,
@@ -13519,7 +13750,6 @@ async def onboarding(invite_link: str, request: Request):
             "exp": litellm.utils.get_utc_datetime() + timedelta(minutes=15),
         },
         master_key,
-        algorithm="HS256",
     )
     disabled_non_admin_personal_key_creation = get_disabled_non_admin_personal_key_creation()
 
@@ -13534,11 +13764,7 @@ async def onboarding(invite_link: str, request: Request):
         disabled_non_admin_personal_key_creation=disabled_non_admin_personal_key_creation,
         server_root_path=get_server_root_path(),
     )
-    jwt_token = jwt.encode(  # type: ignore
-        cast(dict, returned_ui_token_object),
-        master_key,
-        algorithm="HS256",
-    )
+    jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), master_key)
 
     litellm_dashboard_ui += "?token={}&user_email={}".format(jwt_token, user_email)
     return {
@@ -13570,14 +13796,8 @@ def _get_onboarding_claims_from_request(request: Request) -> dict:
     if onboarding_token.lower().startswith("bearer "):
         onboarding_token = onboarding_token.split(" ", 1)[1]
 
-    import jwt
-
     try:
-        return jwt.decode(
-            onboarding_token,
-            master_key,
-            algorithms=["HS256"],
-        )
+        return decode_ui_session_jwt(onboarding_token, master_key, require_exp=True)
     except Exception:
         raise HTTPException(
             status_code=401,
@@ -13627,8 +13847,6 @@ async def _generate_onboarding_ui_session_token(user_obj: Any) -> str:
     )
     key = response["token"]  # type: ignore
 
-    import jwt
-
     from litellm.types.proxy.ui_sso import ReturnedUITokenObject
 
     disabled_non_admin_personal_key_creation = get_disabled_non_admin_personal_key_creation()
@@ -13644,11 +13862,7 @@ async def _generate_onboarding_ui_session_token(user_obj: Any) -> str:
         server_root_path=get_server_root_path(),
     )
     assert master_key is not None
-    return jwt.encode(  # type: ignore
-        cast(dict, returned_ui_token_object),
-        master_key,
-        algorithm="HS256",
-    )
+    return encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), master_key)
 
 
 @app.post("/onboarding/claim_token", include_in_schema=False)
@@ -13764,7 +13978,7 @@ async def claim_onboarding_link(data: InvitationClaim, request: Request):
             detail={"error": "Failed to create onboarding session. Please retry the invitation link."},
         ) from e
 
-    litellm_dashboard_ui = get_custom_url(str(request.base_url))
+    litellm_dashboard_ui = get_custom_url(str(request.base_url), request=request)
     if litellm_dashboard_ui.endswith("/"):
         litellm_dashboard_ui += "ui/"
     else:
@@ -13839,7 +14053,15 @@ async def get_image():
         safe_logo = resolve_validated_local_image_path(logo_path)
         if safe_logo is not None:
             safe_logo_path, media_type = safe_logo
-            return FileResponse(safe_logo_path, media_type=media_type)
+            # Admin-uploaded bytes are served unauthenticated from the proxy
+            # origin; Content-Disposition: attachment keeps a polyglot from
+            # being rendered as a document on direct navigation (the <img>
+            # embed in the dashboard is unaffected).
+            return FileResponse(
+                safe_logo_path,
+                media_type=media_type,
+                headers={"Content-Disposition": "attachment"},
+            )
         verbose_proxy_logger.warning(
             "UI_LOGO_PATH %r is not a supported image file or does not exist, falling back to default logo",
             logo_path,
@@ -13882,7 +14104,11 @@ async def get_favicon():
         safe_favicon = resolve_validated_local_image_path(favicon_url)
         if safe_favicon is not None:
             safe_favicon_path, media_type = safe_favicon
-            return FileResponse(safe_favicon_path, media_type=media_type)
+            return FileResponse(
+                safe_favicon_path,
+                media_type=media_type,
+                headers={"Content-Disposition": "attachment"},
+            )
         verbose_proxy_logger.warning(
             "LITELLM_FAVICON_URL %r is not a supported image file or does not exist, falling back to default favicon",
             favicon_url,
@@ -14287,7 +14513,9 @@ async def update_config(
 
         return {"message": "Config updated successfully"}
     except Exception as e:
-        verbose_proxy_logger.error("litellm.proxy.proxy_server.update_config(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.error(
+            "litellm.proxy.proxy_server.update_config(): Exception occured - {}".format(truncate_error_str(e))
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         if isinstance(e, HTTPException):
             raise ProxyException(
@@ -14972,7 +15200,9 @@ async def delete_callback(
     except HTTPException:
         raise
     except Exception as e:
-        verbose_proxy_logger.error(f"litellm.proxy.proxy_server.delete_callback(): Exception occurred - {truncate_error_str(e)}")
+        verbose_proxy_logger.error(
+            f"litellm.proxy.proxy_server.delete_callback(): Exception occurred - {truncate_error_str(e)}"
+        )
         verbose_proxy_logger.debug(_truncate_str(traceback.format_exc()))
         raise ProxyException(
             message="Error deleting callback: " + str(e),
@@ -15111,7 +15341,9 @@ async def get_config(
             "available_callbacks": all_available_callbacks,
         }
     except Exception as e:
-        verbose_proxy_logger.exception("litellm.proxy.proxy_server.get_config(): Exception occured - {}".format(truncate_error_str(e)))
+        verbose_proxy_logger.exception(
+            "litellm.proxy.proxy_server.get_config(): Exception occured - {}".format(truncate_error_str(e))
+        )
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),

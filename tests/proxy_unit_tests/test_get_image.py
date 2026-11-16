@@ -50,3 +50,58 @@ async def test_get_image_remote_logo_does_not_use_stale_cache(monkeypatch, tmp_p
     assert response.status_code == 307
     assert response.headers["location"] == "http://example.com/logo.jpg"
     mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_image_serves_uploaded_logo_as_attachment(monkeypatch, tmp_path):
+    """
+    Admin-uploaded logo bytes are served unauthenticated from the proxy
+    origin, so the response must carry Content-Disposition: attachment to
+    keep a polyglot from being rendered as a document on direct navigation.
+    The default bundled logo is not affected.
+    """
+    import io
+
+    from PIL import Image
+
+    logo = tmp_path / "uploaded_logo.png"
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(buf, format="PNG")
+    logo.write_bytes(buf.getvalue())
+    monkeypatch.setenv("UI_LOGO_PATH", str(logo))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as ac:
+        response = await ac.get("/get_image")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/png")
+    assert response.headers["content-disposition"] == "attachment"
+
+
+@pytest.mark.asyncio
+async def test_get_favicon_serves_custom_favicon_as_attachment(monkeypatch, tmp_path):
+    """
+    Custom favicon files (LITELLM_FAVICON_URL) are admin-uploaded bytes
+    served unauthenticated, so they must carry Content-Disposition:
+    attachment like the logo.
+    """
+    import io
+
+    from PIL import Image
+
+    favicon = tmp_path / "custom_favicon.png"
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), color=(0, 0, 255)).save(buf, format="PNG")
+    favicon.write_bytes(buf.getvalue())
+    monkeypatch.setenv("LITELLM_FAVICON_URL", str(favicon))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as ac:
+        response = await ac.get("/get_favicon")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/png")
+    assert response.headers["content-disposition"] == "attachment"

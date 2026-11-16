@@ -44,7 +44,11 @@ class ModelRepository(BaseRepository[LiteLLM_ProxyModelTable]):
         for key, value in litellm_params.items():
             if isinstance(value, str):
                 decrypted[key] = decrypt_value_helper(
-                    value, key=key, exception_type="debug", return_original_value=True
+                    value,
+                    key=key,
+                    exception_type="debug",
+                    return_original_value=True,
+                    context=f"LiteLLM_ProxyModelTable:litellm_params.{key}",
                 )
             else:
                 decrypted[key] = value

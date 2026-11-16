@@ -815,3 +815,62 @@ def test_merged_agent_card_url_has_no_double_slash_without_proxy_base_url(
     interface_url = merged["supportedInterfaces"][0]["url"]
     assert interface_url == f"{base_url.rstrip('/')}/a2a/agent-xyz"
     assert "//a2a" not in interface_url
+
+
+@pytest.mark.parametrize(
+    "agent_url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.7:8080/a2a",
+        "http://[::1]:4000/a2a",
+        "file:///etc/passwd",
+    ],
+)
+def test_create_agent_rejects_card_url_on_blocked_destination(agent_url, monkeypatch):
+    """Registration must SSRF-validate the upstream card URL.
+
+    The stored URL is used verbatim as the A2A forwarding destination, so a
+    card pointing at cloud metadata, an internal service or a local file must
+    never make it into the registry.
+    """
+    mock_registry = MagicMock()
+    mock_registry.get_agent_by_name = MagicMock(return_value=None)
+    monkeypatch.setattr(agent_endpoints, "AGENT_REGISTRY", mock_registry)
+    test_client = _make_app_with_role(LitellmUserRoles.PROXY_ADMIN)
+
+    with patch("litellm.proxy.proxy_server.prisma_client"):
+        config = _sample_agent_config()
+        config["agent_card_params"]["url"] = agent_url
+        resp = test_client.post(
+            "/v1/agents",
+            json=config,
+            headers={"Authorization": "Bearer k"},
+        )
+
+    assert resp.status_code == 400
+    assert "Agent card URL rejected" in resp.json()["detail"]
+
+
+def test_update_agent_rejects_card_url_on_blocked_destination(monkeypatch):
+    """The same validation must run on update, not only on create."""
+    monkeypatch.setattr(agent_endpoints, "AGENT_REGISTRY", MagicMock())
+    test_client = _make_app_with_role(LitellmUserRoles.PROXY_ADMIN)
+
+    with patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma:
+        mock_prisma.db.litellm_agentstable.find_unique = AsyncMock(
+            return_value={
+                "agent_id": "agent-123",
+                "agent_name": "Existing Agent",
+                "agent_card_params": _sample_agent_card_params(),
+            }
+        )
+        config = _sample_agent_config()
+        config["agent_card_params"]["url"] = "http://169.254.169.254/latest/"
+        resp = test_client.put(
+            "/v1/agents/agent-123",
+            json=config,
+            headers={"Authorization": "Bearer k"},
+        )
+
+    assert resp.status_code == 400
+    assert "Agent card URL rejected" in resp.json()["detail"]

@@ -1,6 +1,6 @@
 import base64
 import os
-from typing import Dict, Optional, Tuple, cast
+from typing import Dict, Optional, Tuple
 
 import httpx
 
@@ -110,6 +110,22 @@ class Oauth2Handler:
         return user_id, user_role, user_team_id
 
     @staticmethod
+    def _validated_user_role(user_role: object) -> LitellmUserRoles | None:
+        """Accept a role only when it names a real LitellmUserRoles value.
+
+        The introspection response is attacker-influenced through the IdP; a
+        free-text role must never be cast straight into the enum because an
+        invalid value would surface as a 500 later, and an unlisted value
+        could alias a privileged role in downstream string comparisons.
+        """
+        if not isinstance(user_role, str):
+            return None
+        try:
+            return LitellmUserRoles(user_role)
+        except ValueError:
+            return None
+
+    @staticmethod
     async def check_oauth2_token(token: str) -> UserAPIKeyAuth:
         """
         Makes a request to the token introspection endpoint to validate the OAuth2 token.
@@ -187,8 +203,14 @@ class Oauth2Handler:
                 data,
             )
 
-            # For introspection endpoints, check if token is active
-            if is_introspection_endpoint and not data.get("active", True):
+            # Require an affirmative active:true on every path. The token-info
+            # variant (GET, unauthenticated introspection) previously skipped
+            # this check entirely; RFC 7662 responses default to inactive
+            # when the field is absent, and so do permissive token-info IdPs.
+            # The check is an identity comparison, not Python truthiness: a
+            # non-boolean JSON value (e.g. the string "false") must not pass
+            # as an affirmative activity claim.
+            if data.get("active") is not True:
                 raise ValueError("Token is not active")
 
             # Extract user information from response
@@ -199,11 +221,20 @@ class Oauth2Handler:
                 user_team_id_field_name=user_team_id_field_name,
             )
 
+            validated_role = Oauth2Handler._validated_user_role(user_role)
+            if validated_role is None:
+                raise ValueError(f"Oauth 2.0 token validation returned an invalid role: {user_role!r}")
+            if validated_role == LitellmUserRoles.PROXY_ADMIN and not (oauth_client_id and oauth_client_secret):
+                raise ValueError(
+                    "Refusing to grant proxy_admin from an introspection endpoint "
+                    "that is not authenticated with client credentials"
+                )
+
             return UserAPIKeyAuth(
                 api_key=token,
                 team_id=user_team_id,
                 user_id=user_id,
-                user_role=cast(LitellmUserRoles, user_role),
+                user_role=validated_role,
             )
         except httpx.HTTPStatusError as e:
             # This will catch any 4xx or 5xx errors

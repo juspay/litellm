@@ -10,6 +10,7 @@ import asyncio
 import time
 from datetime import datetime
 from typing import List, Optional, cast
+from urllib.parse import urlparse
 
 import litellm
 from litellm._logging import print_verbose, verbose_logger
@@ -27,6 +28,17 @@ from litellm.types.integrations.s3_v2 import s3BatchLoggingElement
 from litellm.types.utils import StandardAuditLogPayload, StandardLoggingPayload
 
 from .custom_batch_logger import CustomBatchLogger
+
+
+def _virtual_hosted_style_url(s3_endpoint_url: str, s3_bucket_name: str, s3_object_key: str) -> str:
+    parsed = urlparse(s3_endpoint_url)
+    if parsed.scheme in ("http", "https") and parsed.netloc:
+        scheme = parsed.scheme
+        host_and_path = parsed.netloc + parsed.path
+    else:
+        scheme = "http"
+        host_and_path = s3_endpoint_url
+    return f"{scheme}://{s3_bucket_name}.{host_and_path}/{s3_object_key}"
 
 
 class S3Logger(CustomBatchLogger, BaseAWSLLM):
@@ -311,9 +323,9 @@ class S3Logger(CustomBatchLogger, BaseAWSLLM):
             if self.s3_endpoint_url and self.s3_bucket_name:
                 if self.s3_use_virtual_hosted_style:
                     # Virtual-hosted-style: bucket.endpoint/key
-                    endpoint_host = self.s3_endpoint_url.replace("https://", "").replace("http://", "")
-                    protocol = "https://" if self.s3_endpoint_url.startswith("https://") else "http://"
-                    url = f"{protocol}{self.s3_bucket_name}.{endpoint_host}/{batch_logging_element.s3_object_key}"
+                    url = _virtual_hosted_style_url(
+                        self.s3_endpoint_url, self.s3_bucket_name, batch_logging_element.s3_object_key
+                    )
                 else:
                     # Path-style: endpoint/bucket/key
                     url = self.s3_endpoint_url + "/" + self.s3_bucket_name + "/" + batch_logging_element.s3_object_key
@@ -486,9 +498,9 @@ class S3Logger(CustomBatchLogger, BaseAWSLLM):
             if self.s3_endpoint_url and self.s3_bucket_name:
                 if self.s3_use_virtual_hosted_style:
                     # Virtual-hosted-style: bucket.endpoint/key
-                    endpoint_host = self.s3_endpoint_url.replace("https://", "").replace("http://", "")
-                    protocol = "https://" if self.s3_endpoint_url.startswith("https://") else "http://"
-                    url = f"{protocol}{self.s3_bucket_name}.{endpoint_host}/{batch_logging_element.s3_object_key}"
+                    url = _virtual_hosted_style_url(
+                        self.s3_endpoint_url, self.s3_bucket_name, batch_logging_element.s3_object_key
+                    )
                 else:
                     # Path-style: endpoint/bucket/key
                     url = self.s3_endpoint_url + "/" + self.s3_bucket_name + "/" + batch_logging_element.s3_object_key
@@ -601,9 +613,7 @@ class S3Logger(CustomBatchLogger, BaseAWSLLM):
             if self.s3_endpoint_url and self.s3_bucket_name:
                 if self.s3_use_virtual_hosted_style:
                     # Virtual-hosted-style: bucket.endpoint/key
-                    endpoint_host = self.s3_endpoint_url.replace("https://", "").replace("http://", "")
-                    protocol = "https://" if self.s3_endpoint_url.startswith("https://") else "http://"
-                    url = f"{protocol}{self.s3_bucket_name}.{endpoint_host}/{s3_object_key}"
+                    url = _virtual_hosted_style_url(self.s3_endpoint_url, self.s3_bucket_name, s3_object_key)
                 else:
                     # Path-style: endpoint/bucket/key
                     url = self.s3_endpoint_url + "/" + self.s3_bucket_name + "/" + s3_object_key

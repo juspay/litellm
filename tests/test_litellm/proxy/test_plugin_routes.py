@@ -14,6 +14,8 @@ Covers three bugs:
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
+
 from litellm.proxy._types import (
     ConfigGeneralSettings,
     LitellmUserRoles,
@@ -230,3 +232,221 @@ def test_configured_custom_key_header_is_stripped() -> None:
         assert "x-my-tenant-key" in _request_strip_headers()
     finally:
         proxy_server.general_settings = original
+
+
+def test_plugin_proxy_target_url_resolves_dot_segments() -> None:
+    """'..' in the captured path must not climb out of the plugin's base URL."""
+    from litellm.proxy.plugin_routes import _build_plugin_proxy_target_url
+
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "../../admin", "") == (
+        "http://plugin:3300/admin"
+    )
+    assert _build_plugin_proxy_target_url("http://plugin:3300/", "a/../../b", "") == (
+        "http://plugin:3300/b"
+    )
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "ui/assets/", "") == (
+        "http://plugin:3300/ui/assets/"
+    )
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "", "x=1&y=2") == (
+        "http://plugin:3300/?x=1&y=2"
+    )
+    # Pure traversal collapses to the plugin root, never above it
+    assert _build_plugin_proxy_target_url("http://plugin:3300", "../../../..", "") == (
+        "http://plugin:3300/"
+    )
+
+
+def test_plugin_fernet_fails_closed_without_salt_key(monkeypatch) -> None:
+    """With LITELLM_SALT_KEY unset, both issuance and verification must fail
+    rather than deriving a publicly-computable HMAC(b'', plugin_name) key."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import _plugin_fernet, issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+
+    with _pytest.raises(ValueError):
+        _plugin_fernet("chat-ui")
+    with _pytest.raises(ValueError):
+        issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+
+
+def _patch_live_role(monkeypatch, role: str | None) -> None:
+    import litellm.proxy.plugin_routes as plugin_routes
+
+    async def _fake_resolve(user_id: str) -> str | None:
+        return role
+
+    monkeypatch.setattr(plugin_routes, "_resolve_live_user_role", _fake_resolve)
+
+
+async def test_plugin_session_claim_round_trip_with_salt(monkeypatch) -> None:
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    _patch_live_role(monkeypatch, "proxy_admin")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    decoded = await verify_plugin_session_claim("chat-ui", claim)
+    assert decoded["user_id"] == "user-1"
+    assert decoded["plugin"] == "chat-ui"
+
+
+async def test_plugin_claim_cannot_cross_plugins(monkeypatch) -> None:
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    _patch_live_role(monkeypatch, "proxy_admin")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    with _pytest.raises(ValueError):
+        await verify_plugin_session_claim("other-plugin", claim)
+
+
+async def test_plugin_claim_role_re_resolved_not_trusted_from_claim(monkeypatch) -> None:
+    """A claim minted for an admin must lose admin privileges the moment the
+    live user row says internal_user.  The claim's embedded role is a hint
+    only, never the authorization input."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    _patch_live_role(monkeypatch, "internal_user")
+    decoded = await verify_plugin_session_claim("chat-ui", claim)
+    assert decoded["user_role"] == "internal_user"
+
+
+async def test_plugin_claim_rejected_when_user_removed_or_deactivated(monkeypatch) -> None:
+    """Demotion to nothing (deactivated/deleted user) must fail verification
+    immediately, not at claim expiry."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+    for gone_role in (None, ""):
+        _patch_live_role(monkeypatch, gone_role)
+        with _pytest.raises(ValueError, match="unknown, disabled, or removed"):
+            await verify_plugin_session_claim("chat-ui", claim)
+
+
+async def test_plugin_cannot_forge_claim_with_own_key(monkeypatch) -> None:
+    """A plugin holds only its per-plugin Fernet key. It must not be able to
+    mint a claim naming a different user: the issuer MAC is computed with a
+    proxy-side key the plugin cannot derive, so verification fails closed."""
+    import json
+
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import (
+        _plugin_fernet,
+        issue_plugin_session_claim,
+        verify_plugin_session_claim,
+    )
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    _patch_live_role(monkeypatch, "proxy_admin")
+
+    forged_payload = json.dumps(
+        {
+            "plugin": "chat-ui",
+            "user_id": "victim-admin",
+            "user_role": "proxy_admin",
+            "exp": __import__("time").time() + 30,
+        }
+    ).encode()
+    plugin_only_token = _plugin_fernet("chat-ui").encrypt(forged_payload).decode()
+
+    with _pytest.raises(ValueError, match="not proxy-issued"):
+        await verify_plugin_session_claim("chat-ui", plugin_only_token)
+
+
+async def test_plugin_claim_tampered_issuer_mac_rejected(monkeypatch) -> None:
+    """Flipping the issuer MAC (or dropping it) must reject the claim."""
+    import pytest as _pytest
+
+    from litellm.proxy.plugin_routes import issue_plugin_session_claim, verify_plugin_session_claim
+
+    monkeypatch.setenv("LITELLM_SALT_KEY", "sk-test-salt")
+    _patch_live_role(monkeypatch, "proxy_admin")
+    claim = issue_plugin_session_claim("chat-ui", "user-1", "proxy_admin")
+
+    ciphertext, _, mac = claim.rpartition(".")
+    tampered = f"{ciphertext}.{mac[:-1]}{'A' if mac[-1] != 'A' else 'B'}"
+    with _pytest.raises(ValueError, match="not proxy-issued"):
+        await verify_plugin_session_claim("chat-ui", tampered)
+    with _pytest.raises(ValueError, match="not proxy-issued"):
+        await verify_plugin_session_claim("chat-ui", ciphertext)
+
+
+def test_register_plugins_rebind_is_atomic(monkeypatch) -> None:
+    """The registry is replaced by a single rebind, never cleared in place:
+    a concurrent reader either sees the old registry or the new one, never
+    an empty half-applied one."""
+    from litellm.proxy import plugin_routes
+    from litellm.proxy._types import PluginConfig
+
+    old_registry = {p.name: p for p in (PluginConfig.model_validate(e) for e in [{"name": "old", "url": "http://old"}])}
+    monkeypatch.setattr(plugin_routes, "_plugin_registry", old_registry)
+    original_obj = plugin_routes._plugin_registry
+
+    plugin_routes.register_plugins_from_config(
+        {"plugins": [{"name": "new", "url": "http://new"}]}
+    )
+
+    assert plugin_routes._plugin_registry is not original_obj
+    assert original_obj  # the old registry object is left fully intact
+    assert set(plugin_routes._plugin_registry) == {"new"}
+    assert set(original_obj) == {"old"}
+
+
+@pytest.mark.asyncio
+async def test_plugin_proxy_502_does_not_echo_connection_error(monkeypatch) -> None:
+    """A connection failure must surface a generic 502, never the raw
+    exception text (which can carry the resolved upstream host/IP)."""
+    from unittest.mock import MagicMock
+
+    from litellm.proxy.plugin_routes import plugin_proxy
+
+    class FailingClient:
+        client = MagicMock()
+
+        def __init__(self):
+            self.client.build_request = MagicMock(side_effect=OSError("dns failure to 10.0.0.5:3300"))
+
+    monkeypatch.setattr(
+        "litellm.proxy.plugin_routes.get_async_httpx_client",
+        lambda llm_provider: FailingClient(),
+    )
+    from litellm.proxy import plugin_routes as pr
+    from litellm.proxy._types import PluginConfig
+
+    monkeypatch.setattr(
+        pr,
+        "_plugin_registry",
+        {"p": PluginConfig(name="p", url="http://plugin:3300")},
+    )
+
+    request = MagicMock()
+    request.url.query = ""
+    request.headers = {}
+    request.method = "GET"
+
+    async def body():
+        return b""
+
+    request.body = body
+
+    resp = await plugin_proxy(
+        plugin_name="p",
+        path="x",
+        request=request,
+        user_api_key_dict=MagicMock(user_id="u", user_role="proxy_admin"),
+    )
+    assert resp.status_code == 502
+    assert b"10.0.0.5" not in resp.body
+    assert b"dns failure" not in resp.body
+    assert b"Cannot connect to plugin" in resp.body

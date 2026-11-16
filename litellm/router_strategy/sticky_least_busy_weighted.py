@@ -131,9 +131,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         self._initialized = True
         self.router_cache = router_cache
         self.imbalance_threshold = imbalance_threshold
-        self.dynamic_imbalance_thresholds = self._normalize_dynamic_imbalance_thresholds(
-            dynamic_imbalance_thresholds
-        )
+        self.dynamic_imbalance_thresholds = self._normalize_dynamic_imbalance_thresholds(dynamic_imbalance_thresholds)
         self.virtual_nodes = virtual_nodes
         self.cache_ttl = cache_ttl
         self.observed_load_enabled = False
@@ -380,9 +378,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 self._backend_info = self._backend_info or NoOpMetric()
                 self._observed_load_sync_events = self._observed_load_sync_events or NoOpMetric()
                 self._observed_load_sync_leader = self._observed_load_sync_leader or NoOpMetric()
-                self._observed_load_registered_backends = (
-                    self._observed_load_registered_backends or NoOpMetric()
-                )
+                self._observed_load_registered_backends = self._observed_load_registered_backends or NoOpMetric()
                 self._observed_load_scrape_duration = self._observed_load_scrape_duration or NoOpMetric()
                 self._routing_load_source = self._routing_load_source or NoOpMetric()
         except Exception:
@@ -571,7 +567,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 # deployment's weight only *appends* new points (i grows), it
                 # never moves existing ones — so re-weighting is cache-cheap.
                 key = f"{dep_id}:{i}"
-                h = int(hashlib.md5(key.encode("utf-8")).hexdigest(), 16)
+                h = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16)
                 ring.append((h, dep_id))
 
         ring.sort(key=lambda x: x[0])
@@ -589,13 +585,12 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         if not cached or not cached[1]:
             if verbose_router_logger.isEnabledFor(logging.DEBUG):
                 verbose_router_logger.debug(
-                    f"[StickyLeastBusyWeighted RING-LOOKUP] Hash ring for "
-                    f"{model_group} is empty, returning None"
+                    f"[StickyLeastBusyWeighted RING-LOOKUP] Hash ring for {model_group} is empty, returning None"
                 )
             return None
 
         ring = cached[1]
-        h = int(hashlib.md5(sticky_key.encode("utf-8")).hexdigest(), 16)
+        h = int(hashlib.sha256(sticky_key.encode("utf-8")).hexdigest(), 16)
         idx = bisect_right(ring, (h,))
         if idx >= len(ring):
             idx = 0
@@ -640,9 +635,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         return parsed if parsed >= minimum else minimum
 
     @staticmethod
-    def _normalize_dynamic_imbalance_thresholds(
-        thresholds: Optional[Dict[Union[int, str], float]]
-    ) -> Dict[int, float]:
+    def _normalize_dynamic_imbalance_thresholds(thresholds: Optional[Dict[Union[int, str], float]]) -> Dict[int, float]:
         if not isinstance(thresholds, dict):
             return {}
 
@@ -730,23 +723,14 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
 
     def _release_observed_load_sync_lock(self) -> None:
         redis_cache = self.router_cache.redis_cache
-        if (
-            redis_cache is None
-            or not hasattr(redis_cache, "redis_client")
-            or redis_cache.redis_client is None
-        ):
+        if redis_cache is None or not hasattr(redis_cache, "redis_client") or redis_cache.redis_client is None:
             return
 
         lock_key = redis_cache.check_and_fix_namespace(key=self._get_observed_load_sync_lock_key())
         redis_client = redis_cache.redis_client
         try:
             released = redis_client.eval(
-                (
-                    "if redis.call('GET', KEYS[1]) == ARGV[1] then "
-                    "return redis.call('DEL', KEYS[1]) "
-                    "end "
-                    "return 0"
-                ),
+                ("if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0"),
                 1,
                 lock_key,
                 self._observed_load_sync_owner,
@@ -789,11 +773,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             return False
 
         redis_cache = self.router_cache.redis_cache
-        if (
-            redis_cache is None
-            or not hasattr(redis_cache, "redis_client")
-            or redis_cache.redis_client is None
-        ):
+        if redis_cache is None or not hasattr(redis_cache, "redis_client") or redis_cache.redis_client is None:
             if self._observed_load_shutdown_event.is_set():
                 self._set_observed_load_leader_state(False, "shutdown")
                 return False
@@ -862,7 +842,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             normalized_api_base = f"http://{normalized_api_base}"
 
         parsed = urllib.parse.urlparse(normalized_api_base)
-        if not parsed.scheme or not parsed.netloc:
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
             return None
 
         return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, "/metrics", "", "", ""))
@@ -1419,9 +1399,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 self._decremented_call_ids.pop(key, None)
         self._decremented_call_ids[litellm_call_id] = True
 
-    def _should_decrement(
-        self, litellm_call_id: Optional[str], callback_type: str, load_key_source: str
-    ) -> bool:
+    def _should_decrement(self, litellm_call_id: Optional[str], callback_type: str, load_key_source: str) -> bool:
         if not litellm_call_id:
             return True
 
@@ -1469,9 +1447,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                     hasattr(self.router_cache.redis_cache, "redis_client")
                     and self.router_cache.redis_cache.redis_client is not None
                 ):
-                    self.router_cache.redis_cache.redis_client.expire(
-                        cache_key, self.cache_ttl
-                    )
+                    self.router_cache.redis_cache.redis_client.expire(cache_key, self.cache_ttl)
                 return
             loop.create_task(self._async_refresh_cache_ttl(cache_key))
         except Exception:
@@ -1639,21 +1615,15 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
         except RuntimeError:
             # No running loop: fall back to the original synchronous Redis path.
             try:
-                result = self.router_cache.increment_cache(
-                    key=cache_key, value=value, ttl=ttl
-                )
+                result = self.router_cache.increment_cache(key=cache_key, value=value, ttl=ttl)
             except Exception as e:
-                verbose_router_logger.error(
-                    f"StickyLeastBusy sync increment_cache error: {e}"
-                )
+                verbose_router_logger.error(f"StickyLeastBusy sync increment_cache error: {e}")
                 result = None
             if on_result is not None:
                 try:
                     on_result(result)
                 except Exception as cb_err:
-                    verbose_router_logger.error(
-                        f"StickyLeastBusy {action} on_result callback error: {cb_err}"
-                    )
+                    verbose_router_logger.error(f"StickyLeastBusy {action} on_result callback error: {cb_err}")
             return result
 
         # Running loop: defer the Redis write so it can never block the caller.
@@ -1675,9 +1645,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                     if in_mem is not None:
                         new_value = in_mem.increment_cache(cache_key, value, ttl=ttl)
             except Exception as e:
-                verbose_router_logger.warning(
-                    f"StickyLeastBusy async Redis {action} failed (non-blocking): {e}"
-                )
+                verbose_router_logger.warning(f"StickyLeastBusy async Redis {action} failed (non-blocking): {e}")
                 self._counter_events.labels(
                     action,
                     "redis_async_failed",
@@ -1688,9 +1656,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 try:
                     on_result(new_value)
                 except Exception as cb_err:
-                    verbose_router_logger.error(
-                        f"StickyLeastBusy {action} on_result callback error: {cb_err}"
-                    )
+                    verbose_router_logger.error(f"StickyLeastBusy {action} on_result callback error: {cb_err}")
 
         loop.create_task(_do_redis_delta())
         return None
@@ -1758,9 +1724,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 if new_value is not None:
                     self._refresh_cache_ttl(cache_key)
                     self._routing_in_flight.labels(model_group, dep_id).inc()
-                counter_result = (
-                    "applied" if new_value is not None else "cache_increment_returned_none"
-                )
+                counter_result = "applied" if new_value is not None else "cache_increment_returned_none"
                 self._counter_events.labels("increment", counter_result, load_key_source).inc()
                 if debug_enabled:
                     previous_count = self._previous_count_from_delta(new_value, 1)
@@ -1843,9 +1807,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                     f"call_id={self._format_call_id(litellm_call_id)}"
                 )
 
-            call_id_seen_before_cleanup = (
-                litellm_call_id in self._seen_call_ids if litellm_call_id else False
-            )
+            call_id_seen_before_cleanup = litellm_call_id in self._seen_call_ids if litellm_call_id else False
             if not self._should_decrement(litellm_call_id, callback_type, load_key_source):
                 return
 
@@ -1887,9 +1849,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 if new_value is None:
                     if litellm_call_id:
                         self._decremented_call_ids.pop(litellm_call_id, None)
-                    self._counter_events.labels(
-                        "decrement", "cache_increment_returned_none", load_key_source
-                    ).inc()
+                    self._counter_events.labels("decrement", "cache_increment_returned_none", load_key_source).inc()
                     verbose_router_logger.warning(
                         f"[StickyLeastBusyWeighted COUNTER-WARNING] action=decrement "
                         f"callback_type={callback_type}, reason=cache_increment_returned_none, "
@@ -1992,9 +1952,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                     f"call_id={self._format_call_id(litellm_call_id)}"
                 )
 
-            call_id_seen_before_cleanup = (
-                litellm_call_id in self._seen_call_ids if litellm_call_id else False
-            )
+            call_id_seen_before_cleanup = litellm_call_id in self._seen_call_ids if litellm_call_id else False
             if not self._should_decrement(litellm_call_id, callback_type, load_key_source):
                 return
 
@@ -2014,9 +1972,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
                 return
 
             cache_key = self._get_request_count_cache_key(model_group, dep_id, load_key)
-            new_value = await self.router_cache.async_increment_cache(
-                key=cache_key, value=-1, ttl=self.cache_ttl
-            )
+            new_value = await self.router_cache.async_increment_cache(key=cache_key, value=-1, ttl=self.cache_ttl)
             if new_value is not None:
                 await self._async_refresh_cache_ttl(cache_key)
                 self._routing_in_flight.labels(model_group, dep_id).dec()
@@ -2477,7 +2433,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             return selected_deployment
         except Exception as e:
             verbose_router_logger.error(
-                f"[StickyLeastBusyWeighted ERROR] Routing failed, falling back to " f"random selection: {e}"
+                f"[StickyLeastBusyWeighted ERROR] Routing failed, falling back to random selection: {e}"
             )
             self._routing_fallback.labels(model_group, "error", "consistent_hashing").inc()
             return random.choice(healthy_deployments)
@@ -2505,7 +2461,7 @@ class StickyLeastBusyWeightedLoggingHandler(CustomLogger):
             return selected_deployment
         except Exception as e:
             verbose_router_logger.error(
-                f"[StickyLeastBusyWeighted ERROR] Async routing failed, falling back to " f"random selection: {e}"
+                f"[StickyLeastBusyWeighted ERROR] Async routing failed, falling back to random selection: {e}"
             )
             self._routing_fallback.labels(model_group, "error", "consistent_hashing").inc()
             return random.choice(healthy_deployments)

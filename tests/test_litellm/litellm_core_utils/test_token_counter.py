@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import litellm
 from litellm import create_pretrained_tokenizer, decode, encode, get_modified_max_tokens
 from litellm import token_counter as token_counter_old
+from litellm.constants import DEFAULT_IMAGE_HEIGHT, DEFAULT_IMAGE_WIDTH
 from litellm.litellm_core_utils.token_counter import token_counter as token_counter_new
 from tests.large_text import text
 from tests.test_litellm.litellm_core_utils.messages_with_counts import (
@@ -418,7 +419,7 @@ def test_openai_token_with_image_and_text():
     ],
 )
 def test_get_modified_max_tokens(
-    model, base_model, input_tokens, user_max_tokens, expected_value
+    model, base_model, input_tokens, user_max_tokens, expected_value, monkeypatch
 ):
     """
     - Test when max_output is not known => expect user_max_tokens
@@ -430,6 +431,24 @@ def test_get_modified_max_tokens(
     """
     args = locals()
     import litellm
+
+    mocked_model_info = {
+        "command": {"max_input_tokens": 4096, "max_output_tokens": 4096},
+        "gpt-3.5-turbo": {"max_input_tokens": 16385, "max_output_tokens": 4096},
+    }
+
+    def _mock_get_model_info(model=None, **kwargs):
+        info = mocked_model_info.get(model)
+        if info is None:
+            raise ValueError(f"This model isn't mapped yet: {model}")
+        return info
+
+    def _mock_get_max_tokens(model=None, **kwargs):
+        info = mocked_model_info.get(model)
+        return info["max_output_tokens"] if info else None
+
+    monkeypatch.setattr(litellm, "get_model_info", _mock_get_model_info)
+    monkeypatch.setattr(litellm, "get_max_tokens", _mock_get_max_tokens)
 
     litellm.token_counter = MagicMock()
 
@@ -1114,3 +1133,41 @@ def test_count_content_list_rejects_unknown_type():
     message = str(exc_info.value)
     assert "Invalid content item type: totally_unknown_block" in message
     assert "tool_reference" in message
+
+
+def test_get_image_dimensions_oversized_download_falls_back(monkeypatch):
+    from litellm.constants import MAX_IMAGE_URL_DOWNLOAD_SIZE_MB
+    from litellm.litellm_core_utils.token_counter import get_image_dimensions
+
+    max_bytes = int(MAX_IMAGE_URL_DOWNLOAD_SIZE_MB * 1024 * 1024)
+
+    class _OversizedResponse:
+        headers = {}
+
+        def iter_bytes(self):
+            yield b"x" * (max_bytes + 1)
+
+    monkeypatch.setattr(
+        "litellm.litellm_core_utils.token_counter.safe_get",
+        lambda client, url, **kw: _OversizedResponse(),
+    )
+
+    width, height = get_image_dimensions(data="https://evil.example/huge.png")
+
+    assert width == DEFAULT_IMAGE_WIDTH
+    assert height == DEFAULT_IMAGE_HEIGHT
+
+
+def test_get_image_dimensions_oversized_base64_falls_back():
+    import base64 as b64mod
+
+    from litellm.constants import MAX_IMAGE_URL_DOWNLOAD_SIZE_MB
+    from litellm.litellm_core_utils.token_counter import get_image_dimensions
+
+    max_b64_len = int(MAX_IMAGE_URL_DOWNLOAD_SIZE_MB * 1024 * 1024)
+    payload = b64mod.b64encode(b"a" * (max_b64_len + 100)).decode()
+
+    width, height = get_image_dimensions(data=f"data:image/png;base64,{payload}")
+
+    assert width == DEFAULT_IMAGE_WIDTH
+    assert height == DEFAULT_IMAGE_HEIGHT

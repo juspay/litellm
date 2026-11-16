@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 if TYPE_CHECKING:
     import httpx
 
+import httpx
 import jwt
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
@@ -56,6 +57,7 @@ from litellm.constants import (
     MICROSOFT_USER_ID_ATTRIBUTE,
     MICROSOFT_USER_LAST_NAME_ATTRIBUTE,
 )
+from litellm.litellm_core_utils.core_helpers import truncate_error_str
 from litellm.litellm_core_utils.dot_notation_indexing import get_nested_value
 from litellm.llms.custom_httpx.http_handler import (
     AsyncHTTPHandler,
@@ -91,6 +93,10 @@ from litellm.proxy.common_utils.html_forms.jwt_display_template import (
     jwt_display_template,
 )
 from litellm.proxy.common_utils.html_forms.ui_login import build_ui_login_form
+from litellm.proxy.common_utils.session_cookie_utils import (
+    encode_ui_session_jwt,
+    set_ui_session_cookie,
+)
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.management_endpoints.internal_user_endpoints import new_user
 from litellm.proxy.management_endpoints.sso import CustomMicrosoftSSO
@@ -124,7 +130,6 @@ from litellm.types.proxy.management_endpoints.ui_sso import (
     TeamMappings,
 )
 from litellm.types.proxy.ui_sso import ParsedOpenIDResult
-from litellm.litellm_core_utils.core_helpers import truncate_error_str
 
 if TYPE_CHECKING:
     from fastapi_sso.sso.base import OpenID
@@ -138,6 +143,37 @@ router = APIRouter()
 # Metadata fields (token_type, expires_in, scope) are intentionally kept so
 # response convertors see the same fields in the PKCE path as in the non-PKCE path.
 _OAUTH_TOKEN_FIELDS = frozenset({"access_token", "id_token", "refresh_token"})
+# Claims the /sso/debug pages may render. The debug callback must never echo
+# the whole identity assertion (group lists, internal ids, custom PII) to the
+# browser that completed the flow.
+_SSO_DEBUG_CLAIM_ALLOWLIST = frozenset(
+    {
+        "sub",
+        "email",
+        "email_verified",
+        "name",
+        "given_name",
+        "family_name",
+        "preferred_username",
+        "picture",
+        "locale",
+        "iss",
+        "aud",
+        "exp",
+        "iat",
+        "nbf",
+        "jti",
+        "at_hash",
+        "nonce",
+        # LiteLLM role/team mapping inputs: the debug page exists to show why a
+        # login mapped to a given team or role, so these must render.
+        "team_id",
+        "team_alias",
+        "teams",
+        "groups",
+        "roles",
+    }
+)
 _CLI_SSO_FLOW_CACHE_KEY_PREFIX = f"{CLI_SSO_SESSION_CACHE_KEY_PREFIX}:flow"
 _CLI_SSO_START_RATE_LIMIT_CACHE_KEY_PREFIX = f"{_CLI_SSO_FLOW_CACHE_KEY_PREFIX}:start_rate_limit"
 _CLI_SSO_START_RATE_LIMIT_WINDOW_SECONDS = 60
@@ -475,7 +511,9 @@ async def _persist_cli_sso_user_metadata(
             f"{list(_flatten_cli_sso_metadata_for_poll(attribution_metadata).keys())}"
         )
     except Exception as e:
-        verbose_proxy_logger.error(f"Failed to persist CLI SSO attribution metadata for user {user_id}: {truncate_error_str(e)}")
+        verbose_proxy_logger.error(
+            f"Failed to persist CLI SSO attribution metadata for user {user_id}: {truncate_error_str(e)}"
+        )
 
 
 def _cli_poll_attribution_metadata_from_session(
@@ -591,7 +629,7 @@ async def cli_sso_start(request: Request):
 
     verification_uri_complete: str | None = (
         (
-            get_custom_url(request_base_url=str(request.base_url), route="sso/key/generate")
+            get_custom_url(request_base_url=str(request.base_url), route="sso/key/generate", request=request)
             + "?"
             + urlencode(
                 {
@@ -649,6 +687,146 @@ async def cli_sso_complete(request: Request, login_id: str):
 
     html_content = render_cli_sso_success_page()
     return HTMLResponse(content=html_content, status_code=200)
+
+
+def _decode_sso_jwt_unverified(token: str) -> dict:
+    """
+    Decode an SSO provider's JWT without signature verification.
+
+    Signature trust comes from the provider's token endpoint over TLS
+    (fastapi_sso), not from us verifying it. But an unsecured token
+    (alg=none) can be forged by anyone, so reject those outright.
+    """
+    unverified_header = jwt.get_unverified_header(token)
+    if unverified_header.get("alg") in (None, "none"):
+        raise jwt.exceptions.DecodeError("Refusing to decode an unsecured JWT (alg=none)")
+    return jwt.decode(token, options={"verify_signature": False})
+
+
+_SSO_ID_TOKEN_SIGNATURE_ALGORITHMS = frozenset(JWTHandler.SUPPORTED_JWT_ALGORITHMS)
+
+
+async def _decode_sso_id_token_verified(
+    id_token: str,
+    issuer: str | None,
+    audience: str | None,
+    jwks_url: str | None = None,
+) -> dict:
+    """Verify an SSO id_token against the provider's JWKS and claim constraints.
+
+    Used for identity-bearing id_tokens (the userinfo fallback path and any
+    other place the token's claims alone resolve or auto-provision the
+    logged-in user). Verification requires a JWKS URL (a JWKS URL or an OIDC
+    discovery URL containing jwks_uri): an explicit ``jwks_url`` argument
+    (the Microsoft path resolves the tenant's own JWKS), otherwise
+    GENERIC_JWKS_ENDPOINT; without either this raises so callers fail
+    closed rather than trusting unverified claims.
+
+    Checks signature (asymmetric algorithms via the matching JWKS key), exp, and
+    nbf; iss and aud are checked when the corresponding expected value is
+    supplied.
+    """
+    jwks_url = jwks_url or os.getenv("GENERIC_JWKS_ENDPOINT")
+    if not jwks_url:
+        raise ProxyException(
+            message=(
+                "id_token identity requires signature verification; set GENERIC_JWKS_ENDPOINT "
+                "(JWKS URL or OIDC discovery URL) so the token can be validated against the "
+                "provider's keys"
+            ),
+            type=ProxyErrorTypes.auth_error,
+            param="id_token_verification",
+            code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    client = get_async_httpx_client(llm_provider=httpxSpecialProvider.SSO_HANDLER)
+    response = await client.get(jwks_url)
+    if response.status_code != 200:
+        raise ProxyException(
+            message=f"JWKS endpoint {jwks_url} returned status {response.status_code}",
+            type=ProxyErrorTypes.auth_error,
+            param="id_token_verification",
+            code=status.HTTP_401_UNAUTHORIZED,
+        )
+    try:
+        jwks = response.json()
+    except Exception as e:
+        raise ProxyException(
+            message=f"JWKS endpoint {jwks_url} returned invalid JSON: {e}",
+            type=ProxyErrorTypes.auth_error,
+            param="id_token_verification",
+            code=status.HTTP_401_UNAUTHORIZED,
+        ) from e
+    if ".well-known/openid-configuration" in jwks_url and isinstance(jwks, dict):
+        inner_jwks_uri = jwks.get("jwks_uri")
+        if not isinstance(inner_jwks_uri, str) or not inner_jwks_uri:
+            raise ProxyException(
+                message=f"Discovery document {jwks_url} has no jwks_uri",
+                type=ProxyErrorTypes.auth_error,
+                param="id_token_verification",
+                code=status.HTTP_401_UNAUTHORIZED,
+            )
+        inner = await client.get(inner_jwks_uri)
+        if inner.status_code != 200:
+            raise ProxyException(
+                message=f"JWKS endpoint {inner_jwks_uri} returned status {inner.status_code}",
+                type=ProxyErrorTypes.auth_error,
+                param="id_token_verification",
+                code=status.HTTP_401_UNAUTHORIZED,
+            )
+        jwks = inner.json()
+
+    header = jwt.get_unverified_header(id_token)
+    alg = header.get("alg")
+    if alg in (None, "none"):
+        raise jwt.exceptions.DecodeError("Refusing to decode an unsecured JWT (alg=none)")
+    if alg not in _SSO_ID_TOKEN_SIGNATURE_ALGORITHMS:
+        raise jwt.exceptions.DecodeError(
+            f"Unsupported id_token signature algorithm {alg!r}; expected one of "
+            f"{sorted(_SSO_ID_TOKEN_SIGNATURE_ALGORITHMS)}"
+        )
+
+    from jwt import PyJWK
+
+    keys = jwks.get("keys", [jwks]) if isinstance(jwks, dict) else jwks
+    kid = header.get("kid")
+    matching_keys = [key for key in keys if key.get("kid") == kid] if kid is not None else keys[:1]
+    if len(matching_keys) != 1:
+        raise jwt.exceptions.DecodeError(f"No unique JWKS key matching kid={kid} at {jwks_url}")
+    signing_key = PyJWK.from_dict(matching_keys[0]).key
+
+    decode_options: dict = {"verify_signature": True, "verify_exp": True, "verify_nbf": True}
+    if issuer is not None:
+        decode_options["verify_iss"] = True
+    if audience is not None:
+        decode_options["verify_aud"] = True
+    return jwt.decode(
+        id_token,
+        key=signing_key,
+        algorithms=[alg],
+        issuer=issuer,
+        audience=audience,
+        options=decode_options,
+    )
+
+
+async def _verify_sso_access_token(access_token: str) -> dict:
+    """Verify the SSO provider's access token against its JWKS.
+
+    Access-token claims drive authorization decisions in
+    ``process_sso_jwt_access_token`` (team_ids, user_role), so they require the
+    same signature verification as id_tokens. Accepts either a JWKS URL or an
+    OIDC discovery URL in GENERIC_JWKS_ENDPOINT, and applies GENERIC_ISSUER /
+    GENERIC_CLIENT_ID as issuer/audience constraints when set.
+
+    Raises on any verification failure so callers fail closed (no claims are
+    extracted from an unverified token).
+    """
+    return await _decode_sso_id_token_verified(
+        access_token,
+        issuer=os.getenv("GENERIC_ISSUER") or None,
+        audience=os.getenv("GENERIC_CLIENT_ID") or None,
+    )
 
 
 def normalize_email(email: Optional[str]) -> Optional[str]:
@@ -723,7 +901,7 @@ def determine_role_from_groups(
     return role_mappings.default_role
 
 
-def process_sso_jwt_access_token(
+async def process_sso_jwt_access_token(
     access_token_str: Optional[str],
     sso_jwt_handler: Optional[JWTHandler],
     result: Union[OpenID, dict, None],
@@ -736,6 +914,13 @@ def process_sso_jwt_access_token(
     role, then sets them on the result object. Role extraction from the access
     token is needed because some SSO providers (e.g., Keycloak) do not include
     role claims in the UserInfo endpoint response.
+
+    team_ids and user_role are authorization-bearing claims, so they are only
+    extracted from a signature-verified token. Verification runs against the
+    provider's JWKS (GENERIC_JWKS_ENDPOINT) with GENERIC_ISSUER/GENERIC_CLIENT_ID
+    as the issuer/audience constraints; when verification is unavailable the
+    extraction is skipped entirely (fail closed) rather than trusting the
+    unverified payload.
 
     Args:
         access_token_str: The JWT access token string
@@ -753,10 +938,22 @@ def process_sso_jwt_access_token(
         import jwt
 
         try:
-            access_token_payload = jwt.decode(access_token_str, options={"verify_signature": False})
+            _decode_sso_jwt_unverified(access_token_str)
         except jwt.exceptions.DecodeError:
             verbose_proxy_logger.debug(
                 "Access token is not a valid JWT (possibly an opaque token), skipping JWT-based extraction"
+            )
+            return None
+
+        try:
+            access_token_payload = await _verify_sso_access_token(access_token_str)
+        except ProxyException:
+            raise
+        except (jwt.exceptions.PyJWTError, httpx.HTTPError) as verification_err:
+            verbose_proxy_logger.error(
+                "Access token could not be signature-verified against the provider JWKS; "
+                "skipping JWT-based team/role extraction: %s",
+                verification_err,
             )
             return None
 
@@ -1379,6 +1576,34 @@ async def get_generic_sso_response(
                     param="state",
                     code=status.HTTP_400_BAD_REQUEST,
                 )
+            # Server-side single-use check: the state must carry a live
+            # minted-by-this-proxy entry. Cookie equality alone is not
+            # sufficient — if a sibling-subdomain attacker can overwrite the
+            # cookie, a self-minted state would still pass compare_digest.
+            # The entry is deleted here so a state can be consumed once.
+            from litellm.proxy.proxy_server import (
+                redis_usage_cache as _redis_cache,
+            )
+            from litellm.proxy.proxy_server import (
+                user_api_key_cache as _local_cache,
+            )
+
+            _state_cache_key = f"sso_state:{url_state}"
+            if _redis_cache is not None:
+                _state_entry = await _redis_cache.async_get_cache(key=_state_cache_key)
+            else:
+                _state_entry = await _local_cache.async_get_cache(key=_state_cache_key)
+            if _state_entry is None:
+                raise ProxyException(
+                    message=("Invalid OAuth state parameter — not issued by this proxy or already used."),
+                    type=ProxyErrorTypes.auth_error,
+                    param="state",
+                    code=status.HTTP_400_BAD_REQUEST,
+                )
+            if _redis_cache is not None:
+                await _redis_cache.async_delete_cache(key=_state_cache_key)
+            else:
+                await _local_cache.async_delete_cache(key=_state_cache_key)
             if not authorization_code:
                 raise ProxyException(
                     message="Missing authorization code in callback",
@@ -1442,7 +1667,7 @@ async def get_generic_sso_response(
             )
             access_token_str = generic_sso.access_token
 
-        access_token_payload = process_sso_jwt_access_token(
+        access_token_payload = await process_sso_jwt_access_token(
             access_token_str, sso_jwt_handler, result, role_mappings=role_mappings
         )
         # Delete the single-use PKCE verifier only after all downstream processing
@@ -1963,6 +2188,7 @@ async def _complete_cli_sso_callback_session(
     verify_url = get_custom_url(
         request_base_url=str(request.base_url),
         route=f"sso/cli/complete/{key}",
+        request=request,
     )
     return HTMLResponse(
         content=_render_cli_sso_verification_page(
@@ -2604,10 +2830,25 @@ class SSOAuthenticationHandler:
                         value={"code_verifier": code_verifier},
                         ttl=600,
                     )
+                    # Server-side proof this state was minted by this proxy and
+                    # not yet consumed. The callback rejects any state without a
+                    # live entry, so a cookie an attacker managed to preset to an
+                    # arbitrary value pairs with nothing: cookie equality alone
+                    # is no longer sufficient to pass the state check.
+                    await redis_usage_cache.async_set_cache(
+                        key=f"sso_state:{redirect_params['state']}",
+                        value={"minted": True},
+                        ttl=600,
+                    )
                 else:
                     await user_api_key_cache.async_set_cache(
                         key=cache_key,
                         value={"code_verifier": code_verifier},
+                        ttl=600,
+                    )
+                    await user_api_key_cache.async_set_cache(
+                        key=f"sso_state:{redirect_params['state']}",
+                        value={"minted": True},
                         ttl=600,
                     )
                 verbose_proxy_logger.debug("PKCE code_verifier stored in cache (TTL: 600s)")
@@ -2740,7 +2981,7 @@ class SSOAuthenticationHandler:
         """
         from litellm.proxy.utils import get_custom_url
 
-        redirect_url = get_custom_url(request_base_url=str(request.base_url))
+        redirect_url = get_custom_url(request_base_url=str(request.base_url), request=request)
         if redirect_url.endswith("/"):
             redirect_url += sso_callback_route
         else:
@@ -3019,8 +3260,6 @@ class SSOAuthenticationHandler:
         jwt_handler: Optional[JWTHandler] = None,
         return_to: Optional[str] = None,
     ) -> RedirectResponse:
-        import jwt
-
         from litellm.proxy.proxy_server import (
             general_settings,
             generate_key_helper_fn,
@@ -3149,7 +3388,7 @@ class SSOAuthenticationHandler:
                 )
 
         disabled_non_admin_personal_key_creation = get_disabled_non_admin_personal_key_creation()
-        litellm_dashboard_ui = get_custom_url(request_base_url=str(request.base_url), route="ui/")
+        litellm_dashboard_ui = get_custom_url(request_base_url=str(request.base_url), route="ui/", request=request)
 
         if get_secret_bool("EXPERIMENTAL_UI_LOGIN"):
             _user_info: Optional[LiteLLM_UserTable] = None
@@ -3180,11 +3419,7 @@ class SSOAuthenticationHandler:
             server_root_path=get_server_root_path(),
         )
 
-        jwt_token = jwt.encode(
-            cast(dict, returned_ui_token_object),
-            master_key or "",
-            algorithm="HS256",
-        )
+        jwt_token = encode_ui_session_jwt(cast(dict[str, object], returned_ui_token_object), master_key or "")
 
         # Control-plane cross-origin: store JWT behind a single-use opaque
         # code (60s TTL) so the token never appears in browser history / logs.
@@ -3209,7 +3444,7 @@ class SSOAuthenticationHandler:
             litellm_dashboard_ui += "?login=success"
         verbose_proxy_logger.info(f"Redirecting to {litellm_dashboard_ui}")
         redirect_response = RedirectResponse(url=litellm_dashboard_ui, status_code=303)
-        redirect_response.set_cookie(key="token", value=jwt_token)
+        set_ui_session_cookie(redirect_response, jwt_token, request=request)
         return redirect_response
 
     @staticmethod
@@ -3681,15 +3916,24 @@ class SSOAuthenticationHandler:
         # they contain no identity claims — id_token fallback is attempted in that case too.
         # Explicitly check for a non-empty string to avoid attempting JWT decode on
         # a blank or non-string id_token field from a misbehaving provider.
+        # The id_token's claims alone resolve the logged-in user, so the
+        # fallback verifies the signature against the provider's JWKS
+        # (GENERIC_JWKS_ENDPOINT) and fails closed when it cannot.
         if userinfo is None and isinstance(id_token, str) and id_token:
             try:
-                userinfo = jwt.decode(id_token, options={"verify_signature": False})
+                userinfo = await _decode_sso_id_token_verified(
+                    id_token,
+                    issuer=os.getenv("GENERIC_ISSUER") or None,
+                    audience=os.getenv("GENERIC_CLIENT_ID") or None,
+                )
                 if not userinfo:
                     # jwt.decode returned an empty dict (payload-free JWT or provider bug).
                     # Treat this the same as a missing userinfo — the session would have no
                     # identity claims, which is equivalent to a broken session.
                     verbose_proxy_logger.warning("id_token decoded to an empty payload — treating as failure.")
                     userinfo = None
+            except ProxyException:
+                raise
             except Exception as decode_err:
                 verbose_proxy_logger.error("Failed to decode id_token: %s", decode_err)
                 raise ProxyException(
@@ -3793,8 +4037,8 @@ class MicrosoftSSOHandler:
             access_token=microsoft_sso.access_token
         )
 
-        # Extract app roles from the id_token JWT
-        app_roles = MicrosoftSSOHandler.get_app_roles_from_id_token(id_token=microsoft_sso.id_token)
+        # Extract app roles from the id_token JWT (verified against the tenant JWKS)
+        app_roles = await MicrosoftSSOHandler.get_app_roles_from_id_token(id_token=microsoft_sso.id_token)
         verbose_proxy_logger.debug(f"Extracted app roles from id_token: {app_roles}")
 
         # Combine groups and app roles
@@ -3845,12 +4089,16 @@ class MicrosoftSSOHandler:
         return openid_response
 
     @staticmethod
-    def get_app_roles_from_id_token(id_token: Optional[str]) -> List[str]:
+    @staticmethod
+    async def get_app_roles_from_id_token(id_token: str | None) -> List[str]:
         """
         Extract app roles from the Microsoft Entra ID (Azure AD) id_token JWT.
 
         App roles are assigned in the Azure AD Enterprise Application and appear
-        in the 'app_roles' claim of the id_token.
+        in the 'app_roles' claim of the id_token. App roles are
+        privilege-bearing (they can map to proxy_admin), so the token is
+        verified against the tenant's JWKS; on any verification failure no
+        roles are extracted rather than trusting unverified claims.
 
         Args:
             id_token (Optional[str]): The JWT id_token from Microsoft SSO
@@ -3862,12 +4110,20 @@ class MicrosoftSSOHandler:
             verbose_proxy_logger.debug("No id_token provided for app role extraction")
             return []
 
-        try:
-            import jwt
+        microsoft_tenant = os.getenv("MICROSOFT_TENANT")
+        if not microsoft_tenant:
+            verbose_proxy_logger.error(
+                "MICROSOFT_TENANT is not set; cannot verify id_token for app roles. No roles extracted."
+            )
+            return []
 
-            # Decode the JWT without signature verification
-            # (signature is already verified by fastapi_sso)
-            decoded_token = jwt.decode(id_token, options={"verify_signature": False})
+        try:
+            decoded_token = await _decode_sso_id_token_verified(
+                id_token,
+                issuer=f"https://login.microsoftonline.com/{microsoft_tenant}/v2.0",
+                audience=os.getenv("MICROSOFT_CLIENT_ID"),
+                jwks_url=f"https://login.microsoftonline.com/{microsoft_tenant}/discovery/v2.0/keys",
+            )
 
             # Extract app_roles claim from the token
             ## check for both 'roles' and 'app_roles' claims
@@ -4107,6 +4363,40 @@ class GoogleSSOHandler:
         return result or {}
 
 
+def _require_sso_debug_access(request: Request) -> None:
+    """Gate /sso/debug/* on an explicit operator opt-in flag plus an admin UI session.
+
+    These are debugging aids that render IdP responses into an HTML page; they
+    must not be reachable in production, and a browser that never logged in as
+    an admin gets turned away instead of triggering SSO flows.
+    """
+    from litellm.proxy.proxy_server import general_settings, master_key
+
+    debug_enabled = general_settings.get(
+        "enable_sso_debug",
+        os.getenv("ENABLE_SSO_DEBUG", "false").lower() == "true",
+    )
+    if debug_enabled is not True:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "SSO debug endpoints are disabled. Set general_settings.enable_sso_debug=true to enable them."
+            },
+        )
+
+    from litellm.proxy.common_utils.session_cookie_utils import decode_ui_session_jwt
+
+    session_cookie = request.cookies.get("token")
+    if not session_cookie or not master_key:
+        raise HTTPException(status_code=401, detail={"error": "Admin session required for SSO debug endpoints."})
+    try:
+        session_claims = decode_ui_session_jwt(session_cookie, master_key, verify_exp=True, require_exp=True)
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail={"error": "Admin session required for SSO debug endpoints."})
+    if session_claims.get("user_role") != LitellmUserRoles.PROXY_ADMIN.value:
+        raise HTTPException(status_code=403, detail={"error": "Only proxy admins can use SSO debug endpoints."})
+
+
 @router.get("/sso/debug/login", tags=["experimental"], include_in_schema=False)
 async def debug_sso_login(request: Request):
     """
@@ -4114,6 +4404,8 @@ async def debug_sso_login(request: Request):
     PROXY_BASE_URL should be the your deployed proxy endpoint, e.g. PROXY_BASE_URL="https://litellm-production-7002.up.railway.app/"
     Example:
     """
+    _require_sso_debug_access(request)
+
     from litellm.proxy.proxy_server import premium_user
 
     microsoft_client_id = os.getenv("MICROSOFT_CLIENT_ID", None)
@@ -4162,6 +4454,8 @@ async def debug_sso_callback(request: Request):
     import json
 
     from fastapi.responses import HTMLResponse
+
+    _require_sso_debug_access(request)
 
     from litellm.proxy._types import LiteLLM_JWTAuth
     from litellm.proxy.auth.handle_jwt import JWTHandler
@@ -4253,9 +4547,18 @@ async def debug_sso_callback(request: Request):
                     filtered_result[key] = f"Complex value (not displayable): {str(e)}"
 
     # Defense-in-depth: ensure no bearer tokens leak into the rendered HTML even if
-    # a non-conforming IdP places them in its userinfo response.
-    safe_raw_claims = {k: v for k, v in (received_response or {}).items() if k not in _OAUTH_TOKEN_FIELDS}
-    safe_access_token_claims = {k: v for k, v in (access_token_payload or {}).items() if k not in _OAUTH_TOKEN_FIELDS}
+    # a non-conforming IdP places them in its userinfo response, and render only
+    # allowlisted standard claims instead of the whole identity assertion.
+    safe_raw_claims = {
+        k: v
+        for k, v in (received_response or {}).items()
+        if k in _SSO_DEBUG_CLAIM_ALLOWLIST and k not in _OAUTH_TOKEN_FIELDS
+    }
+    safe_access_token_claims = {
+        k: v
+        for k, v in (access_token_payload or {}).items()
+        if k in _SSO_DEBUG_CLAIM_ALLOWLIST and k not in _OAUTH_TOKEN_FIELDS
+    }
 
     sso_payload = {
         "parsed_by_proxy": filtered_result,

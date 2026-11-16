@@ -17,6 +17,7 @@ from litellm.integrations.vector_store_integrations.vector_store_pre_call_hook i
     LiteLLM_ManagedVectorStore,
 )
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
 from litellm.proxy.vector_store_endpoints.endpoints import (
     _update_request_data_with_litellm_managed_vector_store_registry,
     index_create,
@@ -1938,7 +1939,7 @@ async def test_resolve_embedding_config_from_db():
 
     with patch(
         "litellm.proxy.vector_store_endpoints.management_endpoints.decrypt_value_helper",
-        side_effect=lambda value, key, return_original_value: value,
+        side_effect=lambda value, key, return_original_value, context=None: value,
     ):
         result = await _resolve_embedding_config_from_db(
             embedding_model="text-embedding-ada-002", prisma_client=mock_prisma_client
@@ -1966,6 +1967,36 @@ async def test_resolve_embedding_config_from_db():
         embedding_model="non-existent-model", prisma_client=mock_prisma_client
     )
     assert result_not_found is None
+
+
+
+@pytest.mark.asyncio
+async def test_resolve_embedding_config_from_db_decrypts_with_model_table_context(monkeypatch):
+    """Regression (context-bound encryption): model writes encrypt litellm_params
+    with a storage context. Reading without the matching context fails closed
+    and returns the ciphertext as the embedding api_key/api_base. The reader
+    must pass the same context the writer used."""
+    monkeypatch.setenv("LITELLM_SALT_KEY", "test-salt-embedding-context")
+
+    mock_prisma_client = MagicMock()
+    mock_db_model = MagicMock()
+    mock_db_model.litellm_params = {
+        "api_key": encrypt_value_helper(
+            "sk-embedding-secret", context="LiteLLM_ProxyModelTable:litellm_params.api_key"
+        ),
+        "api_base": encrypt_value_helper(
+            "https://api.openai.com", context="LiteLLM_ProxyModelTable:litellm_params.api_base"
+        ),
+    }
+    mock_prisma_client.db.litellm_proxymodeltable.find_first = AsyncMock(return_value=mock_db_model)
+
+    result = await _resolve_embedding_config_from_db(
+        embedding_model="text-embedding-ada-002", prisma_client=mock_prisma_client
+    )
+
+    assert result is not None
+    assert result["api_key"] == "sk-embedding-secret"
+    assert result["api_base"] == "https://api.openai.com"
 
 
 @pytest.mark.asyncio
@@ -2038,7 +2069,7 @@ async def test_new_vector_store_auto_resolves_embedding_config():
         patch("litellm.proxy.proxy_server.llm_router", mock_router),
         patch(
             "litellm.proxy.vector_store_endpoints.management_endpoints.decrypt_value_helper",
-            side_effect=lambda value, key, return_original_value: value,
+            side_effect=lambda value, key, return_original_value, context=None: value,
         ),
         patch.object(litellm, "vector_store_registry", mock_registry),
     ):
@@ -2271,7 +2302,7 @@ async def test_resolve_embedding_config_falls_back_to_db():
 
     with patch(
         "litellm.proxy.vector_store_endpoints.management_endpoints.decrypt_value_helper",
-        side_effect=lambda value, key, return_original_value: value,
+        side_effect=lambda value, key, return_original_value, context=None: value,
     ):
         result = await _resolve_embedding_config(
             embedding_model="text-embedding-ada-002",

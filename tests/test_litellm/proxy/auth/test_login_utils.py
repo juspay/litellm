@@ -5,6 +5,7 @@ This module tests the refactored login logic that was moved from proxy_server.py
 to login_utils.py for better reusability.
 """
 
+import hashlib
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -217,7 +218,7 @@ async def test_authenticate_user_wrong_password():
     user_email = "test@example.com"
     correct_password = "correct-password"
     wrong_password = "wrong-password"
-    hashed_password = hash_token(token=correct_password)
+    hashed_password = hashlib.sha256(correct_password.encode()).hexdigest()
 
     mock_user = LiteLLM_UserTable(
         user_id="test-user-123",
@@ -259,7 +260,7 @@ async def test_authenticate_user_email_case_insensitive_login():
     stored_email = "testemail@test.com"
     login_email_mixed_case = "testEmail@test.com"
     correct_password = "correct-password"
-    hashed_password = hash_token(token=correct_password)
+    hashed_password = hashlib.sha256(correct_password.encode()).hexdigest()
 
     # `LiteLLM_UserTable` does not define a `password` field, but `authenticate_user()`
     # expects `user_row.password` to exist (invite-link login). Use a simple object.
@@ -515,7 +516,7 @@ async def test_authenticate_user_database_login_with_non_ascii_password():
     master_key = "sk-1234"
     user_email = "test@example.com"
     password_with_special_char = "correct£password"
-    hashed_password = hash_token(token=password_with_special_char)
+    hashed_password = hashlib.sha256(password_with_special_char.encode()).hexdigest()
 
     mock_user = MagicMock()
     mock_user.user_id = "test-user-123"

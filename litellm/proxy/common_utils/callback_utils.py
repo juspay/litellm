@@ -639,7 +639,7 @@ def _encrypt_if_plaintext(key: str, value: Any) -> Any:
         # plaintext under K2 and wrap them a second time.
         return value
     try:
-        return _CALLBACK_VAR_ENCRYPTED_PREFIX + encrypt_value_helper(value)
+        return _CALLBACK_VAR_ENCRYPTED_PREFIX + encrypt_value_helper(value, context=f"metadata.callback_vars.{key}")
     except Exception:
         # No salt key / master key configured — leave the value as-is rather
         # than crash the write. Dev environments without LITELLM_SALT_KEY hit
@@ -654,5 +654,11 @@ def _decrypt_or_passthrough(key: str, value: Any) -> Any:
         # Legacy plaintext rows or non-credential fields — return as-is.
         return value
     inner = value[len(_CALLBACK_VAR_ENCRYPTED_PREFIX) :]
-    decrypted = decrypt_value_helper(value=inner, key=key, exception_type="debug", return_original_value=False)
+    decrypted = decrypt_value_helper(
+        value=inner,
+        key=key,
+        exception_type="debug",
+        return_original_value=False,
+        context=f"metadata.callback_vars.{key}",
+    )
     return decrypted if decrypted is not None else value

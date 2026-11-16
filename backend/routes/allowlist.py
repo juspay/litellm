@@ -56,10 +56,9 @@ BACKEND_PATH_PREFIXES: tuple[str, ...] = (
     "/v1/agents",
     # Guardrails admin
     "/v2/guardrails/",
-    # MCP server admin + BYOK OAuth flow (UI-initiated) + dynamic per-server endpoints
+    # MCP server admin + BYOK OAuth flow (UI-initiated)
     "/v1/mcp/",
     "/test/",
-    "/{mcp_server_name}/",
     # Budgets / tags / workflows / memory mgmt
     "/budget/",
     "/tag/",
@@ -75,6 +74,7 @@ BACKEND_PATH_PREFIXES: tuple[str, ...] = (
     "/user_agent",
     "/usage/",
     "/daily/",
+    "/concurrent_request_logs/",
     # CloudZero cost-export admin (init / settings / export / dry-run / delete)
     "/cloudzero/",
     # Caching admin
@@ -136,6 +136,24 @@ BACKEND_EXACT_PATHS: frozenset[str] = frozenset(
         "/docs/oauth2-redirect",
         "/redoc",
         "/fallback/login",
+        "/memory-usage-in-mem-cache-items",
+        # Dynamic per-MCP-server route templates (discoverable OAuth flow +
+        # MCP-over-HTTP forwarding), enumerated explicitly instead of a
+        # catch-all /{mcp_server_name}/ prefix.
+        "/{mcp_server_name}/authorize",
+        "/{mcp_server_name}/token",
+        "/{mcp_server_name}/register",
+        "/{mcp_server_name}/mcp",
+        # Service-account management (no /service-account/ directory prefix
+        # exists yet, so the concrete routes are listed here)
+        "/service-account/list",
+        "/service-account/approve",
+        "/service-account/reject",
+        "/service-account/request-rotation",
+        "/bench/run/new",
+        "/bench/run/list",
+        "/bench/run/delete",
+        "/concurrent_request_logs",
     }
 )
 

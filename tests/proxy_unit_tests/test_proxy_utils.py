@@ -2784,3 +2784,27 @@ def test_handle_exception_on_proxy_preserves_auth_error_status_code():
     result = handle_exception_on_proxy(auth_error)
 
     assert int(result.code) == 401, f"Expected 401, got {result.code}"
+
+
+def test_is_allowed_to_make_key_request_rejects_foreign_user_id():
+    """Regression: a non-admin key whose user_id targets another user must get
+    a 403 HTTPException, not an AssertionError (which `python -O` strips and
+    which only reached users via the caller's except-clause translation)."""
+    from fastapi import HTTPException
+
+    from litellm.proxy._types import LitellmUserRoles
+    from litellm.proxy.management_endpoints.key_management_endpoints import (
+        _is_allowed_to_make_key_request,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _is_allowed_to_make_key_request(
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="test_user_id",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+            user_id="someone_else",
+            team_id=None,
+        )
+    assert exc_info.value.status_code == 403
+    assert "someone_else" in str(exc_info.value.detail)

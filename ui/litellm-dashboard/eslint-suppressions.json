@@ -1483,7 +1483,7 @@
       "count": 1
     },
     "react-hooks/set-state-in-effect": {
-      "count": 5
+      "count": 4
     }
   },
   "src/components/mcp_tools/mcp_connect.tsx": {
@@ -2071,9 +2071,6 @@
   },
   "src/components/view_logs/index.tsx": {
     "no-restricted-imports": {
-      "count": 1
-    },
-    "react-hooks/set-state-in-effect": {
       "count": 1
     }
   },

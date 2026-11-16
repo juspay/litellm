@@ -1678,6 +1678,103 @@ async def test_apply_search_filter_bounds_db_fetch_by_page_and_cap():
 
 
 @pytest.mark.asyncio
+async def test_apply_search_filter_scopes_db_results_to_caller():
+    """
+    Regression test: `/v2/model/info?search=...` appends DB search results
+    AFTER the caller-scope filter runs on the listing, so a plain
+    model_name-contains DB fetch reintroduced restricted (key/team
+    allowlist miss) and experimental deployments that the pre-search
+    scoping had dropped. The combined (router + DB) result must be scoped
+    by `_filter_deployments_to_caller_scope` too.
+    """
+    from litellm.proxy.proxy_server import _apply_search_filter_to_models
+
+    # Router-side public row the caller is allowed to see.
+    public_model = {
+        "model_name": "gpt-4-public",
+        "litellm_params": {"model": "openai/gpt-4"},
+        "model_info": {"id": "public-id", "db_model": False},
+    }
+
+    # DB-only rows fetched by the search: an experimental deployment and
+    # a restricted model the caller's key does not allow.
+    db_experimental_row = MagicMock()
+    db_experimental_row.model_id = "db-experimental-id"
+    db_experimental_row.model_name = "gpt-4-experimental"
+    db_experimental_row.model_info = {
+        "id": "db-experimental-id",
+        "db_model": True,
+    }
+    db_experimental_row.litellm_params = {
+        "model": "openai/gpt-4",
+        "tags": ["experimental"],
+    }
+    db_restricted_row = MagicMock()
+    db_restricted_row.model_id = "db-restricted-id"
+    db_restricted_row.model_name = "gpt-4-restricted"
+    db_restricted_row.model_info = {
+        "id": "db-restricted-id",
+        "db_model": True,
+    }
+    db_restricted_row.litellm_params = {"model": "openai/gpt-4"}
+
+    prisma_client = MagicMock()
+    prisma_client.db.litellm_proxymodeltable.count = AsyncMock(return_value=2)
+    prisma_client.db.litellm_proxymodeltable.find_many = AsyncMock(
+        return_value=[db_experimental_row, db_restricted_row]
+    )
+    caller_user_row = MagicMock()
+    caller_user_row.teams = []
+    prisma_client.db.litellm_usertable.find_unique = AsyncMock(return_value=caller_user_row)
+
+    def _decrypt(rows):
+        return [
+            {
+                "model_name": r.model_name,
+                "litellm_params": r.litellm_params,
+                "model_info": r.model_info,
+            }
+            for r in rows
+        ]
+
+    proxy_config = MagicMock()
+    proxy_config.decrypt_model_list_from_db = _decrypt
+
+    router = MagicMock()
+    router.get_model_names = MagicMock(return_value=["gpt-4-public", "gpt-4-restricted"])
+    router.get_model_access_groups = MagicMock(return_value={})
+
+    non_admin = MagicMock(spec=UserAPIKeyAuth)
+    non_admin.user_role = LitellmUserRoles.INTERNAL_USER
+    non_admin.user_id = "user-1"
+    non_admin.team_id = None
+    non_admin.team_models = []
+    non_admin.models = ["gpt-4-public"]  # key allowlist: only the public row
+
+    filtered, _ = await _apply_search_filter_to_models(
+        all_models=[public_model],
+        search="gpt-4",
+        prisma_client=prisma_client,
+        proxy_config=proxy_config,
+        user_api_key_dict=non_admin,
+        page=1,
+        size=50,
+        sort_by=None,
+        llm_router=router,
+        show_experimental=False,
+    )
+
+    filtered_ids = {m["model_info"]["id"] for m in filtered}
+    assert "public-id" in filtered_ids, "allowed router row must stay in search results"
+    assert "db-experimental-id" not in filtered_ids, (
+        "experimental DB row appended by search must not bypass the experimental filter"
+    )
+    assert "db-restricted-id" not in filtered_ids, (
+        "DB row outside the key allowlist must not bypass the allowlist via search"
+    )
+
+
+@pytest.mark.asyncio
 async def test_filter_models_by_team_id_excludes_viewer_direct_access():
     """
     Regression test: when the UI picks a specific team in the Current Team
@@ -4757,7 +4854,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     assert enc1["LANGFUSE_PUBLIC_KEY"] != plaintext
     assert (
         decrypt_value_helper(
-            value=enc1["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+            value=enc1["LANGFUSE_PUBLIC_KEY"],
+            key="LANGFUSE_PUBLIC_KEY",
+            context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
         )
         == plaintext
     )
@@ -4766,7 +4865,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     enc2 = proxy_config._encrypt_env_variables_for_db(enc1)
     assert (
         decrypt_value_helper(
-            value=enc2["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+            value=enc2["LANGFUSE_PUBLIC_KEY"],
+            key="LANGFUSE_PUBLIC_KEY",
+            context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
         )
         == plaintext
     )
@@ -4778,7 +4879,9 @@ def test_encrypt_env_variables_for_db_is_idempotent(monkeypatch):
     for stacked in (enc3, enc4):
         assert (
             decrypt_value_helper(
-                value=stacked["LANGFUSE_PUBLIC_KEY"], key="LANGFUSE_PUBLIC_KEY"
+                value=stacked["LANGFUSE_PUBLIC_KEY"],
+                key="LANGFUSE_PUBLIC_KEY",
+                context="LiteLLM_Config:environment_variables.LANGFUSE_PUBLIC_KEY",
             )
             == plaintext
         )
@@ -7781,7 +7884,7 @@ def test_update_config_env_var_round_trip_not_double_encrypted(
     """
 
     def _fake_decrypt(
-        value, key=None, exception_type="error", return_original_value=False
+        value, key=None, context=None, exception_type="error", return_original_value=False
     ):
         if isinstance(value, str) and value.startswith("enc:"):
             return value[len("enc:") :]
@@ -9101,3 +9204,77 @@ def test_update_config_redacts_all_environment_variable_values(
         assert "db.internal" not in data["updated_values"]
     finally:
         restore()
+
+
+class TestRewriteUiFilesForRootPath:
+    def test_rewrites_real_files_and_skips_symlink_escape(self, tmp_path, caplog):
+        from litellm.proxy.proxy_server import _rewrite_ui_files_for_root_path
+
+        ui_dir = tmp_path / "ui"
+        ui_dir.mkdir()
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        inside_file = ui_dir / "app.html"
+        inside_file.write_text('src="/litellm-asset-prefix/bundle.js"', encoding="utf-8")
+        outside_file = outside_dir / "secret.html"
+        outside_file.write_text('src="/litellm-asset-prefix/bundle.js"', encoding="utf-8")
+        (ui_dir / "escape.html").symlink_to(outside_file)
+
+        _rewrite_ui_files_for_root_path(str(ui_dir), "/litellm-asset-prefix", "/custom/root")
+
+        assert inside_file.read_text(encoding="utf-8") == 'src="/custom/root/bundle.js"'
+        assert outside_file.read_text(encoding="utf-8") == 'src="/litellm-asset-prefix/bundle.js"'
+
+    def test_skips_binary_assets_and_survives_undecodable_file(self, tmp_path):
+        from litellm.proxy.proxy_server import _rewrite_ui_files_for_root_path
+
+        ui_dir = tmp_path / "ui"
+        ui_dir.mkdir()
+        (ui_dir / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (ui_dir / "blob.txt").write_bytes(b"\xff\xfe not utf8")
+
+        _rewrite_ui_files_for_root_path(str(ui_dir), "/litellm-asset-prefix", "/custom/root")
+
+        assert (ui_dir / "logo.png").read_bytes() == b"\x89PNG\r\n\x1a\n"
+        assert (ui_dir / "blob.txt").read_bytes() == b"\xff\xfe not utf8"
+
+
+@pytest.mark.asyncio
+async def test_setup_prisma_client_supports_startup_class_call() -> None:
+    from litellm.proxy.proxy_server import ProxyStartupEvent
+
+    result = await ProxyStartupEvent._setup_prisma_client(
+        database_url=None,
+        proxy_logging_obj=MagicMock(),
+        user_api_key_cache=MagicMock(),
+    )
+
+    assert result is None
+
+
+class TestTokenPepperStartupCheck:
+    def test_missing_pepper_fails_startup(self, monkeypatch) -> None:
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+        monkeypatch.delenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", raising=False)
+        with pytest.raises(ValueError, match="LITELLM_SALT_KEY"):
+            ProxyStartupEvent._check_token_pepper_configured()
+
+    def test_pepper_configured_passes(self, monkeypatch) -> None:
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.setenv("LITELLM_SALT_KEY", "test-pepper")
+        ProxyStartupEvent._check_token_pepper_configured()
+
+    def test_legacy_opt_in_warns_but_passes(self, monkeypatch, caplog) -> None:
+        import logging
+
+        from litellm.proxy.proxy_server import ProxyStartupEvent
+
+        monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
+        monkeypatch.setenv("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS", "1")
+        with caplog.at_level(logging.WARNING, logger="LiteLLM Proxy"):
+            ProxyStartupEvent._check_token_pepper_configured()
+        assert any("LITELLM_ALLOW_LEGACY_TOKEN_DIGESTS" in r.getMessage() for r in caplog.records)

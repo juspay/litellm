@@ -113,7 +113,8 @@ def update_db_model(db_model: Deployment, updated_patch: updateDeployment) -> Pr
     if updated_patch.litellm_params:
         # Encrypt any sensitive values
         encrypted_params = {
-            k: encrypt_value_helper(v) for k, v in updated_patch.litellm_params.model_dump(exclude_none=True).items()
+            k: encrypt_value_helper(v, context=f"LiteLLM_ProxyModelTable:litellm_params.{k}")
+            for k, v in updated_patch.litellm_params.model_dump(exclude_none=True).items()
         }
 
         merged_deployment_dict["litellm_params"].update(encrypted_params)  # type: ignore
@@ -479,7 +480,11 @@ async def _add_model_to_db(
     _litellm_params_dict = model_params.litellm_params.dict(exclude_none=True)
     _original_litellm_model_name = model_params.litellm_params.model
     for k, v in _litellm_params_dict.items():
-        encrypted_value = encrypt_value_helper(value=v, new_encryption_key=new_encryption_key)
+        encrypted_value = encrypt_value_helper(
+            value=v,
+            new_encryption_key=new_encryption_key,
+            context=f"LiteLLM_ProxyModelTable:litellm_params.{k}",
+        )
         model_params.litellm_params[k] = encrypted_value
     _data: dict = {
         "model_id": model_params.model_info.id,
@@ -1426,7 +1431,7 @@ async def update_model(
 
             ### ENCRYPT PARAMS ###
             for k, v in _new_litellm_params_dict.items():
-                encrypted_value = encrypt_value_helper(value=v)
+                encrypted_value = encrypt_value_helper(value=v, context=f"LiteLLM_ProxyModelTable:litellm_params.{k}")
                 model_params.litellm_params[k] = encrypted_value
 
             ### MERGE WITH EXISTING DATA ###
@@ -1726,4 +1731,6 @@ async def clear_cache():
             f"Cleared {len(db_model_ids)} DB models, preserved {len(config_models)} config models"
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Failed to clear cache and reload models. Due to error - {truncate_error_str(e)}")
+        verbose_proxy_logger.exception(
+            f"Failed to clear cache and reload models. Due to error - {truncate_error_str(e)}"
+        )

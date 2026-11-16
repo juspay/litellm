@@ -14,6 +14,7 @@ Symbols pinned here:
 from __future__ import annotations
 
 import hashlib
+import hmac
 from types import SimpleNamespace
 from typing import List
 from unittest.mock import AsyncMock, MagicMock
@@ -29,7 +30,8 @@ from litellm.proxy.utils import (
 )
 
 
-def test_hash_token_returns_sha256_hex_of_input() -> None:
+def test_hash_token_returns_sha256_hex_of_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     token = "sk-abcDEF12345"
     result = hash_token(token)
     expected = hashlib.sha256(token.encode()).hexdigest()
@@ -47,7 +49,17 @@ def test_hash_token_returns_sha256_hex_of_input() -> None:
     }
 
 
-def test_hash_token_empty_string_still_hashes() -> None:
+def test_hash_token_peppered_when_salt_key_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LITELLM_SALT_KEY", "unit-test-pepper")
+    token = "sk-abcDEF12345"
+    result = hash_token(token)
+    expected = hmac.new(b"unit-test-pepper", token.encode(), hashlib.sha256).hexdigest()
+    assert result == expected
+    assert result != hashlib.sha256(token.encode()).hexdigest()
+
+
+def test_hash_token_empty_string_still_hashes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     result = hash_token("")
     assert result == hashlib.sha256(b"").hexdigest()
 
@@ -111,7 +123,8 @@ def test_verify_password_unknown_format_returns_false() -> None:
     assert verify_password("x", "plaintext-not-supported") is False
 
 
-def test_hash_token_if_needed_handles_sk_prefix() -> None:
+def test_hash_token_if_needed_handles_sk_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LITELLM_SALT_KEY", raising=False)
     plain = "sk-secret-xyz"
     already_hashed = hashlib.sha256(plain.encode()).hexdigest()
     not_a_secret = "token-without-sk-prefix"

@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # # try except this script
-# set -e
+set -e
 
-# print current dir 
+# print current dir
 echo
 pwd
 
@@ -41,10 +41,11 @@ else
     fi
 fi
 NVM_VERSION="v0.40.4"
+NVM_COMMIT="62387b8f92aa012d48202747fd75c40850e5e261"
 NVM_CHECKSUM="4b7412c49960c7d31e8df72da90c1fb5b8cccb419ac99537b737028d497aba4f"
 NVM_SCRIPT=$(mktemp)
 trap 'rm -f "$NVM_SCRIPT"' EXIT
-curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o "$NVM_SCRIPT"
+curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_COMMIT}/install.sh" -o "$NVM_SCRIPT"
 if command -v sha256sum &>/dev/null; then
   echo "${NVM_CHECKSUM}  ${NVM_SCRIPT}" | sha256sum -c -
 elif command -v shasum &>/dev/null; then

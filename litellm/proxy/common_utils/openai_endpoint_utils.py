@@ -2,7 +2,7 @@
 Contains utils used by OpenAI compatible endpoints
 """
 
-from typing import Optional, Set
+from typing import Final, Optional, Set
 
 from fastapi import Request
 
@@ -10,6 +10,40 @@ from litellm.litellm_core_utils.sensitive_data_masker import SensitiveDataMasker
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 
 SENSITIVE_DATA_MASKER = SensitiveDataMasker()
+
+_CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "api_key",
+        "client_secret",
+        "vertex_credentials",
+        "vertex_ai_credentials",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "azure_ad_token",
+        "configurable_clientside_auth_params",
+    }
+)
+
+_INFRA_METADATA_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "api_base",
+        "base_url",
+        "aws_role_name",
+        "aws_bedrock_runtime_endpoint",
+        "aws_bedrock_project_id",
+        "vertex_project",
+        "use_vertex_project_id",
+        "s3_bucket_name",
+        "s3_encryption_key_id",
+        "gcs_bucket_name",
+        "auto_router_config_path",
+        "auto_router_config",
+        "complexity_router_config",
+        "adaptive_router_config",
+        "quality_router_config",
+        "configurable_clients",
+    }
+)
 
 
 def remove_sensitive_info_from_deployment(
@@ -19,6 +53,12 @@ def remove_sensitive_info_from_deployment(
     """
     Removes sensitive information from a deployment dictionary.
 
+    Credential keys are dropped entirely; other keys whose *values* look
+    sensitive are masked. Infra metadata keys (internal endpoint URLs, cloud
+    role/project identifiers, storage bucket names, router config paths) are
+    also dropped: they are not credentials, but they reveal the deployment
+    topology that a model/info caller has no need for.
+
     Args:
         deployment_dict (dict): The deployment dictionary to remove sensitive information from.
         excluded_keys (Optional[Set[str]]): Set of keys that should not be masked (exact match).
@@ -26,12 +66,8 @@ def remove_sensitive_info_from_deployment(
     Returns:
         dict: The modified deployment dictionary with sensitive information removed.
     """
-    deployment_dict["litellm_params"].pop("api_key", None)
-    deployment_dict["litellm_params"].pop("client_secret", None)
-    deployment_dict["litellm_params"].pop("vertex_credentials", None)
-    deployment_dict["litellm_params"].pop("vertex_ai_credentials", None)
-    deployment_dict["litellm_params"].pop("aws_access_key_id", None)
-    deployment_dict["litellm_params"].pop("aws_secret_access_key", None)
+    for key in _CREDENTIAL_KEYS | _INFRA_METADATA_KEYS:
+        deployment_dict["litellm_params"].pop(key, None)
 
     # Rate-limit config fields must never be masked — they are integers, not credentials.
     # The field names contain "key" which matches the masker's sensitive pattern, so we

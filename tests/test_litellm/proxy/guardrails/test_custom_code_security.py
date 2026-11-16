@@ -1,3 +1,6 @@
+import json
+import socket
+
 import pytest
 from fastapi import HTTPException
 
@@ -228,3 +231,358 @@ def test_augmented_assignment_works():
 def test_missing_apply_guardrail_raises():
     with pytest.raises(CustomCodeCompilationError, match="apply_guardrail"):
         _compile("x = 1\n")
+
+
+def test_http_allowlist_blocks_unlisted_host(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal")
+    result = primitives._http_host_is_allowed("https://evil.example.com/exfil")
+    assert result is False
+
+
+def test_http_allowlist_permits_listed_host(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal, api.example.com")
+    assert primitives._http_host_is_allowed("https://api.example.com/check") is True
+    assert primitives._http_host_is_allowed("https://moderation.internal/scan") is True
+
+
+def test_http_allowlist_exact_match_only(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "api.example.com")
+    assert primitives._http_host_is_allowed("https://api.example.com.evil.com/check") is False
+    assert primitives._http_host_is_allowed("https://sub.api.example.com/check") is False
+
+
+def test_http_allowlist_unset_means_unrestricted(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+    assert primitives._http_host_is_allowed("https://anything.example.com/x") is True
+
+
+@pytest.mark.asyncio
+async def test_http_request_blocked_by_allowlist_never_connects(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal")
+
+    async def _must_not_connect(*args, **kwargs):
+        raise AssertionError("allowlist must block before opening a connection")
+
+    monkeypatch.setattr(primitives, "get_async_httpx_client", _must_not_connect)
+    result = await primitives.http_request("https://evil.example.com/exfil")
+    assert result["success"] is False
+    assert "allowlist" in result["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "blocked_url",
+    [
+        "http://169.254.169.254/latest/meta-data/",
+        "http://metadata.google.internal/computeMetadata/v1/",
+        "http://127.0.0.1:8080/admin",
+        "http://localhost:4000/key/info",
+        "http://10.0.0.5/internal-api",
+        "http://192.168.1.1/config",
+        "http://[::1]:4000/",
+    ],
+)
+async def test_http_request_blocks_private_destinations_without_allowlist(monkeypatch, blocked_url):
+    """Regression test for guardrail SSRF (CWE-918): with no allowlist
+    configured, http_request must refuse loopback, link-local, RFC1918 and
+    cloud-metadata destinations instead of connecting to them."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+
+    async def _must_not_connect(*args, **kwargs):
+        raise AssertionError("SSRF validation must block before opening a connection")
+
+    monkeypatch.setattr(primitives, "get_async_httpx_client", _must_not_connect)
+    result = await primitives.http_request(blocked_url)
+    assert result["success"] is False
+    assert "Destination refused" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_http_request_blocks_public_host_resolving_to_private_ip(monkeypatch):
+    """A hostname that DNS-resolves to a private IP must be refused even though
+    the URL text looks public (DNS rebinding / internal DNS names)."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+    from litellm.litellm_core_utils import url_utils
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+
+    def _fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("10.1.2.3", port))]
+
+    monkeypatch.setattr(url_utils.socket, "getaddrinfo", _fake_getaddrinfo)
+
+    async def _must_not_connect(*args, **kwargs):
+        raise AssertionError("SSRF validation must block before opening a connection")
+
+    monkeypatch.setattr(primitives, "get_async_httpx_client", _must_not_connect)
+    result = await primitives.http_request("http://internal.example.com/api")
+    assert result["success"] is False
+    assert "Destination refused" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_http_request_allowlisted_internal_host_passes(monkeypatch):
+    """An admin allowlisted internal host bypasses SSRF validation (the
+    allowlist is the explicit trust mechanism for internal services)."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "moderation.internal")
+
+    def _must_not_resolve(url, *args, **kwargs):
+        raise AssertionError("allowlisted hosts must not go through DNS SSRF validation")
+
+    monkeypatch.setattr(
+        "litellm.litellm_core_utils.url_utils.validate_url",
+        _must_not_resolve,
+    )
+
+    class _FakeRawClient:
+        def build_request(self, **kwargs):
+            class _Resp:
+                status_code = 200
+                is_redirect = False
+                headers = {}
+
+                def json(self):
+                    return {"ok": True}
+
+                @property
+                def text(self):
+                    return "{}"
+
+            return object()
+
+        async def send(self, req, follow_redirects=False):
+            class _Resp:
+                status_code = 200
+                is_redirect = False
+                headers = {}
+
+                def json(self):
+                    return {"ok": True}
+
+                @property
+                def text(self):
+                    return "{}"
+
+            return _Resp()
+
+    class _FakeHandler:
+        client = _FakeRawClient()
+
+    monkeypatch.setattr(
+        primitives,
+        "get_async_httpx_client",
+        lambda **kwargs: _FakeHandler(),
+    )
+    result = await primitives.http_request("http://moderation.internal/scan")
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_http_request_redirect_to_private_destination_refused(monkeypatch):
+    """A public first hop that redirects to a private address must not be
+    followed: each redirect hop goes through destination validation."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+    from litellm.litellm_core_utils import url_utils
+
+    monkeypatch.delenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", raising=False)
+
+    def _fake_getaddrinfo(host, port, *args, **kwargs):
+        public = host in ("public.example.com",)
+        ip = "93.184.216.34" if public else "10.9.8.7"
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (ip, port))]
+
+    monkeypatch.setattr(url_utils.socket, "getaddrinfo", _fake_getaddrinfo)
+
+    hops = iter(
+        [
+            ("http://public.example.com/", "http://10.9.8.7/admin"),
+        ]
+    )
+
+    class _Resp:
+        def __init__(self, status_code, location=None):
+            self.status_code = status_code
+            self.headers = {"location": location} if location else {}
+            self.is_redirect = 300 <= status_code < 400
+
+        def json(self):
+            return {}
+
+        @property
+        def text(self):
+            return ""
+
+    class _FakeRawClient:
+        def build_request(self, **kwargs):
+            return object()
+
+        async def send(self, req, follow_redirects=False):
+            try:
+                url, next_loc = next(hops)
+                return _Resp(302, next_loc)
+            except StopIteration:
+                return _Resp(200)
+
+    class _FakeHandler:
+        client = _FakeRawClient()
+
+    monkeypatch.setattr(
+        primitives,
+        "get_async_httpx_client",
+        lambda **kwargs: _FakeHandler(),
+    )
+    result = await primitives.http_request("http://public.example.com/")
+    assert result["success"] is False or result["status_code"] == 0 or result["status_code"] == 302
+    assert result["status_code"] != 200 or result["body"] == {}
+
+
+@pytest.mark.asyncio
+async def test_apply_guardrail_enforces_execution_timeout(monkeypatch):
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code.custom_code_guardrail import (
+        CustomCodeExecutionTimeoutError,
+    )
+
+    import asyncio as _asyncio
+
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    async def _hang(*args, **kwargs):
+        await _asyncio.sleep(60)
+
+    monkeypatch.setenv("CUSTOM_CODE_HTTP_ALLOWED_HOSTS", "api.example.com")
+    monkeypatch.setattr(primitives, "_execute_http_request_validated", _hang)
+    slow_code = (
+        "async def apply_guardrail(inputs, request_data, input_type):\n"
+        "    await http_request('https://api.example.com/check')\n"
+        "    return {'action': 'allow'}\n"
+    )
+    guardrail = _compile(slow_code)
+    with pytest.raises(CustomCodeExecutionTimeoutError):
+        await guardrail.apply_guardrail({}, {}, "pre_call")
+
+
+# ── Regex / JSON primitive input size caps ───────────────────────────────────
+#
+# A pathological pattern (catastrophic backtracking) or a multi-megabyte
+# document must be refused before the regex engine starts work instead of
+# pinning a worker for the full guardrail deadline.
+
+
+def test_regex_primitives_refuse_oversized_text():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big = "a" * (primitives._MAX_REGEX_TEXT_CHARS + 1)
+
+    assert primitives.regex_match(big, "a") is False
+    assert primitives.regex_match_all(big, "a+") is False
+    assert primitives.regex_replace(big, "a", "b") == big
+    assert primitives.regex_find_all(big, "a") == []
+
+
+def test_regex_primitives_refuse_oversized_pattern():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big_pattern = "a" * (primitives._MAX_REGEX_PATTERN_CHARS + 1)
+
+    assert primitives.regex_match("text", big_pattern) is False
+    assert primitives.regex_match_all("text", big_pattern) is False
+    assert primitives.regex_replace("text", big_pattern, "b") == "text"
+    assert primitives.regex_find_all("text", big_pattern) == []
+
+
+def test_regex_primitives_accept_inputs_at_the_cap():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    at_cap_text = "hello world " * 100
+    assert len(at_cap_text) <= primitives._MAX_REGEX_TEXT_CHARS
+    assert primitives.regex_match(at_cap_text, r"world") is True
+    assert primitives.regex_find_all(at_cap_text, r"world") == ["world"] * 100
+
+
+def test_regex_primitives_still_backtracking_safe_on_capped_input():
+    """The cap alone does not make every pattern fast, but the classic
+    catastrophic-backtracking payload must at least be refused when it is
+    also oversized (text+pattern beyond the caps), and the cap keeps the
+    engine's work bounded."""
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    evil = "(a+)+$"[: primitives._MAX_REGEX_PATTERN_CHARS] + "a" * 32
+    assert len(evil) <= primitives._MAX_REGEX_PATTERN_CHARS
+    assert isinstance(primitives.regex_match("aaaaab", evil), bool)
+
+
+def test_json_parse_refuses_oversized_input():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big = '{"k":"' + "a" * primitives._MAX_JSON_CHARS + '"}'
+    assert len(big) > primitives._MAX_JSON_CHARS
+    assert primitives.json_parse(big) is None
+
+
+def test_json_parse_accepts_input_at_the_cap():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    assert primitives.json_parse('{"a": 1}') == {"a": 1}
+
+
+# --------------------------- json_schema_valid bounds ---------------------------
+
+
+def test_json_schema_valid_refuses_oversized_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    big = {"properties": {"k": "a" * primitives._MAX_JSON_SCHEMA_CHARS}}
+    assert len(json.dumps(big)) > primitives._MAX_JSON_SCHEMA_CHARS
+    assert primitives.json_schema_valid({"k": "v"}, big) is False
+
+
+def test_json_schema_valid_refuses_deeply_nested_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    schema: dict = {}
+    node = schema
+    for _ in range(primitives._MAX_JSON_SCHEMA_DEPTH + 5):
+        node["properties"] = {}
+        node = node["properties"]
+    assert primitives.json_schema_valid({}, schema) is False
+
+
+def test_json_schema_valid_refuses_non_object_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    assert primitives.json_schema_valid({}, "not-a-dict") is False
+    assert primitives.json_schema_valid({}, 12345) is False
+
+
+def test_json_schema_valid_accepts_normal_schema():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    schema = {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}
+    assert primitives.json_schema_valid({"name": "x"}, schema) is True
+    assert primitives.json_schema_valid({"name": 3}, schema) is False
+
+
+def test_json_schema_valid_accepts_schema_at_depth_cap():
+    from litellm.proxy.guardrails.guardrail_hooks.custom_code import primitives
+
+    schema: dict = {}
+    node = schema
+    for _ in range(primitives._MAX_JSON_SCHEMA_DEPTH - 10):
+        node["properties"] = {}
+        node = node["properties"]
+    node["type"] = "object"
+    assert primitives.json_schema_valid({}, schema) is True
