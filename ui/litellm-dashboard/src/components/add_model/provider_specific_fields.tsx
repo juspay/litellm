@@ -10,6 +10,7 @@ const { Link } = Typography;
 interface ProviderSpecificFieldsProps {
   selectedProvider: Providers;
   uploadProps?: UploadProps;
+  requireApiKey?: boolean;
 }
 
 interface ProviderCredentialField {
@@ -40,7 +41,10 @@ const getApiVersionFromApiBase = (apiBase: string): string | null => {
   return searchParams.get("api_version") || searchParams.get("api-version");
 };
 
-const mapFieldMetadataToUiField = (field: ProviderCredentialFieldMetadata): ProviderCredentialField => {
+const mapFieldMetadataToUiField = (
+  field: ProviderCredentialFieldMetadata,
+  options?: { requireApiKey?: boolean },
+): ProviderCredentialField => {
   const type: ProviderCredentialField["type"] =
     field.field_type === "password"
       ? "password"
@@ -57,7 +61,7 @@ const mapFieldMetadataToUiField = (field: ProviderCredentialFieldMetadata): Prov
     label: field.label,
     placeholder: field.placeholder ?? undefined,
     tooltip: field.tooltip ?? undefined,
-    required: field.required ?? false,
+    required: field.key === "api_key" && options?.requireApiKey ? true : field.required ?? false,
     type,
     options: field.options ?? undefined,
     defaultValue: field.default_value ?? undefined,
@@ -98,7 +102,7 @@ export const createCredentialFromModel = (provider: string, modelData: any): Cre
   return credential;
 };
 
-const ProviderSpecificFields: React.FC<ProviderSpecificFieldsProps> = ({ selectedProvider, uploadProps }) => {
+const ProviderSpecificFields: React.FC<ProviderSpecificFieldsProps> = ({ selectedProvider, uploadProps, requireApiKey = false }) => {
   const selectedProviderEnum = Providers[selectedProvider as keyof typeof Providers] as Providers;
   const form = Form.useFormInstance(); // Get form instance from context
 
@@ -145,7 +149,12 @@ const ProviderSpecificFields: React.FC<ProviderSpecificFieldsProps> = ({ selecte
     const cachedFields =
       providerFieldsByDisplayName[selectedProviderEnum] ?? providerFieldsByDisplayName[selectedProvider];
     if (cachedFields) {
-      return cachedFields;
+      return requireApiKey
+        ? cachedFields.map((field) => ({
+            ...field,
+            required: field.key === "api_key" ? true : field.required,
+          }))
+        : cachedFields;
     }
 
     if (!providerMetadata) {
@@ -162,7 +171,7 @@ const ProviderSpecificFields: React.FC<ProviderSpecificFieldsProps> = ({ selecte
       return [];
     }
 
-    const mapped = providerInfo.credential_fields.map(mapFieldMetadataToUiField);
+    const mapped = providerInfo.credential_fields.map((field) => mapFieldMetadataToUiField(field, { requireApiKey }));
     providerFieldsByDisplayName[providerInfo.provider_display_name] = mapped;
     if (providerInfo.provider) {
       providerFieldsByDisplayName[providerInfo.provider] = mapped;
@@ -171,7 +180,7 @@ const ProviderSpecificFields: React.FC<ProviderSpecificFieldsProps> = ({ selecte
       providerFieldsByDisplayName[providerInfo.litellm_provider] = mapped;
     }
     return mapped;
-  }, [selectedProviderEnum, selectedProvider, providerMetadata]);
+  }, [selectedProviderEnum, selectedProvider, providerMetadata, requireApiKey]);
 
   const hasApiVersionField = React.useMemo(() => allFields.some((field) => field.key === "api_version"), [allFields]);
   const lastInferredApiVersionRef = React.useRef<string | null>(null);

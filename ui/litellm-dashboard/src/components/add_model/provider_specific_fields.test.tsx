@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { Form } from "antd";
+import { Button, Form } from "antd";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { Providers } from "../provider_info_helpers";
 import ProviderSpecificFields from "./provider_specific_fields";
@@ -180,6 +180,28 @@ describe("ProviderSpecificFields", () => {
       const apiBaseInput = screen.getByPlaceholderText("https://...");
       expect(apiBaseInput).toBeInTheDocument();
       expect(apiBaseInput).toHaveAttribute("type", "text");
+    });
+  });
+
+  it("requires the api_key field when requireApiKey is enabled", async () => {
+    const queryClient = createQueryClient();
+    const onFinish = vi.fn();
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Form onFinish={onFinish}>
+          <ProviderSpecificFields selectedProvider={"Hosted_Vllm" as Providers} requireApiKey />
+          <Button htmlType="submit">Submit</Button>
+        </Form>
+      </QueryClientProvider>,
+    );
+
+    await screen.findByLabelText("vLLM API Key");
+    fireEvent.click(screen.getByText("Submit"));
+
+    await waitFor(() => {
+      expect(onFinish).not.toHaveBeenCalled();
+      expect(screen.getByText("Required")).toBeInTheDocument();
     });
   });
 
