@@ -29,16 +29,7 @@ _GCS_PREPARATION_LIMITER = anyio.CapacityLimiter(1)
 _GCS_REDACTION_PROCESS_LIMITER = anyio.CapacityLimiter(1)
 _GCS_SANITIZATION_THREAD_LIMITER = anyio.CapacityLimiter(1)
 
-_ALERT_TASKS: set[asyncio.Task[None]] = set()
-
-
-def _consume_alert_task(task: asyncio.Task[None]) -> None:
-    _ALERT_TASKS.discard(task)
-    if task.cancelled():
-        return
-    exception = task.exception()
-    if exception is not None:
-        verbose_logger.exception(f"alert system task failed: {exception}")
+MAX_INFLIGHT_ALERT_SCANS = 100
 
 
 def _sanitize_for_json(obj, seen=None):
@@ -114,7 +105,11 @@ async def _prepare_gcs_payload_async(value, log_type):
 class ProductionGCSLogger(CustomLogger):
     """Production logger with async GCS bucket support using custom folder structures"""
 
-    def __init__(self, alert_system: AlertSystem | None = None):
+    def __init__(
+        self,
+        alert_system: AlertSystem | None = None,
+        max_inflight_alert_scans: int = MAX_INFLIGHT_ALERT_SCANS,
+    ):
         super().__init__()
         self.success_bucket_name = os.getenv("GCS_SUCCESS_BUCKET_NAME")
         self.error_bucket_name = os.getenv("GCS_ERROR_BUCKET_NAME")
@@ -124,6 +119,8 @@ class ProductionGCSLogger(CustomLogger):
         self.gcs_base = GCSBucketBase(bucket_name=self.success_bucket_name)
 
         self.alert_system = alert_system or AlertSystem.from_env()
+        self._max_inflight_alert_scans = max_inflight_alert_scans
+        self._alert_tasks: set[asyncio.Task[None]] = set()
 
         if not self.success_bucket_name or not self.error_bucket_name:
             verbose_logger.warning("⚠️  GCS bucket names not set. GCS logging disabled.")
@@ -133,15 +130,28 @@ class ProductionGCSLogger(CustomLogger):
     def _fire_alert_scan(self, kwargs, response_obj) -> None:
         if not self.alert_system.enabled:
             return
+        if len(self._alert_tasks) >= self._max_inflight_alert_scans:
+            verbose_logger.warning(
+                f"alert system: {len(self._alert_tasks)} scans already in flight, skipping scan for this request"
+            )
+            return
         try:
             task = asyncio.create_task(
                 self.alert_system.process_success_event(kwargs, response_obj),
                 name="alert-scan",
             )
-            _ALERT_TASKS.add(task)
-            task.add_done_callback(_consume_alert_task)
+            self._alert_tasks.add(task)
+            task.add_done_callback(self._consume_alert_task)
         except Exception as e:  # noqa: BLE001  # scheduling the alert scan must never break logging
             verbose_logger.exception(f"❌ alert system: could not schedule scan task: {e}")
+
+    def _consume_alert_task(self, task: asyncio.Task[None]) -> None:
+        self._alert_tasks.discard(task)
+        if task.cancelled():
+            return
+        exception = task.exception()
+        if exception is not None:
+            verbose_logger.error("alert system task failed", exc_info=exception)
 
     async def _upload_to_gcs_async(self, data: dict, bucket_name: str, log_type: str):
         """Upload log data to GCS bucket using async I/O"""

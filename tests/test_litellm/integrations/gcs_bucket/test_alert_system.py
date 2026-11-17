@@ -138,6 +138,7 @@ def _run_pipeline(
     webhook_url: str = "http://sink.test/alert",
     response: dict | None = None,
     enabled: bool = True,
+    api_key: str = "k",
 ) -> tuple[list[dict], list[str]]:
     calls: list[dict] = []
     logged: list[str] = []
@@ -152,7 +153,7 @@ def _run_pipeline(
 
     system = AlertSystem(
         webhook_url=webhook_url,
-        api_key="k",
+        api_key=api_key,
         xor_url="http://judge.test/v1/decisions",
         transport=transport,
         alert_log=logged.append,
@@ -216,10 +217,23 @@ def test_disabled_system_neither_judges_logs_nor_posts_exfil():
     [(None, True), ("true", True), ("false", False), (" False ", False), ("garbage", True)],
 )
 def test_from_env_reads_alerts_enabled_flag(monkeypatch, raw, expected):
+    monkeypatch.setenv("JUSPAY_API_KEY", "k")
     monkeypatch.delenv("LITELLM_ALERTS_ENABLED", raising=False)
     if raw is not None:
         monkeypatch.setenv("LITELLM_ALERTS_ENABLED", raw)
     assert AlertSystem.from_env().enabled is expected
+
+
+def test_no_judge_configured_neither_scans_logs_nor_posts_exfil():
+    calls, logged = _run_pipeline(0.95, api_key="")
+    assert calls == []
+    assert logged == []
+
+
+def test_from_env_disabled_without_judge_api_key(monkeypatch):
+    monkeypatch.delenv("JUSPAY_API_KEY", raising=False)
+    monkeypatch.setenv("LITELLM_ALERTS_ENABLED", "true")
+    assert AlertSystem.from_env().enabled is False
 
 
 def test_webhook_fires_gate1_only_when_judge_errors():

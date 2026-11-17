@@ -602,7 +602,7 @@ class AlertSystem:
         alert_log: Callable[[str], None] = verbose_logger.warning,
         enabled: bool = True,
     ) -> None:
-        self.enabled = enabled
+        self.enabled = enabled and bool(api_key)
         self.webhook_url = webhook_url
         self._alert_log = alert_log
         self.api_key = api_key
@@ -610,9 +610,7 @@ class AlertSystem:
         self.xor_model = xor_model
         self.judge_threshold = judge_threshold
         self._transport = transport
-        self._judge = (
-            JudgeClient(xor_url=xor_url, xor_model=xor_model, api_key=api_key, transport=transport) if api_key else None
-        )
+        self._judge = JudgeClient(xor_url=xor_url, xor_model=xor_model, api_key=api_key, transport=transport)
 
     @classmethod
     def from_env(cls) -> "AlertSystem":
@@ -621,13 +619,17 @@ class AlertSystem:
             threshold = float(threshold_raw) if threshold_raw is not None else DEFAULT_JUDGE_THRESHOLD
         except ValueError:
             threshold = DEFAULT_JUDGE_THRESHOLD
+        api_key = get_secret_str("JUSPAY_API_KEY") or ""
+        enabled = get_secret_bool("LITELLM_ALERTS_ENABLED", True) is not False
+        if enabled and not api_key:
+            verbose_logger.warning("alert system: disabled because JUSPAY_API_KEY is not set (no judge configured)")
         return cls(
             webhook_url=os.getenv("LITELLM_ALERT_WEBHOOK_URL", ""),
-            api_key=get_secret_str("JUSPAY_API_KEY") or "",
+            api_key=api_key,
             xor_url=os.getenv("XOR_DECISIONS_URL", DEFAULT_XOR_DECISIONS_URL),
             xor_model=os.getenv("XOR_DECISIONS_MODEL", DEFAULT_XOR_DECISIONS_MODEL),
             judge_threshold=threshold,
-            enabled=get_secret_bool("LITELLM_ALERTS_ENABLED", True) is not False,
+            enabled=enabled,
         )
 
     async def process_success_event(self, kwargs: Mapping[str, object], response_obj: object) -> None:
@@ -703,11 +705,7 @@ class AlertSystem:
             "flagged_assistant_text": flagged_assistant_text,
             "gate1_findings": [{"matcher": finding.matcher, "evidence": finding.evidence} for finding in findings],
         }
-        verdict = (
-            await self._judge.judge(state)
-            if self._judge is not None
-            else _error_verdict("no JUSPAY_API_KEY; gate-1-only alert")
-        )
+        verdict = await self._judge.judge(state)
         if verdict.malicious_probability is not None and verdict.malicious_probability < self.judge_threshold:
             return
         alert = {
