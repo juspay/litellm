@@ -68,3 +68,142 @@ Path: `model/{date}_{correlation_id}.json`
 **Error:** Error details, user info, model info, request context
 
 Done! 🎉
+
+## Independent egress alerts
+
+Configure the alert callback separately from GCS logging:
+
+```yaml
+litellm_settings:
+  callbacks:
+    - litellm.integrations.egress_alerts.alert_logger
+```
+
+When upgrading from the alert PR, add this callback even if you keep the GCS
+logger callback. The GCS logger no longer schedules alert scans. Remove the GCS
+callback and bucket variables if uploads are unwanted. The alert callback does
+not require GCS buckets or credentials and ignores `x-litellm-disable-logging`.
+`LITELLM_ALERTS_ENABLED` sets the startup default (enabled when unset).
+
+### Enable or disable through the database
+
+Once the callback is installed, set `litellm_settings.egress_alerts_enabled` through
+`POST /config/update` using a proxy admin key. Use JSON booleans, not strings:
+
+```bash
+curl -X POST "$LITELLM_PROXY_URL/config/update" \
+  -H "Authorization: Bearer $LITELLM_ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"litellm_settings":{"egress_alerts_enabled":false}}'
+```
+
+Send `true` to enable again. This persists in the existing `LiteLLM_Config` row;
+no schema migration is needed. The DB boolean overrides `LITELLM_ALERTS_ENABLED`,
+including when the environment default is false. Without a boolean override,
+the startup environment default applies. Use explicit `true`/`false` updates;
+deleting the DB key is not a supported runtime reset.
+
+This requires a database connection and `STORE_MODEL_IN_DB=True` (or
+`general_settings.store_model_in_db: true`) on every replica. The existing
+30-second background refresh propagates changes across replicas; this is
+eventual consistency, not an instantaneous cluster-wide switch. The update
+endpoint also refreshes the worker handling the request. Refresh errors can
+delay propagation and leave the last loaded setting active. Refresh still works
+when `supported_db_objects` excludes models. The callback reads only in-memory
+state on each event, with no per-request database query.
+
+Disabling stops new scans and queued scans that have not started processing.
+Scans already running may finish and emit an alert. This flag controls scanning,
+judging, alert logs, and webhook delivery together. Keep the callback registered
+so re-enabling works without restarting. Installing this code and callback, or
+enabling DB refresh for the first time, still requires the initial rollout.
+
+The scanner checks all chat response choices and tool calls. Flagged calls retain
+complete arguments for judgment; if the serialized judge request exceeds 64 KB,
+the system emits an unverified alert instead of judging truncated evidence.
+The judge calls the running proxy's `llm_router.adecisions` directly, using the
+existing `xor-latest` model deployment and its configured backend credentials.
+There is no HTTP round trip through another LiteLLM gateway. Set
+`XOR_DECISIONS_MODEL` only to select a different configured model alias. The alert
+feature no longer reads `JUSPAY_API_KEY` or `XOR_DECISIONS_URL`; retain any secrets
+that the model deployment itself requires. The selected deployment must support
+the Decisions API. The router still connects to its configured inference backend;
+private routing depends on that deployment's endpoint and network setup.
+
+Judge calls have a 15-second total timeout, including router retries. A missing
+router/model, timeout, provider error, or invalid response produces an unverified
+alert. Internal judge calls set `no-log` to suppress ordinary request callbacks
+(subject to the proxy's existing logging policy), and a task-local recursion guard
+prevents their callbacks from scheduling another alert scan. This guard also
+covers background callback tasks created during the judge call.
+
+An alert is emitted when
+maliciousness or unauthorized-transfer probability reaches
+`ALERT_JUDGE_THRESHOLD` (default 0.7). Missing or invalid judgments produce an
+`unverified` alert. These are suspected actions in model output, not proof that a
+tool executed or data left the system.
+
+Application warning logs contain only a generated alert ID, a UUID-validated
+request ID for correlation when available, assessment status,
+risk scores, rule names, and finding count. They exclude conversation content,
+arguments, user identifiers, and destination URLs. The optional
+`LITELLM_ALERT_WEBHOOK_URL` receives detailed evidence, including sensitive
+content; configure it only for a trusted, access-controlled incident destination.
+The judge also receives sensitive evidence and must be an approved service.
+
+Each callback instance permits four simultaneous alert pipelines and up to 64
+pending events. CPU-heavy scanning, judge-request preparation and size validation, and alert
+serialization run in a reusable child process, with at most one CPU job per proxy
+process at a time. Input snapshot preparation and application log emission run
+in a bounded thread; callback objects are not sent to the child. Judge and
+webhook network waits remain asynchronous. This isolates regex execution from
+the proxy's GIL, but input snapshotting and process communication still incur
+some overhead and share machine resources. Excess events produce a structured `egress_alert_dropped` error. Duplicate call IDs are
+suppressed while pending and for the last 1024 completed requests in that
+process. Webhook timeouts, transport errors, HTTP 408/429, and server errors are
+retried up to three total attempts with exponential delay. Retries reuse the
+alert ID and `Idempotency-Key`; receivers should deduplicate using that ID.
+Delivery exhaustion produces a structured error. Monitor these events alongside alert
+summaries. Pending work is in memory and is not durable across process exits.
+
+### GCP log-based alerts
+
+Set `JSON_LOGS=true` in the proxy environment before startup and enable workload
+log collection in GKE. LiteLLM's JSON formatter promotes alert fields to the top
+level of each single-line JSON record, so Cloud Logging exposes them under
+`jsonPayload`. Without JSON logging, the console formatter adds a text prefix
+and field-based Cloud Logging queries are not available. The old
+`ALERT LOG STARTED` / `ALERT LOG END` delimiters are no longer emitted; replace
+any filters that match those markers.
+
+In Logs Explorer, scope the query to your workload and match assessed alerts:
+
+```text
+resource.type="k8s_container"
+resource.labels.namespace_name="YOUR_NAMESPACE"
+resource.labels.container_name="YOUR_CONTAINER"
+jsonPayload.event_type="egress_alert"
+jsonPayload.assessment_status="assessed"
+```
+
+Use `jsonPayload.assessment_status="unverified"` for a separate policy covering
+missing or failed judgment. Both statuses include
+`jsonPayload.alert_type="LLM_EGRESS_EXFILTRATION"` and severity `WARNING`.
+
+Create a separate operational policy for failed processing, exhausted webhook
+delivery, and dropped scans:
+
+```text
+resource.type="k8s_container"
+resource.labels.namespace_name="YOUR_NAMESPACE"
+resource.labels.container_name="YOUR_CONTAINER"
+jsonPayload.event_type=("egress_alert_processing_failed" OR "egress_alert_delivery_failed" OR "egress_alert_dropped")
+```
+
+These operational events use severity `ERROR` and omit raw inputs, destinations,
+and exception text. Delivery failures include the alert ID for correlation.
+Confirm matching entries in Logs Explorer, then create a log-based alerting
+policy with the desired notification channel and notification frequency.
+`LITELLM_ALERT_WEBHOOK_URL` is optional when Cloud Monitoring handles notifications.
+Cloud Logging notification rate limits mean matching log entries do not always
+produce separate notifications.

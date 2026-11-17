@@ -1542,6 +1542,7 @@ DEFAULT_PROMPT_INJECTION_SIMILARITY_THRESHOLD = float(os.getenv("DEFAULT_PROMPT_
 LENGTH_OF_LITELLM_GENERATED_KEY = int(os.getenv("LENGTH_OF_LITELLM_GENERATED_KEY", 16))
 SECRET_MANAGER_REFRESH_INTERVAL = int(os.getenv("SECRET_MANAGER_REFRESH_INTERVAL", 86400))
 LITELLM_SETTINGS_SAFE_DB_OVERRIDES = [
+    "egress_alerts_enabled",
     "default_internal_user_params",
     "default_team_params",
     "public_mcp_servers",
