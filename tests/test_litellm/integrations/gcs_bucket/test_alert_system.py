@@ -241,6 +241,22 @@ def test_from_env_reads_alerts_enabled_flag(monkeypatch, raw, expected):
     assert AlertSystem.from_env().enabled is expected
 
 
+@pytest.mark.parametrize("env_default", ["true", "false"])
+def test_existing_system_reads_runtime_override_with_environment_fallback(monkeypatch, env_default):
+    import litellm
+
+    monkeypatch.setenv("LITELLM_ALERTS_ENABLED", env_default)
+    monkeypatch.setattr(litellm, "egress_alerts_enabled", None)
+    system = AlertSystem.from_env()
+    assert system.enabled is (env_default == "true")
+    for override in (False, True, False, True):
+        monkeypatch.setattr(litellm, "egress_alerts_enabled", override)
+        assert system.enabled is override
+    for invalid in (None, "false", "true", 0, 1):
+        monkeypatch.setattr(litellm, "egress_alerts_enabled", invalid)
+        assert system.enabled is (env_default == "true")
+
+
 def test_webhook_fires_gate1_only_when_judge_errors():
     calls: list[dict] = []
 

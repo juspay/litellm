@@ -83,7 +83,40 @@ When upgrading from the alert PR, add this callback even if you keep the GCS
 logger callback. The GCS logger no longer schedules alert scans. Remove the GCS
 callback and bucket variables if uploads are unwanted. The alert callback does
 not require GCS buckets or credentials and ignores `x-litellm-disable-logging`.
-Set `LITELLM_ALERTS_ENABLED=false` to disable alerts explicitly.
+`LITELLM_ALERTS_ENABLED` sets the startup default (enabled when unset).
+
+### Enable or disable through the database
+
+Once the callback is installed, set `litellm_settings.egress_alerts_enabled` through
+`POST /config/update` using a proxy admin key. Use JSON booleans, not strings:
+
+```bash
+curl -X POST "$LITELLM_PROXY_URL/config/update" \
+  -H "Authorization: Bearer $LITELLM_ADMIN_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"litellm_settings":{"egress_alerts_enabled":false}}'
+```
+
+Send `true` to enable again. This persists in the existing `LiteLLM_Config` row;
+no schema migration is needed. The DB boolean overrides `LITELLM_ALERTS_ENABLED`,
+including when the environment default is false. Without a boolean override,
+the startup environment default applies. Use explicit `true`/`false` updates;
+deleting the DB key is not a supported runtime reset.
+
+This requires a database connection and `STORE_MODEL_IN_DB=True` (or
+`general_settings.store_model_in_db: true`) on every replica. The existing
+30-second background refresh propagates changes across replicas; this is
+eventual consistency, not an instantaneous cluster-wide switch. The update
+endpoint also refreshes the worker handling the request. Refresh errors can
+delay propagation and leave the last loaded setting active. Refresh still works
+when `supported_db_objects` excludes models. The callback reads only in-memory
+state on each event, with no per-request database query.
+
+Disabling stops new scans and queued scans that have not started processing.
+Scans already running may finish and emit an alert. This flag controls scanning,
+judging, alert logs, and webhook delivery together. Keep the callback registered
+so re-enabling works without restarting. Installing this code and callback, or
+enabling DB refresh for the first time, still requires the initial rollout.
 
 The scanner checks all chat response choices and tool calls. Flagged calls retain
 complete arguments for judgment; if the serialized judge request exceeds 64 KB,

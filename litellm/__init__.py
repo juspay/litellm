@@ -1415,6 +1415,7 @@ disable_hf_tokenizer_download: Optional[bool] = (
     None  # disable huggingface tokenizer download. Defaults to openai clk100
 )
 global_disable_no_log_param: bool = False
+egress_alerts_enabled: Optional[bool] = None
 
 ### CLI UTILITIES ###
 from litellm.litellm_core_utils.cli_token_utils import get_litellm_gateway_api_key

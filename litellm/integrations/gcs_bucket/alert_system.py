@@ -18,6 +18,7 @@ import anyio.to_thread
 import httpx
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter, ValidationError
 
+import litellm
 from litellm._logging import verbose_logger
 from litellm.secret_managers.main import get_secret_bool, get_secret_str
 from litellm.types.decisions import (
@@ -639,11 +640,11 @@ class AlertSystem:
         judge_threshold: float = DEFAULT_JUDGE_THRESHOLD,
         transport: Transport = _default_transport,
         alert_log: Callable[[str], None] = verbose_logger.warning,
-        enabled: bool = True,
+        enabled: bool | Callable[[], bool] = True,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._sleep = sleep
-        self.enabled = enabled
+        self._enabled = enabled
         self.webhook_url = webhook_url
         self._alert_log = alert_log
         self.api_key = api_key
@@ -655,8 +656,13 @@ class AlertSystem:
             JudgeClient(xor_url=xor_url, xor_model=xor_model, api_key=api_key, transport=transport) if api_key else None
         )
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled() if callable(self._enabled) else self._enabled
+
     @classmethod
     def from_env(cls) -> "AlertSystem":
+        default_enabled = get_secret_bool("LITELLM_ALERTS_ENABLED", True) is not False
         threshold_raw = os.getenv("ALERT_JUDGE_THRESHOLD")
         try:
             threshold = float(threshold_raw) if threshold_raw is not None else DEFAULT_JUDGE_THRESHOLD
@@ -668,7 +674,9 @@ class AlertSystem:
             xor_url=os.getenv("XOR_DECISIONS_URL", DEFAULT_XOR_DECISIONS_URL),
             xor_model=os.getenv("XOR_DECISIONS_MODEL", DEFAULT_XOR_DECISIONS_MODEL),
             judge_threshold=threshold if math.isfinite(threshold) and 0 <= threshold <= 1 else DEFAULT_JUDGE_THRESHOLD,
-            enabled=get_secret_bool("LITELLM_ALERTS_ENABLED", True) is not False,
+            enabled=lambda: (
+                litellm.egress_alerts_enabled if isinstance(litellm.egress_alerts_enabled, bool) else default_enabled
+            ),
         )
 
     async def process_success_event(self, kwargs: Mapping[str, object], response_obj: object) -> None:

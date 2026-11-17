@@ -5871,6 +5871,8 @@ class ProxyConfig:
 
                 # update llm router
                 await self._update_llm_router(new_models=new_models, proxy_logging_obj=proxy_logging_obj)
+            else:
+                await self.get_config()
 
             db_general_settings = await get_config_param(prisma_client, "general_settings")
 
