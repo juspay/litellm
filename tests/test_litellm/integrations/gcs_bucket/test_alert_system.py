@@ -1,7 +1,11 @@
 import asyncio
 import json
 
+import pytest
+
 from litellm.integrations.gcs_bucket.alert_system import (
+    ALERT_LOG_END,
+    ALERT_LOG_STARTED,
     AlertSystem,
     EgressScanner,
     ScanFinding,
@@ -129,8 +133,14 @@ def _exfil_response() -> dict:
     }
 
 
-def _run_pipeline(malicious: float) -> list[dict]:
+def _run_pipeline(
+    malicious: float,
+    webhook_url: str = "http://sink.test/alert",
+    response: dict | None = None,
+    enabled: bool = True,
+) -> tuple[list[dict], list[str]]:
     calls: list[dict] = []
+    logged: list[str] = []
 
     async def transport(url, headers, body, timeout):
         from litellm.integrations.gcs_bucket.alert_system import HttpResult
@@ -141,28 +151,75 @@ def _run_pipeline(malicious: float) -> list[dict]:
         return HttpResult(status_code=200, json_body={"ok": True})
 
     system = AlertSystem(
-        webhook_url="http://sink.test/alert",
+        webhook_url=webhook_url,
         api_key="k",
         xor_url="http://judge.test/v1/decisions",
         transport=transport,
+        alert_log=logged.append,
+        enabled=enabled,
     )
-    asyncio.run(system.process_success_event({"model": "m", "litellm_params": {}}, _exfil_response()))
-    return calls
+    asyncio.run(
+        system.process_success_event({"model": "m", "litellm_params": {}}, response or _exfil_response())
+    )
+    return calls, logged
+
+
+def _logged_alert(entry: str) -> dict:
+    start, body, end = entry.split("\n")
+    assert (start, end) == (ALERT_LOG_STARTED, ALERT_LOG_END)
+    return json.loads(body)
 
 
 def test_webhook_fires_with_data_sensitivity_when_judge_scores_high():
-    calls = _run_pipeline(0.95)
+    calls, logged = _run_pipeline(0.95)
     webhook = [c for c in calls if c["url"] == "http://sink.test/alert"]
     assert len(webhook) == 1
     alert = json.loads(webhook[0]["body"])
     assert alert["verdict"]["malicious_probability"] == 0.95
     assert alert["verdict"]["data_sensitivity_probability"] == 0.9
     assert alert["verdict"]["intent"] == "sensitive_egress"
+    assert len(logged) == 1
+    assert _logged_alert(logged[0]) == alert
+
+
+def test_alert_logged_between_delimiters_when_webhook_unset():
+    calls, logged = _run_pipeline(0.95, webhook_url="")
+    assert [c["url"] for c in calls] == ["http://judge.test/v1/decisions"]
+    assert len(logged) == 1
+    alert = _logged_alert(logged[0])
+    assert alert["alert_type"] == "LLM_EGRESS_EXFILTRATION"
+    assert alert["verdict"]["malicious_probability"] == 0.95
+    assert alert["evidence"]["destination_host"] == "collector.example"
 
 
 def test_webhook_suppressed_when_judge_scores_low():
-    calls = _run_pipeline(0.1)
+    calls, logged = _run_pipeline(0.1)
     assert [c for c in calls if c["url"] == "http://sink.test/alert"] == []
+    assert logged == []
+
+
+def test_benign_response_neither_judged_nor_logged_when_webhook_unset():
+    benign = {"choices": [{"message": {"content": "all done", "tool_calls": None}}]}
+    calls, logged = _run_pipeline(0.95, webhook_url="", response=benign)
+    assert calls == []
+    assert logged == []
+
+
+def test_disabled_system_neither_judges_logs_nor_posts_exfil():
+    calls, logged = _run_pipeline(0.95, enabled=False)
+    assert calls == []
+    assert logged == []
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, True), ("true", True), ("false", False), (" False ", False), ("garbage", True)],
+)
+def test_from_env_reads_alerts_enabled_flag(monkeypatch, raw, expected):
+    monkeypatch.delenv("LITELLM_ALERTS_ENABLED", raising=False)
+    if raw is not None:
+        monkeypatch.setenv("LITELLM_ALERTS_ENABLED", raw)
+    assert AlertSystem.from_env().enabled is expected
 
 
 def test_webhook_fires_gate1_only_when_judge_errors():
