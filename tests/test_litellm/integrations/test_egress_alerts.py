@@ -73,7 +73,9 @@ def test_pending_capacity_and_concurrency_are_bounded(caplog):
 
     asyncio.run(run())
     assert len(calls) == 2
-    assert "scan dropped" in caplog.text
+    entry = next(json.loads(r.getMessage()) for r in caplog.records if "egress_alert_dropped" in r.getMessage())
+    assert entry["event_type"] == "egress_alert_dropped"
+    assert entry["severity"] == "ERROR"
 
 
 def test_callback_can_be_loaded_from_proxy_configuration():

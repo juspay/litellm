@@ -110,10 +110,52 @@ process at a time. Input snapshot preparation and application log emission run
 in a bounded thread; callback objects are not sent to the child. Judge and
 webhook network waits remain asynchronous. This isolates regex execution from
 the proxy's GIL, but input snapshotting and process communication still incur
-some overhead and share machine resources. Excess events produce a `scan dropped` warning. Duplicate call IDs are
+some overhead and share machine resources. Excess events produce a structured `egress_alert_dropped` error. Duplicate call IDs are
 suppressed while pending and for the last 1024 completed requests in that
 process. Webhook timeouts, transport errors, HTTP 408/429, and server errors are
 retried up to three total attempts with exponential delay. Retries reuse the
 alert ID and `Idempotency-Key`; receivers should deduplicate using that ID.
-Delivery exhaustion produces a warning. Monitor these warnings alongside alert
+Delivery exhaustion produces a structured error. Monitor these events alongside alert
 summaries. Pending work is in memory and is not durable across process exits.
+
+### GCP log-based alerts
+
+Set `JSON_LOGS=true` in the proxy environment before startup and enable workload
+log collection in GKE. LiteLLM's JSON formatter promotes alert fields to the top
+level of each single-line JSON record, so Cloud Logging exposes them under
+`jsonPayload`. Without JSON logging, the console formatter adds a text prefix
+and field-based Cloud Logging queries are not available. The old
+`ALERT LOG STARTED` / `ALERT LOG END` delimiters are no longer emitted; replace
+any filters that match those markers.
+
+In Logs Explorer, scope the query to your workload and match assessed alerts:
+
+```text
+resource.type="k8s_container"
+resource.labels.namespace_name="YOUR_NAMESPACE"
+resource.labels.container_name="YOUR_CONTAINER"
+jsonPayload.event_type="egress_alert"
+jsonPayload.assessment_status="assessed"
+```
+
+Use `jsonPayload.assessment_status="unverified"` for a separate policy covering
+missing or failed judgment. Both statuses include
+`jsonPayload.alert_type="LLM_EGRESS_EXFILTRATION"` and severity `WARNING`.
+
+Create a separate operational policy for failed processing, exhausted webhook
+delivery, and dropped scans:
+
+```text
+resource.type="k8s_container"
+resource.labels.namespace_name="YOUR_NAMESPACE"
+resource.labels.container_name="YOUR_CONTAINER"
+jsonPayload.event_type=("egress_alert_processing_failed" OR "egress_alert_delivery_failed" OR "egress_alert_dropped")
+```
+
+These operational events use severity `ERROR` and omit raw inputs, destinations,
+and exception text. Delivery failures include the alert ID for correlation.
+Confirm matching entries in Logs Explorer, then create a log-based alerting
+policy with the desired notification channel and notification frequency.
+`LITELLM_ALERT_WEBHOOK_URL` is optional when Cloud Monitoring handles notifications.
+Cloud Logging notification rate limits mean matching log entries do not always
+produce separate notifications.

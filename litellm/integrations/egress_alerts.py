@@ -2,9 +2,8 @@ import asyncio
 from collections.abc import Mapping
 from datetime import datetime
 
-from litellm._logging import verbose_logger
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.integrations.gcs_bucket.alert_system import AlertSystem
+from litellm.integrations.gcs_bucket.alert_system import AlertSystem, log_alert_failure
 
 
 class EgressAlertLogger(CustomLogger):
@@ -37,7 +36,7 @@ class EgressAlertLogger(CustomLogger):
         if request_id and (request_id in self._inflight or request_id in self._completed):
             return
         if len(self._tasks) >= self._max_pending:
-            verbose_logger.warning("alert system: scan dropped because pending capacity was reached")
+            log_alert_failure("egress_alert_dropped", call_id)
             return
         if request_id:
             self._inflight = self._inflight.union((request_id,))

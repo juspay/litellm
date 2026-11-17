@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import chain, islice
 from types import MappingProxyType
-from typing import Final, TypeAlias
+from typing import Final, Literal, TypeAlias
 
 import anyio
 import anyio.to_process
@@ -43,8 +43,6 @@ STATE_TEXT_MAX_CHARS: Final = 500
 MAX_CONVERSATION_ENTRIES: Final = 20
 MAX_JUDGE_BODY_BYTES: Final = 64_000
 WEBHOOK_ATTEMPTS: Final = 3
-ALERT_LOG_STARTED: Final = "ALERT LOG STARTED"
-ALERT_LOG_END: Final = "ALERT LOG END"
 _ALERT_PREPARATION_LIMITER = anyio.CapacityLimiter(1)
 _ALERT_SANITIZATION_LIMITER = anyio.CapacityLimiter(1)
 _ALERT_CPU_LIMITER = anyio.CapacityLimiter(1)
@@ -677,7 +675,7 @@ class AlertSystem:
         try:
             await self._process(kwargs, response_obj)
         except Exception:  # noqa: BLE001  # alert scanning must never break response logging
-            verbose_logger.error("alert system: failed to process success event")
+            log_alert_failure("egress_alert_processing_failed", kwargs.get("litellm_call_id"))
 
     async def _process(self, kwargs: Mapping[str, object], response_obj: object) -> None:
         if not self.enabled:
@@ -730,7 +728,27 @@ class AlertSystem:
                 break
             if attempt + 1 < WEBHOOK_ATTEMPTS:
                 await self._sleep(2.0**attempt)
-        verbose_logger.warning("alert system: webhook delivery failed after retries or non-retryable response")
+        log_alert_failure("egress_alert_delivery_failed", alert_id=alert_id)
+
+
+def log_alert_failure(
+    event_type: Literal["egress_alert_processing_failed", "egress_alert_delivery_failed", "egress_alert_dropped"],
+    call_id: object = None,
+    *,
+    alert_id: str | None = None,
+) -> None:
+    message = "scan dropped: pending capacity reached" if event_type == "egress_alert_dropped" else event_type
+    payload = json.dumps(
+        {
+            "event_type": event_type,
+            "source": ALERT_SOURCE,
+            "severity": "ERROR",
+            "message": message,
+            "litellm_call_id": _request_id(call_id),
+            "alert_id": alert_id,
+        }
+    )
+    verbose_logger.error(payload)
 
 
 def _snapshot_value(value: object, ancestors: frozenset[int] = frozenset()) -> object:
@@ -868,6 +886,9 @@ def _render_alert(state: Mapping[str, object], verdict: JudgeVerdict) -> tuple[s
         },
     }
     summary = {
+        "event_type": "egress_alert",
+        "severity": "WARNING",
+        "source": ALERT_SOURCE,
         "alert_id": alert["alert_id"],
         "litellm_call_id": _request_id(state.get("litellm_call_id")),
         "alert_type": ALERT_TYPE,
@@ -886,7 +907,7 @@ def _render_alert(state: Mapping[str, object], verdict: JudgeVerdict) -> tuple[s
         ),
     }
     return (
-        f"{ALERT_LOG_STARTED}\n{json.dumps(summary)}\n{ALERT_LOG_END}",
+        json.dumps(summary),
         json.dumps(alert),
         str(alert["alert_id"]),
     )

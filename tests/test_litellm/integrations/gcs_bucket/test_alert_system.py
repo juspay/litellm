@@ -4,8 +4,6 @@ import json
 import pytest
 
 from litellm.integrations.gcs_bucket.alert_system import (
-    ALERT_LOG_END,
-    ALERT_LOG_STARTED,
     AlertSystem,
     EgressScanner,
     ScanFinding,
@@ -183,9 +181,11 @@ def _run_pipeline(
 
 
 def _logged_alert(entry: str) -> dict:
-    start, body, end = entry.split("\n")
-    assert (start, end) == (ALERT_LOG_STARTED, ALERT_LOG_END)
-    return json.loads(body)
+    assert "\n" not in entry
+    parsed = json.loads(entry)
+    assert parsed["event_type"] == "egress_alert"
+    assert parsed["severity"] == "WARNING"
+    return parsed
 
 
 def test_webhook_fires_with_data_sensitivity_when_judge_scores_high():
@@ -201,7 +201,7 @@ def test_webhook_fires_with_data_sensitivity_when_judge_scores_high():
     assert "evidence" not in _logged_alert(logged[0])
 
 
-def test_alert_logged_between_delimiters_when_webhook_unset():
+def test_alert_logged_as_single_line_json_when_webhook_unset():
     calls, logged = _run_pipeline(0.95, webhook_url="")
     assert [c["url"] for c in calls] == ["http://judge.test/v1/decisions"]
     assert len(logged) == 1
@@ -393,7 +393,7 @@ def test_webhook_retries_transient_failures_with_same_alert_id(status):
 
 
 @pytest.mark.parametrize("status,attempts", [(400, 1), (503, 3)])
-def test_webhook_retries_are_bounded(status, attempts):
+def test_webhook_retries_are_bounded(status, attempts, caplog):
     from litellm.integrations.gcs_bucket.alert_system import HttpResult
 
     calls = []
@@ -408,6 +408,9 @@ def test_webhook_retries_are_bounded(status, attempts):
     system = AlertSystem(webhook_url="sink", transport=transport, sleep=sleep, alert_log=lambda _: None)
     asyncio.run(system.process_success_event({}, _exfil_response()))
     assert len(calls) == attempts
+    entry = next(json.loads(r.getMessage()) for r in caplog.records if "egress_alert_delivery_failed" in r.getMessage())
+    assert entry["alert_id"] == json.loads(calls[0][2])["alert_id"]
+    assert entry["severity"] == "ERROR"
 
 
 @pytest.mark.parametrize("score", [float("nan"), float("inf"), -1, 2])
@@ -556,3 +559,58 @@ async def test_cancelled_process_scan_releases_capacity_for_next_alert(monkeypat
     with anyio.fail_after(10):
         await system.process_success_event({}, _exfil_response())
     assert len(logs) == 2
+
+
+def test_cloud_logging_fields_are_top_level_in_actual_json_logger_output():
+    import os
+    import subprocess
+    import sys
+
+    script = """
+from litellm._logging import verbose_logger
+from litellm.integrations.gcs_bucket.alert_system import _render_alert, _error_verdict, log_alert_failure
+summary, _, _ = _render_alert({"gate1_findings": (), "conversation": "private-content"}, _error_verdict("unavailable"))
+verbose_logger.warning(summary)
+for event in ("egress_alert_processing_failed", "egress_alert_delivery_failed", "egress_alert_dropped"):
+    log_alert_failure(event, "private-identifier")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "JSON_LOGS": "true", "LITELLM_LOG": "WARNING"},
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    entries = [
+        json.loads(line) for line in result.stderr.splitlines() if line.startswith("{") and '"event_type"' in line
+    ]
+    assert len(entries) == 4
+    assert {entry["event_type"] for entry in entries} == {
+        "egress_alert",
+        "egress_alert_processing_failed",
+        "egress_alert_delivery_failed",
+        "egress_alert_dropped",
+    }
+    alert = next(entry for entry in entries if entry["event_type"] == "egress_alert")
+    assert alert["alert_type"] == "LLM_EGRESS_EXFILTRATION"
+    assert alert["assessment_status"] == "unverified"
+    assert alert["severity"] == "WARNING"
+    assert all(entry["severity"] == "ERROR" for entry in entries if entry["event_type"] != "egress_alert")
+    assert "private-content" not in json.dumps(entries)
+    assert "private-identifier" not in json.dumps(entries)
+
+
+def test_processing_failure_emits_safe_structured_event(caplog):
+    class Unserializable:
+        def __str__(self):
+            raise ValueError("DO_NOT_LOG_SECRET")
+
+    system = AlertSystem(webhook_url="", alert_log=lambda _: None)
+    asyncio.run(system.process_success_event({"model": Unserializable()}, _exfil_response()))
+    entry = next(
+        json.loads(r.getMessage()) for r in caplog.records if "egress_alert_processing_failed" in r.getMessage()
+    )
+    assert entry["event_type"] == "egress_alert_processing_failed"
+    assert entry["severity"] == "ERROR"
+    assert "DO_NOT_LOG_SECRET" not in caplog.text
