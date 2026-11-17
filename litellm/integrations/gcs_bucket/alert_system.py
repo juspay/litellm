@@ -15,7 +15,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from litellm._logging import verbose_logger
-from litellm.secret_managers.main import get_secret_str
+from litellm.secret_managers.main import get_secret_bool, get_secret_str
 from litellm.types.decisions import (
     ChoiceAnswer,
     ChoiceQuestion,
@@ -37,6 +37,8 @@ XOR_TIMEOUT_SECONDS: Final = 15.0
 EVIDENCE_MAX_CHARS: Final = 1000
 STATE_TEXT_MAX_CHARS: Final = 500
 MAX_CONVERSATION_ENTRIES: Final = 20
+ALERT_LOG_STARTED: Final = "ALERT LOG STARTED"
+ALERT_LOG_END: Final = "ALERT LOG END"
 
 _COMBINED_ARGS_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?P<shell_egress>"
@@ -597,8 +599,12 @@ class AlertSystem:
         xor_model: str = DEFAULT_XOR_DECISIONS_MODEL,
         judge_threshold: float = DEFAULT_JUDGE_THRESHOLD,
         transport: Transport = _default_transport,
+        alert_log: Callable[[str], None] = verbose_logger.warning,
+        enabled: bool = True,
     ) -> None:
+        self.enabled = enabled
         self.webhook_url = webhook_url
+        self._alert_log = alert_log
         self.api_key = api_key
         self.xor_url = xor_url
         self.xor_model = xor_model
@@ -621,11 +627,8 @@ class AlertSystem:
             xor_url=os.getenv("XOR_DECISIONS_URL", DEFAULT_XOR_DECISIONS_URL),
             xor_model=os.getenv("XOR_DECISIONS_MODEL", DEFAULT_XOR_DECISIONS_MODEL),
             judge_threshold=threshold,
+            enabled=get_secret_bool("LITELLM_ALERTS_ENABLED", True) is not False,
         )
-
-    @property
-    def enabled(self) -> bool:
-        return bool(self.webhook_url)
 
     async def process_success_event(self, kwargs: Mapping[str, object], response_obj: object) -> None:
         try:
@@ -737,10 +740,14 @@ class AlertSystem:
                 "conversation_excerpt": conversation,
             },
         }
+        alert_json = json.dumps(alert)
+        self._alert_log(f"{ALERT_LOG_STARTED}\n{alert_json}\n{ALERT_LOG_END}")
+        if not self.webhook_url:
+            return
         result = await self._transport(
             self.webhook_url,
             {"Content-Type": "application/json"},
-            json.dumps(alert),
+            alert_json,
             WEBHOOK_TIMEOUT_SECONDS,
         )
         if not 200 <= result.status_code < 300:
