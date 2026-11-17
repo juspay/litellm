@@ -449,3 +449,110 @@ def test_log_summary_preserves_only_uuid_request_identifiers(call_id, expected):
     assert _logged_alert(logs[0])["litellm_call_id"] == expected
     if expected is None:
         assert call_id not in logs[0]
+
+
+def _cpu_stage_probe(function, args):
+    import os
+    import re
+    import time
+
+    started = time.monotonic()
+    re.fullmatch(r"(a+)+", "a" * 22 + "!")
+    result = function(*args)
+    return os.getpid(), started, time.monotonic(), result
+
+
+@pytest.mark.asyncio
+async def test_cpu_stages_run_in_bounded_processes_while_event_loop_keeps_ticking(monkeypatch):
+    import os
+    import time
+
+    import anyio.to_process
+
+    from litellm.integrations.gcs_bucket.alert_system import HttpResult
+
+    real_run = anyio.to_process.run_sync
+    stages = []
+    ticks = []
+    logs = []
+
+    async def measured_run(function, *args, **kwargs):
+        pid, start, end, result = await real_run(_cpu_stage_probe, function, args, **kwargs)
+        stages.append((function.__name__, pid, start, end))
+        return result
+
+    async def transport(url, headers, body, timeout):
+        return HttpResult(200, _decisions_body(0.95))
+
+    monkeypatch.setattr(anyio.to_process, "run_sync", measured_run)
+    system = AlertSystem(webhook_url="", api_key="test", transport=transport, alert_log=logs.append)
+
+    async def pulse(work):
+        while not work.done():
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.005)
+
+    work = asyncio.gather(
+        system.process_success_event({}, _exfil_response()),
+        system.process_success_event({}, _exfil_response()),
+    )
+    heartbeat = asyncio.create_task(pulse(work))
+    try:
+        await asyncio.wait_for(work, 30)
+    finally:
+        await heartbeat
+    assert len(logs) == 2
+    assert {name for name, _, _, _ in stages} == {"_prepare_event", "_build_judge_body", "_render_alert"}
+    assert all(pid != os.getpid() for _, pid, _, _ in stages)
+    assert all(sum(start < tick < end for tick in ticks) >= 2 for _, _, start, end in stages)
+    ordered = sorted(stages, key=lambda stage: stage[2])
+    assert all(left[3] <= right[2] for left, right in zip(ordered, ordered[1:]))
+
+
+@pytest.mark.asyncio
+async def test_process_snapshot_handles_unpicklable_and_cyclic_callback_context():
+    import threading
+
+    logs = []
+    cycle = []
+    cycle.append(cycle)
+    system = AlertSystem(webhook_url="", alert_log=logs.append)
+    await system.process_success_event(
+        {
+            "litellm_params": {"logging_obj": threading.Lock()},
+            "messages": [{"role": "user", "content": [threading.Lock(), cycle]}],
+        },
+        _exfil_response(),
+    )
+    assert len(logs) == 1
+    assert _logged_alert(logs[0])["assessment_status"] == "unverified"
+
+
+def _slow_cpu_stage(function, args):
+    import time
+
+    time.sleep(10)
+    return function(*args)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_process_scan_releases_capacity_for_next_alert(monkeypatch):
+    import anyio
+    import anyio.to_process
+
+    logs = []
+    system = AlertSystem(webhook_url="", alert_log=logs.append)
+    await system.process_success_event({}, _exfil_response())
+    real_run = anyio.to_process.run_sync
+
+    async def slow_run(function, *args, **kwargs):
+        return await real_run(_slow_cpu_stage, function, args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(anyio.to_process, "run_sync", slow_run)
+        with anyio.move_on_after(0.2) as scope:
+            await system.process_success_event({}, _exfil_response())
+        assert scope.cancel_called
+    with anyio.fail_after(10):
+        await system.process_success_event({}, _exfil_response())
+    assert len(logs) == 2

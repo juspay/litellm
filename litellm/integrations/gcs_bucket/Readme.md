@@ -103,8 +103,14 @@ arguments, user identifiers, and destination URLs. The optional
 content; configure it only for a trusted, access-controlled incident destination.
 The judge also receives sensitive evidence and must be an approved service.
 
-Each callback instance permits four simultaneous scans and up to 64 pending
-scans. Excess events produce a `scan dropped` warning. Duplicate call IDs are
+Each callback instance permits four simultaneous alert pipelines and up to 64
+pending events. CPU-heavy scanning, judge-request serialization, and alert
+serialization run in a reusable child process, with at most one CPU job per proxy
+process at a time. Input snapshot preparation and application log emission run
+in a bounded thread; callback objects are not sent to the child. Judge and
+webhook network waits remain asynchronous. This isolates regex execution from
+the proxy's GIL, but input snapshotting and process communication still incur
+some overhead and share machine resources. Excess events produce a `scan dropped` warning. Duplicate call IDs are
 suppressed while pending and for the last 1024 completed requests in that
 process. Webhook timeouts, transport errors, HTTP 408/429, and server errors are
 retried up to three total attempts with exponential delay. Retries reuse the

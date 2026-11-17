@@ -12,6 +12,9 @@ from itertools import chain, islice
 from types import MappingProxyType
 from typing import Final, TypeAlias
 
+import anyio
+import anyio.to_process
+import anyio.to_thread
 import httpx
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter, ValidationError
 
@@ -42,6 +45,9 @@ MAX_JUDGE_BODY_BYTES: Final = 64_000
 WEBHOOK_ATTEMPTS: Final = 3
 ALERT_LOG_STARTED: Final = "ALERT LOG STARTED"
 ALERT_LOG_END: Final = "ALERT LOG END"
+_ALERT_PREPARATION_LIMITER = anyio.CapacityLimiter(1)
+_ALERT_SANITIZATION_LIMITER = anyio.CapacityLimiter(1)
+_ALERT_CPU_LIMITER = anyio.CapacityLimiter(1)
 
 _COMBINED_ARGS_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?P<shell_egress>"
@@ -545,16 +551,10 @@ class JudgeClient:
         self._transport = transport
 
     async def judge(self, state: Mapping[str, object]) -> JudgeVerdict:
-        body = json.dumps(
-            {
-                "model": self._xor_model,
-                "state": state,
-                "questions": {
-                    name: question.model_dump(exclude_none=True) for name, question in build_questions().items()
-                },
-            }
+        body = await anyio.to_process.run_sync(
+            _build_judge_body, state, self._xor_model, cancellable=True, limiter=_ALERT_CPU_LIMITER
         )
-        if len(body.encode("utf-8")) > MAX_JUDGE_BODY_BYTES:
+        if body is None:
             return _error_verdict("judge context exceeds size limit; unverified alert")
         try:
             result = await self._transport(
@@ -682,58 +682,15 @@ class AlertSystem:
     async def _process(self, kwargs: Mapping[str, object], response_obj: object) -> None:
         if not self.enabled:
             return
-        tool_calls = coerce_tool_calls(response_obj)
-        assistant_text = extract_assistant_text(response_obj)
-        per_call, findings = await asyncio.to_thread(_scan_response, tool_calls, assistant_text)
-        if not findings:
+        async with _ALERT_PREPARATION_LIMITER:
+            snapshot = await anyio.to_thread.run_sync(
+                _snapshot_event, kwargs, response_obj, limiter=_ALERT_SANITIZATION_LIMITER
+            )
+            state = await anyio.to_process.run_sync(
+                _prepare_event, snapshot, cancellable=True, limiter=_ALERT_CPU_LIMITER
+            )
+        if state is None:
             return
-        litellm_params = _mapping(kwargs.get("litellm_params")) or {}
-        metadata = _mapping(litellm_params.get("metadata")) or _mapping(litellm_params.get("litellm_metadata")) or {}
-        slo = _mapping(kwargs.get("standard_logging_object")) or {}
-        session_id = (
-            litellm_params.get("litellm_session_id") or metadata.get("session_id") or kwargs.get("litellm_session_id")
-        )
-        user_email = (
-            metadata.get("user_api_key_user_email")
-            or metadata.get("user_email")
-            or kwargs.get("user_email")
-            or (_mapping(kwargs.get("metadata")) or {}).get("user_api_key_user_email")
-        )
-        raw_messages = slo.get("messages") or kwargs.get("input") or kwargs.get("messages")
-        if isinstance(raw_messages, list):
-            conversation = tuple(_excerpt_entry(message) for message in _sequence(raw_messages))
-            if len(conversation) > MAX_CONVERSATION_ENTRIES:
-                elided = len(conversation) - MAX_CONVERSATION_ENTRIES
-                conversation = (*conversation[:5], {"content": f"… {elided} messages elided …"}, *conversation[-15:])
-        elif raw_messages:
-            conversation = ({"content": _trim(str(raw_messages), STATE_TEXT_MAX_CHARS)},)
-        else:
-            conversation = ()
-        flagged_tool_calls = tuple(
-            {"name": call.name, "arguments": call.arguments} for call, call_findings in per_call if call_findings
-        )
-        flagged_tool_call = next(iter(flagged_tool_calls), None)
-        flagged_assistant_text = (
-            assistant_text if any(finding.matcher == "assistant_text_exfil" for finding in findings) else None
-        )
-        destination_host = next(
-            (finding.destination_host for finding in findings if finding.destination_host is not None),
-            None,
-        )
-        state = {
-            "session_id": session_id,
-            "user_email": user_email,
-            "model_called": kwargs.get("model"),
-            "conversation": conversation,
-            "tools_available": _tools_available(kwargs.get("tools")),
-            "flagged_tool_call": flagged_tool_call,
-            "flagged_tool_calls": flagged_tool_calls,
-            "flagged_assistant_text": flagged_assistant_text,
-            "gate1_findings": [
-                {"matcher": finding.matcher, "evidence": finding.evidence, "destination_host": finding.destination_host}
-                for finding in findings
-            ],
-        }
         verdict = (
             await self._judge.judge(state)
             if self._judge is not None
@@ -746,52 +703,12 @@ class AlertSystem:
         )
         if verdict.judge_error is None and risk_scores and max(risk_scores) < self.judge_threshold:
             return
-        alert = {
-            "alert_id": str(uuid.uuid4()),
-            "alert_type": ALERT_TYPE,
-            "assessment_status": "unverified" if verdict.judge_error is not None else "assessed",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "source": ALERT_SOURCE,
-            "verdict": {
-                "judge_model": verdict.judge_model,
-                "malicious_probability": verdict.malicious_probability,
-                "unauthorized_transfer_probability": verdict.unauthorized_transfer_probability,
-                "exfiltration_probability": verdict.exfiltration_probability,
-                "data_sensitivity_probability": verdict.data_sensitivity_probability,
-                "intent": verdict.intent,
-                "intent_confidence": verdict.intent_confidence,
-                "severity_score": verdict.severity_score,
-                "user_authorized": verdict.user_requesting_probability,
-                "judge_error": verdict.judge_error,
-            },
-            "request": {
-                "model": kwargs.get("model"),
-                "litellm_call_id": kwargs.get("litellm_call_id"),
-                "session_id": session_id,
-                "user_email": user_email,
-            },
-            "evidence": {
-                "gate1_findings": state["gate1_findings"],
-                "flagged_tool_call": flagged_tool_call,
-                "flagged_tool_calls": flagged_tool_calls,
-                "flagged_assistant_text": flagged_assistant_text,
-                "destination_host": destination_host,
-                "conversation_excerpt": conversation,
-            },
-        }
-        summary = {
-            "alert_id": alert["alert_id"],
-            "litellm_call_id": _request_id(kwargs.get("litellm_call_id")),
-            "alert_type": ALERT_TYPE,
-            "assessment_status": alert["assessment_status"],
-            "malicious_probability": verdict.malicious_probability,
-            "unauthorized_transfer_probability": verdict.unauthorized_transfer_probability,
-            "finding_count": len(findings),
-            "matchers": tuple(sorted(frozenset(finding.matcher for finding in findings))),
-        }
-        self._alert_log(f"{ALERT_LOG_STARTED}\n{json.dumps(summary)}\n{ALERT_LOG_END}")
+        summary, body, alert_id = await anyio.to_process.run_sync(
+            _render_alert, state, verdict, cancellable=True, limiter=_ALERT_CPU_LIMITER
+        )
+        await anyio.to_thread.run_sync(self._alert_log, summary, limiter=_ALERT_SANITIZATION_LIMITER)
         if self.webhook_url:
-            await self._deliver_webhook(json.dumps(alert), str(alert["alert_id"]))
+            await self._deliver_webhook(body, alert_id)
 
     async def _deliver_webhook(self, body: str, alert_id: str) -> None:
         for attempt in range(WEBHOOK_ATTEMPTS):
@@ -814,6 +731,165 @@ class AlertSystem:
             if attempt + 1 < WEBHOOK_ATTEMPTS:
                 await self._sleep(2.0**attempt)
         verbose_logger.warning("alert system: webhook delivery failed after retries or non-retryable response")
+
+
+def _snapshot_value(value: object, ancestors: frozenset[int] = frozenset()) -> object:
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    if id(value) in ancestors:
+        return None
+    path = ancestors.union((id(value),))
+    mapping = _mapping(value)
+    if mapping is not None:
+        return {key: _snapshot_value(item, path) for key, item in mapping.items()}
+    if isinstance(value, (list, tuple)):
+        return tuple(_snapshot_value(item, path) for item in _sequence(value))
+    return str(value)
+
+
+def _snapshot_event(
+    kwargs: Mapping[str, object], response_obj: object
+) -> tuple[Mapping[str, object], tuple[ToolCallView, ...], str]:
+    params = _mapping(kwargs.get("litellm_params")) or {}
+    metadata = _mapping(params.get("metadata")) or _mapping(params.get("litellm_metadata")) or {}
+    slo = _mapping(kwargs.get("standard_logging_object")) or {}
+    context = {
+        "model": kwargs.get("model"),
+        "litellm_call_id": kwargs.get("litellm_call_id"),
+        "session_id": params.get("litellm_session_id")
+        or metadata.get("session_id")
+        or kwargs.get("litellm_session_id"),
+        "user_email": metadata.get("user_api_key_user_email")
+        or metadata.get("user_email")
+        or kwargs.get("user_email")
+        or (_mapping(kwargs.get("metadata")) or {}).get("user_api_key_user_email"),
+        "messages": slo.get("messages") or kwargs.get("input") or kwargs.get("messages"),
+        "tools": kwargs.get("tools"),
+    }
+    return (
+        {key: _snapshot_value(value) for key, value in context.items()},
+        coerce_tool_calls(response_obj),
+        extract_assistant_text(response_obj),
+    )
+
+
+def _build_judge_body(state: Mapping[str, object], model: str) -> str | None:
+    body = json.dumps(
+        {
+            "model": model,
+            "state": state,
+            "questions": {name: question.model_dump(exclude_none=True) for name, question in build_questions().items()},
+        }
+    )
+    return body if len(body.encode("utf-8")) <= MAX_JUDGE_BODY_BYTES else None
+
+
+def _prepare_event(
+    snapshot: tuple[Mapping[str, object], tuple[ToolCallView, ...], str],
+) -> Mapping[str, object] | None:
+    kwargs, tool_calls, assistant_text = snapshot
+    per_call, findings = _scan_response(tool_calls, assistant_text)
+    if not findings:
+        return
+    session_id = kwargs.get("session_id")
+    user_email = kwargs.get("user_email")
+    raw_messages = kwargs.get("messages")
+    if isinstance(raw_messages, (list, tuple)):
+        conversation = tuple(_excerpt_entry(message) for message in _sequence(raw_messages))
+        if len(conversation) > MAX_CONVERSATION_ENTRIES:
+            elided = len(conversation) - MAX_CONVERSATION_ENTRIES
+            conversation = (*conversation[:5], {"content": f"… {elided} messages elided …"}, *conversation[-15:])
+    elif raw_messages:
+        conversation = ({"content": _trim(str(raw_messages), STATE_TEXT_MAX_CHARS)},)
+    else:
+        conversation = ()
+    flagged_tool_calls = tuple(
+        {"name": call.name, "arguments": call.arguments} for call, call_findings in per_call if call_findings
+    )
+    flagged_tool_call = next(iter(flagged_tool_calls), None)
+    flagged_assistant_text = (
+        assistant_text if any(finding.matcher == "assistant_text_exfil" for finding in findings) else None
+    )
+    destination_host = next(
+        (finding.destination_host for finding in findings if finding.destination_host is not None),
+        None,
+    )
+    state = {
+        "litellm_call_id": kwargs.get("litellm_call_id"),
+        "session_id": session_id,
+        "user_email": user_email,
+        "model_called": kwargs.get("model"),
+        "destination_host": destination_host,
+        "conversation": conversation,
+        "tools_available": _tools_available(kwargs.get("tools")),
+        "flagged_tool_call": flagged_tool_call,
+        "flagged_tool_calls": flagged_tool_calls,
+        "flagged_assistant_text": flagged_assistant_text,
+        "gate1_findings": [
+            {"matcher": finding.matcher, "evidence": finding.evidence, "destination_host": finding.destination_host}
+            for finding in findings
+        ],
+    }
+    return state
+
+
+def _render_alert(state: Mapping[str, object], verdict: JudgeVerdict) -> tuple[str, str, str]:
+    alert = {
+        "alert_id": str(uuid.uuid4()),
+        "alert_type": ALERT_TYPE,
+        "assessment_status": "unverified" if verdict.judge_error is not None else "assessed",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source": ALERT_SOURCE,
+        "verdict": {
+            "judge_model": verdict.judge_model,
+            "malicious_probability": verdict.malicious_probability,
+            "unauthorized_transfer_probability": verdict.unauthorized_transfer_probability,
+            "exfiltration_probability": verdict.exfiltration_probability,
+            "data_sensitivity_probability": verdict.data_sensitivity_probability,
+            "intent": verdict.intent,
+            "intent_confidence": verdict.intent_confidence,
+            "severity_score": verdict.severity_score,
+            "user_authorized": verdict.user_requesting_probability,
+            "judge_error": verdict.judge_error,
+        },
+        "request": {
+            "model": state.get("model_called"),
+            "litellm_call_id": state.get("litellm_call_id"),
+            "session_id": state.get("session_id"),
+            "user_email": state.get("user_email"),
+        },
+        "evidence": {
+            "gate1_findings": state["gate1_findings"],
+            "flagged_tool_call": state.get("flagged_tool_call"),
+            "flagged_tool_calls": state.get("flagged_tool_calls"),
+            "flagged_assistant_text": state.get("flagged_assistant_text"),
+            "destination_host": state.get("destination_host"),
+            "conversation_excerpt": state.get("conversation"),
+        },
+    }
+    summary = {
+        "alert_id": alert["alert_id"],
+        "litellm_call_id": _request_id(state.get("litellm_call_id")),
+        "alert_type": ALERT_TYPE,
+        "assessment_status": alert["assessment_status"],
+        "malicious_probability": verdict.malicious_probability,
+        "unauthorized_transfer_probability": verdict.unauthorized_transfer_probability,
+        "finding_count": len(_sequence(state.get("gate1_findings"))),
+        "matchers": tuple(
+            sorted(
+                frozenset(
+                    str(finding.get("matcher"))
+                    for item in _sequence(state.get("gate1_findings"))
+                    if (finding := _mapping(item)) is not None
+                )
+            )
+        ),
+    }
+    return (
+        f"{ALERT_LOG_STARTED}\n{json.dumps(summary)}\n{ALERT_LOG_END}",
+        json.dumps(alert),
+        str(alert["alert_id"]),
+    )
 
 
 def _scan_response(
