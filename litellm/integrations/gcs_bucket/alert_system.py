@@ -6,6 +6,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import chain, islice
@@ -20,10 +21,11 @@ from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter, ValidationEr
 
 import litellm
 from litellm._logging import verbose_logger
-from litellm.secret_managers.main import get_secret_bool, get_secret_str
+from litellm.secret_managers.main import get_secret_bool
 from litellm.types.decisions import (
     ChoiceAnswer,
     ChoiceQuestion,
+    DecisionsRequest,
     DecisionsResponse,
     NoulAnswer,
     NoulQuestion,
@@ -34,11 +36,11 @@ from litellm.types.utils import ModelResponse
 
 ALERT_TYPE: Final = "LLM_EGRESS_EXFILTRATION"
 ALERT_SOURCE: Final = "litellm-gateway-alert-system"
-DEFAULT_XOR_DECISIONS_URL: Final = "https://grid.ai.juspay.net/v1/decisions"
 DEFAULT_XOR_DECISIONS_MODEL: Final = "xor-latest"
 DEFAULT_JUDGE_THRESHOLD: Final = 0.7
 WEBHOOK_TIMEOUT_SECONDS: Final = 10.0
 XOR_TIMEOUT_SECONDS: Final = 15.0
+alert_judge_active: Final[ContextVar[bool]] = ContextVar("egress_alert_judge_active", default=False)
 EVIDENCE_MAX_CHARS: Final = 1000
 STATE_TEXT_MAX_CHARS: Final = 500
 MAX_CONVERSATION_ENTRIES: Final = 20
@@ -182,6 +184,9 @@ class JudgeVerdict:
 class HttpResult:
     status_code: int
     json_body: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+
+
+JudgeCall: TypeAlias = Callable[[DecisionsRequest], Awaitable[DecisionsResponse | JudgeVerdict]]
 
 
 Transport: TypeAlias = Callable[[str, Mapping[str, str], str, float], Awaitable[HttpResult]]
@@ -535,44 +540,44 @@ def _error_verdict(judge_error: str, judge_model: str | None = None) -> JudgeVer
     )
 
 
+async def _router_judge(request: DecisionsRequest) -> DecisionsResponse | JudgeVerdict:
+    from litellm.proxy.proxy_server import llm_router
+
+    if llm_router is None:
+        return _error_verdict("proxy router unavailable", request.model)
+    return DecisionsResponse.model_validate(
+        await llm_router.adecisions(
+            model=request.model,
+            state=request.state,
+            questions=request.questions,
+            timeout=XOR_TIMEOUT_SECONDS,
+            **{"no-log": True},
+        )
+    )
+
+
 class JudgeClient:
-    def __init__(
-        self,
-        *,
-        xor_url: str,
-        xor_model: str,
-        api_key: str,
-        transport: Transport,
-    ) -> None:
-        self._xor_url = xor_url
+    def __init__(self, *, xor_model: str, judge_call: JudgeCall = _router_judge) -> None:
         self._xor_model = xor_model
-        self._api_key = api_key
-        self._transport = transport
+        self._judge_call = judge_call
 
     async def judge(self, state: Mapping[str, object]) -> JudgeVerdict:
-        body = await anyio.to_process.run_sync(
-            _build_judge_body, state, self._xor_model, cancellable=True, limiter=_ALERT_CPU_LIMITER
+        request = await anyio.to_process.run_sync(
+            _build_judge_request, state, self._xor_model, cancellable=True, limiter=_ALERT_CPU_LIMITER
         )
-        if body is None:
+        if request is None:
             return _error_verdict("judge context exceeds size limit; unverified alert")
+        token = alert_judge_active.set(True)
         try:
-            result = await self._transport(
-                self._xor_url,
-                {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self._api_key}",
-                },
-                body,
-                XOR_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:  # noqa: BLE001  # any transport failure must degrade to a gate-1-only alert, never raise into the logging path
-            return _error_verdict(f"judge transport failed: {type(exc).__name__}")
-        if not 200 <= result.status_code < 300:
-            return _error_verdict(f"judge HTTP {result.status_code}")
-        try:
-            parsed = DecisionsResponse.model_validate(result.json_body)
+            parsed = await asyncio.wait_for(self._judge_call(request), timeout=XOR_TIMEOUT_SECONDS)
         except ValidationError:
-            return _error_verdict("invalid judge response")
+            return _error_verdict("invalid judge response", self._xor_model)
+        except Exception as exc:  # noqa: BLE001  # any transport failure must degrade to a gate-1-only alert, never raise into the logging path
+            return _error_verdict(f"judge call failed: {type(exc).__name__}", self._xor_model)
+        finally:
+            alert_judge_active.reset(token)
+        if isinstance(parsed, JudgeVerdict):
+            return parsed
         malicious = parsed.answers.get("malicious")
         if not isinstance(malicious, NoulAnswer):
             return _error_verdict("judge returned no answer for the malicious question", parsed.model)
@@ -634,10 +639,9 @@ class AlertSystem:
         self,
         *,
         webhook_url: str,
-        api_key: str = "",
-        xor_url: str = DEFAULT_XOR_DECISIONS_URL,
         xor_model: str = DEFAULT_XOR_DECISIONS_MODEL,
         judge_threshold: float = DEFAULT_JUDGE_THRESHOLD,
+        judge_call: JudgeCall = _router_judge,
         transport: Transport = _default_transport,
         alert_log: Callable[[str], None] = verbose_logger.warning,
         enabled: bool | Callable[[], bool] = True,
@@ -647,14 +651,10 @@ class AlertSystem:
         self._enabled = enabled
         self.webhook_url = webhook_url
         self._alert_log = alert_log
-        self.api_key = api_key
-        self.xor_url = xor_url
         self.xor_model = xor_model
         self.judge_threshold = judge_threshold
         self._transport = transport
-        self._judge = (
-            JudgeClient(xor_url=xor_url, xor_model=xor_model, api_key=api_key, transport=transport) if api_key else None
-        )
+        self._judge = JudgeClient(xor_model=xor_model, judge_call=judge_call)
 
     @property
     def enabled(self) -> bool:
@@ -670,8 +670,6 @@ class AlertSystem:
             threshold = DEFAULT_JUDGE_THRESHOLD
         return cls(
             webhook_url=os.getenv("LITELLM_ALERT_WEBHOOK_URL", ""),
-            api_key=get_secret_str("JUSPAY_API_KEY") or "",
-            xor_url=os.getenv("XOR_DECISIONS_URL", DEFAULT_XOR_DECISIONS_URL),
             xor_model=os.getenv("XOR_DECISIONS_MODEL", DEFAULT_XOR_DECISIONS_MODEL),
             judge_threshold=threshold if math.isfinite(threshold) and 0 <= threshold <= 1 else DEFAULT_JUDGE_THRESHOLD,
             enabled=lambda: (
@@ -697,11 +695,7 @@ class AlertSystem:
             )
         if state is None:
             return
-        verdict = (
-            await self._judge.judge(state)
-            if self._judge is not None
-            else _error_verdict("no JUSPAY_API_KEY; gate-1-only alert")
-        )
+        verdict = await self._judge.judge(state)
         risk_scores = tuple(
             score
             for score in (verdict.malicious_probability, verdict.unauthorized_transfer_probability)
@@ -799,7 +793,7 @@ def _snapshot_event(
     )
 
 
-def _build_judge_body(state: Mapping[str, object], model: str) -> str | None:
+def _build_judge_request(state: Mapping[str, object], model: str) -> DecisionsRequest | None:
     body = json.dumps(
         {
             "model": model,
@@ -807,7 +801,7 @@ def _build_judge_body(state: Mapping[str, object], model: str) -> str | None:
             "questions": {name: question.model_dump(exclude_none=True) for name, question in build_questions().items()},
         }
     )
-    return body if len(body.encode("utf-8")) <= MAX_JUDGE_BODY_BYTES else None
+    return DecisionsRequest.model_validate_json(body) if len(body.encode("utf-8")) <= MAX_JUDGE_BODY_BYTES else None
 
 
 def _prepare_event(

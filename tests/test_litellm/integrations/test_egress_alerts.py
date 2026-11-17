@@ -95,3 +95,46 @@ def test_disabled_callback_does_not_enqueue():
 
     asyncio.run(run())
     assert logs == []
+
+
+def test_internal_judge_callbacks_are_skipped_even_when_delivered_later():
+    from litellm.integrations.gcs_bucket.alert_system import alert_judge_active
+    from litellm.types.decisions import DecisionsResponse, NoulAnswer
+    from litellm.litellm_core_utils.logging_worker import LoggingWorker
+
+    logs = []
+    calls = []
+    release = asyncio.Event()
+    worker = LoggingWorker()
+
+    async def judge_call(request):
+        async def delayed_callback():
+            await release.wait()
+            await callback.async_log_success_event({"litellm_call_id": "judge"}, response())
+
+        calls.append(request)
+        worker.enqueue(delayed_callback())
+        return DecisionsResponse(
+            answers={
+                "malicious": NoulAnswer(type="noul", noul=0.95),
+                "unauthorized_transfer": NoulAnswer(type="noul", noul=0.95),
+            }
+        )
+
+    callback = EgressAlertLogger(AlertSystem(webhook_url="", judge_call=judge_call, alert_log=logs.append))
+
+    async def run():
+        worker.start()
+        try:
+            await callback.async_log_success_event({"litellm_call_id": "original"}, response())
+            await callback.drain()
+            assert not alert_judge_active.get()
+            release.set()
+            await asyncio.wait_for(worker.flush(), 5)
+            await callback.drain()
+        finally:
+            await worker.stop()
+
+    asyncio.run(run())
+    assert len(calls) == 1
+    assert len(logs) == 1

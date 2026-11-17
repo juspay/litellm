@@ -121,8 +121,23 @@ enabling DB refresh for the first time, still requires the initial rollout.
 The scanner checks all chat response choices and tool calls. Flagged calls retain
 complete arguments for judgment; if the serialized judge request exceeds 64 KB,
 the system emits an unverified alert instead of judging truncated evidence.
-`JUSPAY_API_KEY` enables the decisions judge. `XOR_DECISIONS_URL` and
-`XOR_DECISIONS_MODEL` select its endpoint and model. An alert is emitted when
+The judge calls the running proxy's `llm_router.adecisions` directly, using the
+existing `xor-latest` model deployment and its configured backend credentials.
+There is no HTTP round trip through another LiteLLM gateway. Set
+`XOR_DECISIONS_MODEL` only to select a different configured model alias. The alert
+feature no longer reads `JUSPAY_API_KEY` or `XOR_DECISIONS_URL`; retain any secrets
+that the model deployment itself requires. The selected deployment must support
+the Decisions API. The router still connects to its configured inference backend;
+private routing depends on that deployment's endpoint and network setup.
+
+Judge calls have a 15-second total timeout, including router retries. A missing
+router/model, timeout, provider error, or invalid response produces an unverified
+alert. Internal judge calls set `no-log` to suppress ordinary request callbacks
+(subject to the proxy's existing logging policy), and a task-local recursion guard
+prevents their callbacks from scheduling another alert scan. This guard also
+covers background callback tasks created during the judge call.
+
+An alert is emitted when
 maliciousness or unauthorized-transfer probability reaches
 `ALERT_JUDGE_THRESHOLD` (default 0.7). Missing or invalid judgments produce an
 `unverified` alert. These are suspected actions in model output, not proof that a
@@ -137,7 +152,7 @@ content; configure it only for a trusted, access-controlled incident destination
 The judge also receives sensitive evidence and must be an approved service.
 
 Each callback instance permits four simultaneous alert pipelines and up to 64
-pending events. CPU-heavy scanning, judge-request serialization, and alert
+pending events. CPU-heavy scanning, judge-request preparation and size validation, and alert
 serialization run in a reusable child process, with at most one CPU job per proxy
 process at a time. Input snapshot preparation and application log emission run
 in a bounded thread; callback objects are not sent to the child. Judge and

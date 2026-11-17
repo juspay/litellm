@@ -3,6 +3,8 @@ import json
 
 import pytest
 
+from litellm.types.decisions import DecisionsResponse
+
 from litellm.integrations.gcs_bucket.alert_system import (
     AlertSystem,
     EgressScanner,
@@ -164,14 +166,15 @@ def _run_pipeline(
         from litellm.integrations.gcs_bucket.alert_system import HttpResult
 
         calls.append({"url": url, "body": body})
-        if "decisions" in url:
-            return HttpResult(status_code=200, json_body=_decisions_body(malicious))
         return HttpResult(status_code=200, json_body={"ok": True})
+
+    async def judge_call(request):
+        calls.append({"url": "router", "body": request.model_dump_json()})
+        return DecisionsResponse.model_validate(_decisions_body(malicious))
 
     system = AlertSystem(
         webhook_url=webhook_url,
-        api_key="k",
-        xor_url="http://judge.test/v1/decisions",
+        judge_call=judge_call,
         transport=transport,
         alert_log=logged.append,
         enabled=enabled,
@@ -203,7 +206,7 @@ def test_webhook_fires_with_data_sensitivity_when_judge_scores_high():
 
 def test_alert_logged_as_single_line_json_when_webhook_unset():
     calls, logged = _run_pipeline(0.95, webhook_url="")
-    assert [c["url"] for c in calls] == ["http://judge.test/v1/decisions"]
+    assert [c["url"] for c in calls] == ["router"]
     assert len(logged) == 1
     alert = _logged_alert(logged[0])
     assert alert["alert_type"] == "LLM_EGRESS_EXFILTRATION"
@@ -263,15 +266,15 @@ def test_webhook_fires_gate1_only_when_judge_errors():
     async def transport(url, headers, body, timeout):
         from litellm.integrations.gcs_bucket.alert_system import HttpResult
 
-        if "decisions" in url:
-            raise RuntimeError("judge down")
         calls.append({"url": url, "body": body})
         return HttpResult(status_code=200, json_body={"ok": True})
 
+    async def judge_call(request):
+        raise RuntimeError("judge down")
+
     system = AlertSystem(
         webhook_url="http://sink.test/alert",
-        api_key="k",
-        xor_url="http://judge.test/v1/decisions",
+        judge_call=judge_call,
         transport=transport,
     )
     asyncio.run(system.process_success_event({"model": "m", "litellm_params": {}}, _exfil_response()))
@@ -309,11 +312,13 @@ def _capture_state(response, answers=None):
 
     async def transport(url, headers, body, timeout):
         calls.append((url, json.loads(body)))
-        return HttpResult(200, answers if answers is not None else _decisions_body(0.1))
+        return HttpResult(200, {})
 
-    system = AlertSystem(
-        webhook_url="sink", api_key="test", xor_url="judge", transport=transport, alert_log=logs.append
-    )
+    async def judge_call(request):
+        calls.append(("router", request.model_dump()))
+        return DecisionsResponse.model_validate(answers if answers is not None else _decisions_body(0.1))
+
+    system = AlertSystem(webhook_url="sink", judge_call=judge_call, transport=transport, alert_log=logs.append)
     asyncio.run(system.process_success_event({}, response))
     return calls, logs
 
@@ -488,8 +493,6 @@ async def test_cpu_stages_run_in_bounded_processes_while_event_loop_keeps_tickin
 
     import anyio.to_process
 
-    from litellm.integrations.gcs_bucket.alert_system import HttpResult
-
     real_run = anyio.to_process.run_sync
     stages = []
     ticks = []
@@ -500,11 +503,11 @@ async def test_cpu_stages_run_in_bounded_processes_while_event_loop_keeps_tickin
         stages.append((function.__name__, pid, start, end))
         return result
 
-    async def transport(url, headers, body, timeout):
-        return HttpResult(200, _decisions_body(0.95))
+    async def judge_call(request):
+        return DecisionsResponse.model_validate(_decisions_body(0.95))
 
     monkeypatch.setattr(anyio.to_process, "run_sync", measured_run)
-    system = AlertSystem(webhook_url="", api_key="test", transport=transport, alert_log=logs.append)
+    system = AlertSystem(webhook_url="", judge_call=judge_call, alert_log=logs.append)
 
     async def pulse(work):
         while not work.done():
@@ -521,7 +524,7 @@ async def test_cpu_stages_run_in_bounded_processes_while_event_loop_keeps_tickin
     finally:
         await heartbeat
     assert len(logs) == 2
-    assert {name for name, _, _, _ in stages} == {"_prepare_event", "_build_judge_body", "_render_alert"}
+    assert {name for name, _, _, _ in stages} == {"_prepare_event", "_build_judge_request", "_render_alert"}
     assert all(pid != os.getpid() for _, pid, _, _ in stages)
     assert all(sum(start < tick < end for tick in ticks) >= 2 for _, _, start, end in stages)
     ordered = sorted(stages, key=lambda stage: stage[2])
@@ -630,3 +633,110 @@ def test_processing_failure_emits_safe_structured_event(caplog):
     assert entry["event_type"] == "egress_alert_processing_failed"
     assert entry["severity"] == "ERROR"
     assert "DO_NOT_LOG_SECRET" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_judge_uses_current_proxy_router_endpoint_and_credentials(monkeypatch):
+    import httpx
+    import respx
+
+    import litellm
+    from litellm.proxy import proxy_server
+    from litellm.integrations.custom_logger import CustomLogger
+    from litellm.integrations.gcs_bucket.alert_system import alert_judge_active
+    from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
+
+    callback_events = []
+
+    class Recorder(CustomLogger):
+        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+            callback_events.append(
+                (type(self).__name__, kwargs["litellm_params"].get("no-log"), alert_judge_active.get())
+            )
+
+    class _PROXY_Recorder(Recorder):
+        pass
+
+    monkeypatch.setattr(litellm, "callbacks", [Recorder(), _PROXY_Recorder()])
+    monkeypatch.setattr(litellm, "global_disable_no_log_param", False)
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    litellm.in_memory_llm_clients_cache.flush_cache()
+    monkeypatch.delenv("JUSPAY_API_KEY", raising=False)
+    monkeypatch.setenv("XOR_DECISIONS_URL", "https://unused-gateway.example/v1/decisions")
+    monkeypatch.setenv("XOR_DECISIONS_MODEL", "xor-latest")
+    monkeypatch.setenv("LITELLM_ALERTS_ENABLED", "true")
+    monkeypatch.setattr(litellm, "egress_alerts_enabled", None)
+    monkeypatch.setattr(proxy_server, "llm_router", None)
+    system = AlertSystem.from_env()
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "xor-latest",
+                "litellm_params": {
+                    "model": "typesafe/deployed-xor",
+                    "api_base": "https://configured-judge.example",
+                    "api_key": "deployment-key",
+                },
+            }
+        ],
+        num_retries=0,
+    )
+    monkeypatch.setattr(proxy_server, "llm_router", router)
+    try:
+        with respx.mock as upstream:
+            route = upstream.post("https://configured-judge.example/v1/systemone").mock(
+                return_value=httpx.Response(200, json=_decisions_body(0.95))
+            )
+            verdict = await system._judge.judge({"flagged_tool_calls": [{"arguments": "complete evidence"}]})
+            assert verdict.judge_error is None
+            assert verdict.malicious_probability == 0.95
+            assert route.call_count == 1
+            request = route.calls[0].request
+            assert request.headers["Authorization"] == "Bearer deployment-key"
+            body = json.loads(request.content)
+            assert body["model"] == "deployed-xor"
+            assert body["state"]["flagged_tool_calls"][0]["arguments"] == "complete evidence"
+            assert "unauthorized_transfer" in body["questions"]
+            assert len(upstream.calls) == 1
+            await asyncio.sleep(0)
+            await asyncio.wait_for(GLOBAL_LOGGING_WORKER.flush(), 5)
+            assert callback_events == [("_PROXY_Recorder", True, True)]
+    finally:
+        router.shutdown_routing_strategy()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_router_produces_unverified_alert(monkeypatch):
+    from litellm.proxy import proxy_server
+
+    monkeypatch.setattr(proxy_server, "llm_router", None)
+    logs = []
+    system = AlertSystem(webhook_url="", alert_log=logs.append)
+    await system.process_success_event({}, _exfil_response())
+    assert len(logs) == 1
+    assert _logged_alert(logs[0])["assessment_status"] == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_judge_timeout_cancels_work_and_resets_recursion_guard(monkeypatch):
+    from litellm.integrations.gcs_bucket import alert_system
+
+    cancelled = asyncio.Event()
+    started = asyncio.Event()
+
+    async def judge_call(request):
+        assert alert_system.alert_judge_active.get()
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(alert_system, "XOR_TIMEOUT_SECONDS", 0.05)
+    logs = []
+    system = AlertSystem(webhook_url="", judge_call=judge_call, alert_log=logs.append)
+    await system.process_success_event({}, _exfil_response())
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert not alert_system.alert_judge_active.get()
+    assert _logged_alert(logs[0])["assessment_status"] == "unverified"

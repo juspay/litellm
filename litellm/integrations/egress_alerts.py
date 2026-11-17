@@ -3,7 +3,7 @@ from collections.abc import Mapping
 from datetime import datetime
 
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.integrations.gcs_bucket.alert_system import AlertSystem, log_alert_failure
+from litellm.integrations.gcs_bucket.alert_system import AlertSystem, alert_judge_active, log_alert_failure
 
 
 class EgressAlertLogger(CustomLogger):
@@ -29,7 +29,7 @@ class EgressAlertLogger(CustomLogger):
         start_time: datetime | None = None,
         end_time: datetime | None = None,
     ) -> None:
-        if not self._system.enabled:
+        if alert_judge_active.get() or not self._system.enabled:
             return
         call_id = kwargs.get("litellm_call_id")
         request_id = call_id if isinstance(call_id, str) else ""
