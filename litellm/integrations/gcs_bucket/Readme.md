@@ -68,3 +68,46 @@ Path: `model/{date}_{correlation_id}.json`
 **Error:** Error details, user info, model info, request context
 
 Done! 🎉
+
+## Independent egress alerts
+
+Configure the alert callback separately from GCS logging:
+
+```yaml
+litellm_settings:
+  callbacks:
+    - litellm.integrations.egress_alerts.alert_logger
+```
+
+When upgrading from the alert PR, add this callback even if you keep the GCS
+logger callback. The GCS logger no longer schedules alert scans. Remove the GCS
+callback and bucket variables if uploads are unwanted. The alert callback does
+not require GCS buckets or credentials and ignores `x-litellm-disable-logging`.
+Set `LITELLM_ALERTS_ENABLED=false` to disable alerts explicitly.
+
+The scanner checks all chat response choices and tool calls. Flagged calls retain
+complete arguments for judgment; if the serialized judge request exceeds 64 KB,
+the system emits an unverified alert instead of judging truncated evidence.
+`JUSPAY_API_KEY` enables the decisions judge. `XOR_DECISIONS_URL` and
+`XOR_DECISIONS_MODEL` select its endpoint and model. An alert is emitted when
+maliciousness or unauthorized-transfer probability reaches
+`ALERT_JUDGE_THRESHOLD` (default 0.7). Missing or invalid judgments produce an
+`unverified` alert. These are suspected actions in model output, not proof that a
+tool executed or data left the system.
+
+Application warning logs contain only a generated alert ID, a UUID-validated
+request ID for correlation when available, assessment status,
+risk scores, rule names, and finding count. They exclude conversation content,
+arguments, user identifiers, and destination URLs. The optional
+`LITELLM_ALERT_WEBHOOK_URL` receives detailed evidence, including sensitive
+content; configure it only for a trusted, access-controlled incident destination.
+The judge also receives sensitive evidence and must be an approved service.
+
+Each callback instance permits four simultaneous scans and up to 64 pending
+scans. Excess events produce a `scan dropped` warning. Duplicate call IDs are
+suppressed while pending and for the last 1024 completed requests in that
+process. Webhook timeouts, transport errors, HTTP 408/429, and server errors are
+retried up to three total attempts with exponential delay. Retries reuse the
+alert ID and `Idempotency-Key`; receivers should deduplicate using that ID.
+Delivery exhaustion produces a warning. Monitor these warnings alongside alert
+summaries. Pending work is in memory and is not durable across process exits.
