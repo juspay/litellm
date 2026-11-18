@@ -313,6 +313,7 @@ from litellm.proxy.common_utils.load_config_utils import (
 )
 from litellm.proxy.common_utils.model_listing_utils import TeamModelNameTranslator
 from litellm.proxy.common_utils.openai_endpoint_utils import (
+    is_external_deployment,
     remove_sensitive_info_from_deployment,
 )
 from litellm.proxy.common_utils.proxy_state import ProxyState
@@ -11120,7 +11121,10 @@ async def get_all_team_and_direct_access_models(
 
 
 def _enrich_model_info_with_litellm_data(
-    model: Dict[str, Any], debug: bool = False, llm_router: Optional[Router] = None
+    model: Dict[str, Any],
+    debug: bool = False,
+    llm_router: Router | None = None,
+    keep_infra_metadata: bool = False,
 ) -> Dict[str, Any]:
     """
     Enrich a model dictionary with litellm model info (pricing, context window, etc.)
@@ -11130,6 +11134,9 @@ def _enrich_model_info_with_litellm_data(
         model: Model dictionary to enrich
         debug: Whether to include debug information like openai_client
         llm_router: Optional router instance for debug info
+        keep_infra_metadata: When True, infra topology fields (api_base etc.)
+            survive sanitization. The caller is responsible for having checked
+            the admin role and IS_EXTERNAL env gate first.
 
     Returns:
         Enriched model dictionary with sensitive info removed
@@ -11177,7 +11184,11 @@ def _enrich_model_info_with_litellm_data(
     model["model_info"] = model_info
     # don't return the api key / vertex credentials
     # don't return the llm credentials
-    model = remove_sensitive_info_from_deployment(model, excluded_keys={"litellm_credential_name"})
+    model = remove_sensitive_info_from_deployment(
+        model,
+        excluded_keys={"litellm_credential_name"},
+        keep_infra_metadata=keep_infra_metadata,
+    )
     return model
 
 
@@ -11319,7 +11330,7 @@ async def _apply_search_filter_to_models(
     page: int = 1,
     size: int = 50,
     sort_by: Optional[str] = None,
-    llm_router: Optional[Router] = None,
+    llm_router: Router | None = None,
     show_experimental: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Optional[int]]:
     """
@@ -11802,6 +11813,24 @@ async def _filter_models_by_team_id(
     return filtered_models
 
 
+def _caller_gets_infra_metadata(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    """Whether the caller may receive infra topology fields (api_base, cloud
+    role/project ids, bucket names) in a model/info payload.
+
+    Requires a proxy-admin role and IS_EXTERNAL_DEPLOYMENT to be false: only
+    admins on an internal deployment get the topology. On the external-facing
+    proxy it stays hidden from every caller, admins included.
+    """
+    return (
+        user_api_key_dict.user_role
+        in (
+            LitellmUserRoles.PROXY_ADMIN,
+            LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+        )
+        and not is_external_deployment()
+    )
+
+
 async def _caller_can_see_deployment(
     found_model: dict,
     user_api_key_dict: UserAPIKeyAuth,
@@ -11947,11 +11976,12 @@ async def model_info_v2(
     Paginated model metadata for proxy deployments (pricing, provider, team access).
 
     Returns configured router deployments with enriched `model_info` (costs, provider,
-    context window, etc.). Credential and infra-topology fields (API keys, tokens,
-    api_base, cloud role/project identifiers) are omitted. Results are scoped to
-    deployments the caller can use: key/team model allowlists, BYOK team
-    membership, and experimental-deployment tags are all enforced, including
-    for `modelId` lookups.
+    context window, etc.). Credential fields (API keys, tokens) are always omitted.
+    Infra-topology fields (api_base, cloud role/project identifiers) are included only
+    for proxy admins when IS_EXTERNAL_DEPLOYMENT is false, and omitted for every other
+    caller. Results are scoped to deployments the caller can use: key/team model
+    allowlists, BYOK team membership, and experimental-deployment tags are all
+    enforced, including for `modelId` lookups.
 
     Query parameters:
         model: Filter to a single public `model_name`.
@@ -12086,6 +12116,7 @@ async def model_info_v2(
             model=_model,
             debug=debug if debug is not None else False,
             llm_router=llm_router,
+            keep_infra_metadata=_caller_gets_infra_metadata(user_api_key_dict),
         )
 
     # Apply teamId filter if provided
@@ -12683,7 +12714,7 @@ def _fully_experimental_model_names(llm_router: Optional[Router]) -> Set[str]:
     return all_names - live_names
 
 
-def _get_proxy_model_info(model: dict) -> dict:
+def _get_proxy_model_info(model: dict, keep_infra_metadata: bool = False) -> dict:
     # provided model_info in config.yaml
     model_info = model.get("model_info", {})
 
@@ -12717,7 +12748,11 @@ def _get_proxy_model_info(model: dict) -> dict:
             model_info[k] = v
     model["model_info"] = model_info
     # don't return the llm credentials
-    model = remove_sensitive_info_from_deployment(deployment_dict=model, excluded_keys={"litellm_credential_name"})
+    model = remove_sensitive_info_from_deployment(
+        deployment_dict=model,
+        excluded_keys={"litellm_credential_name"},
+        keep_infra_metadata=keep_infra_metadata,
+    )
 
     return _translate_model_name_for_response(model)
 
@@ -12746,7 +12781,7 @@ async def model_info_v1(
     ),
 ):
     """
-    Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
+    Provides more info about each model in /models, including config.yaml descriptions (credentials are always omitted; infra topology such as api base is included only for proxy admins when IS_EXTERNAL_DEPLOYMENT is false)
 
     Parameters:
         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -12812,6 +12847,7 @@ async def model_info_v1(
         _deployment_info_dict = remove_sensitive_info_from_deployment(
             deployment_dict=_deployment_info_dict,
             excluded_keys={"litellm_credential_name"},
+            keep_infra_metadata=_caller_gets_infra_metadata(user_api_key_dict),
         )
         return {"data": _deployment_info_dict}
 
@@ -12851,7 +12887,10 @@ async def model_info_v1(
                 status_code=400,
                 detail={"error": f"Model id = {litellm_model_id} not found on litellm proxy"},
             )
-        _deployment_info_dict = _get_proxy_model_info(model=_single_deployment_dict)
+        _deployment_info_dict = _get_proxy_model_info(
+            model=_single_deployment_dict,
+            keep_infra_metadata=_caller_gets_infra_metadata(user_api_key_dict),
+        )
         single_model_list: List[dict] = [_deployment_info_dict]
         if prisma_client is not None:
             single_model_list = await _populate_team_access_on_models(
@@ -12902,7 +12941,13 @@ async def model_info_v1(
         all_models = _filter_models_to_user_accessible(all_models)
 
     all_models = [
-        _translate_model_name_for_response(_enrich_model_info_with_litellm_data(model=model, llm_router=llm_router))
+        _translate_model_name_for_response(
+            _enrich_model_info_with_litellm_data(
+                model=model,
+                llm_router=llm_router,
+                keep_infra_metadata=_caller_gets_infra_metadata(user_api_key_dict),
+            )
+        )
         for model in all_models
     ]
 

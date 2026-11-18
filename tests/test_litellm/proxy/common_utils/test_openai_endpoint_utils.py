@@ -174,3 +174,37 @@ def test_remove_sensitive_info_drops_router_config_paths():
         "quality_router_config",
     ):
         assert key not in sanitized["litellm_params"]
+
+
+def test_keep_infra_metadata_preserves_infra_keys_but_still_drops_credentials():
+    """keep_infra_metadata=True (admin + IS_EXTERNAL path) leaves infra topology
+    keys in place, while credential keys are still dropped and masked."""
+    deployment = {
+        "model_name": "gpt-4",
+        "litellm_params": {
+            "model": "openai/gpt-4",
+            "api_key": "sk-sensitive-key-123",
+            "api_base": "https://internal-gw.juspay-prod.internal/v1",
+            "vertex_project": "xyne-prod",
+            "aws_role_name": "arn:aws:iam::123456789012:role/llm-proxy-prod",
+            "temperature": 0.7,
+        },
+    }
+    sanitized = remove_sensitive_info_from_deployment(deployment, keep_infra_metadata=True)
+    assert sanitized["litellm_params"]["api_base"] == "https://internal-gw.juspay-prod.internal/v1"
+    assert sanitized["litellm_params"]["vertex_project"] == "xyne-prod"
+    assert sanitized["litellm_params"]["aws_role_name"] == "arn:aws:iam::123456789012:role/llm-proxy-prod"
+    assert "api_key" not in sanitized["litellm_params"]
+
+
+def test_is_external_deployment_env_parsing(monkeypatch):
+    from litellm.proxy.common_utils.openai_endpoint_utils import is_external_deployment
+
+    for raw in ("true", "TRUE", "1"):
+        monkeypatch.setenv("IS_EXTERNAL_DEPLOYMENT", raw)
+        assert is_external_deployment() is True
+    for raw in ("false", "0", "", "yes", "on"):
+        monkeypatch.setenv("IS_EXTERNAL_DEPLOYMENT", raw)
+        assert is_external_deployment() is False
+    monkeypatch.delenv("IS_EXTERNAL_DEPLOYMENT", raising=False)
+    assert is_external_deployment() is False

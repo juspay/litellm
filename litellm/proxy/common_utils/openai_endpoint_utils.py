@@ -2,6 +2,7 @@
 Contains utils used by OpenAI compatible endpoints
 """
 
+import os
 from typing import Final, Optional, Set
 
 from fastapi import Request
@@ -10,6 +11,11 @@ from litellm.litellm_core_utils.sensitive_data_masker import SensitiveDataMasker
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 
 SENSITIVE_DATA_MASKER = SensitiveDataMasker()
+
+
+def is_external_deployment() -> bool:
+    return os.getenv("IS_EXTERNAL_DEPLOYMENT", "").lower() in ("true", "1")
+
 
 _CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -49,6 +55,7 @@ _INFRA_METADATA_KEYS: Final[frozenset[str]] = frozenset(
 def remove_sensitive_info_from_deployment(
     deployment_dict: dict,
     excluded_keys: Optional[Set[str]] = None,
+    keep_infra_metadata: bool = False,
 ) -> dict:
     """
     Removes sensitive information from a deployment dictionary.
@@ -62,11 +69,14 @@ def remove_sensitive_info_from_deployment(
     Args:
         deployment_dict (dict): The deployment dictionary to remove sensitive information from.
         excluded_keys (Optional[Set[str]]): Set of keys that should not be masked (exact match).
+        keep_infra_metadata (bool): When True, infra metadata keys are left in
+            place. Callers must combine this with both an admin-role check and
+            the IS_EXTERNAL env gate; this function does not verify either.
 
     Returns:
         dict: The modified deployment dictionary with sensitive information removed.
     """
-    for key in _CREDENTIAL_KEYS | _INFRA_METADATA_KEYS:
+    for key in _CREDENTIAL_KEYS | (set() if keep_infra_metadata else _INFRA_METADATA_KEYS):
         deployment_dict["litellm_params"].pop(key, None)
 
     # Rate-limit config fields must never be masked — they are integers, not credentials.
