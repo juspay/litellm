@@ -3,6 +3,7 @@ Contains utils used by OpenAI compatible endpoints
 """
 
 from typing import Final, Optional, Set
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from fastapi import Request
 
@@ -10,6 +11,7 @@ from litellm.litellm_core_utils.sensitive_data_masker import SensitiveDataMasker
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 
 SENSITIVE_DATA_MASKER = SensitiveDataMasker()
+
 
 _CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -46,9 +48,73 @@ _INFRA_METADATA_KEYS: Final[frozenset[str]] = frozenset(
 )
 
 
+_URL_VALUED_INFRA_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "api_base",
+        "base_url",
+        "aws_bedrock_runtime_endpoint",
+    }
+)
+
+_CREDENTIAL_QUERY_PARAM_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        "key",
+        "apikey",
+        "api_key",
+        "token",
+        "password",
+        "secret",
+        "signature",
+        "sig",
+        "sas",
+    }
+)
+
+
+def sanitize_url_credentials(url: str) -> str:
+    """Strip userinfo (user:password@) and credential-valued query params from a URL.
+
+    A URL kept in a model/info response still cannot carry embedded credentials:
+    https://user:pass@host/v1 and https://host/v1?sig=abc must reach the caller
+    with the credential parts removed, not just the surrounding field masked.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return url
+    if not parsed.scheme and "://" not in url:
+        return url
+
+    netloc = parsed.hostname or ""
+    if ":" in netloc:
+        netloc = f"[{netloc}]"
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+
+    filtered_query = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in _CREDENTIAL_QUERY_PARAM_TOKENS
+        and not any(token in k.lower() for token in _CREDENTIAL_QUERY_PARAM_TOKENS)
+    ]
+    query = urlencode(filtered_query)
+
+    return urlunparse(
+        (
+            parsed.scheme,
+            netloc,
+            parsed.path,
+            parsed.params,
+            query,
+            parsed.fragment,
+        )
+    )
+
+
 def remove_sensitive_info_from_deployment(
     deployment_dict: dict,
     excluded_keys: Optional[Set[str]] = None,
+    keep_infra_metadata: bool = False,
 ) -> dict:
     """
     Removes sensitive information from a deployment dictionary.
@@ -62,12 +128,24 @@ def remove_sensitive_info_from_deployment(
     Args:
         deployment_dict (dict): The deployment dictionary to remove sensitive information from.
         excluded_keys (Optional[Set[str]]): Set of keys that should not be masked (exact match).
+        keep_infra_metadata (bool): When True, infra metadata keys are left in
+            place. Callers must combine this with an admin-role check; this
+            function does not verify the caller. URL-valued kept fields
+            (api_base etc.) are scrubbed of embedded userinfo (user:pass@) and
+            credential query params, since those are credentials hiding inside
+            an otherwise-safe field.
 
     Returns:
         dict: The modified deployment dictionary with sensitive information removed.
     """
-    for key in _CREDENTIAL_KEYS | _INFRA_METADATA_KEYS:
+    for key in _CREDENTIAL_KEYS | (set() if keep_infra_metadata else _INFRA_METADATA_KEYS):
         deployment_dict["litellm_params"].pop(key, None)
+
+    if keep_infra_metadata:
+        for key in _URL_VALUED_INFRA_KEYS & deployment_dict["litellm_params"].keys():
+            value = deployment_dict["litellm_params"][key]
+            if isinstance(value, str):
+                deployment_dict["litellm_params"][key] = sanitize_url_credentials(value)
 
     # Rate-limit config fields must never be masked — they are integers, not credentials.
     # The field names contain "key" which matches the masker's sensitive pattern, so we

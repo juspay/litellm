@@ -65,6 +65,17 @@ interface ModelInfoViewProps {
 // UpdateModelCredentialsModal instead, which sends only the new key.
 const isMaskedSecret = (value: unknown): boolean => typeof value === "string" && /\*{2,}/.test(value);
 
+// /model/info returns these fields with embedded URL credentials stripped
+// (userinfo, credential query params). Echoing the sanitized values back on
+// save would overwrite the stored authenticated URLs. They are excluded from
+// the extra-params JSON seed entirely and only re-sent through the dedicated
+// api_base form field when the user actually edits it.
+const SERVER_SANITIZED_PARAM_KEYS: ReadonlySet<string> = new Set([
+  "api_base",
+  "base_url",
+  "aws_bedrock_runtime_endpoint",
+]);
+
 const stripMaskedSecrets = (params: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(params).filter(([, value]) => !isMaskedSecret(value)));
 
@@ -261,7 +272,6 @@ export default function ModelInfoView({
         ...values.litellm_params,
         ...parsedExtraParams,
         model: values.litellm_model_name,
-        api_base: values.api_base,
         custom_llm_provider: values.custom_llm_provider,
         organization: values.organization,
         tpm: values.tpm,
@@ -271,6 +281,14 @@ export default function ModelInfoView({
         stream_timeout: values.stream_timeout,
         tags: values.tags,
       };
+
+      // api_base arrives sanitized (embedded credentials stripped by the
+      // proxy), so resubmitting an untouched field would overwrite the stored
+      // authenticated URL with its credential-free version. Only send it when
+      // the user actually edited the field.
+      if (form.isFieldTouched("api_base")) {
+        updatedLitellmParams.api_base = values.api_base;
+      }
 
       if (form.isFieldTouched("input_cost")) {
         if (values.input_cost !== undefined && values.input_cost !== null && values.input_cost !== "") {
@@ -753,7 +771,10 @@ export default function ModelInfoView({
                     litellm_extra_params: JSON.stringify(
                       Object.fromEntries(
                         Object.entries(localModelData.litellm_params || {}).filter(
-                          ([key, value]) => key !== "litellm_credential_name" && !isMaskedSecret(value),
+                          ([key, value]) =>
+                            key !== "litellm_credential_name" &&
+                            !SERVER_SANITIZED_PARAM_KEYS.has(key) &&
+                            !isMaskedSecret(value),
                         ),
                       ),
                       null,

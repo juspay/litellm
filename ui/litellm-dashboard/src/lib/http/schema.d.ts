@@ -7673,7 +7673,7 @@ export interface paths {
         };
         /**
          * Model Info V1
-         * @description Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
+         * @description Provides more info about each model in /models, including config.yaml descriptions (credentials are always omitted; infra topology such as api base is included only for proxy admins, with embedded URL credentials scrubbed)
          *
          *     Parameters:
          *         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -17346,7 +17346,7 @@ export interface paths {
         };
         /**
          * Model Info V1
-         * @description Provides more info about each model in /models, including config.yaml descriptions (credentials and infra topology such as api key and api base are omitted)
+         * @description Provides more info about each model in /models, including config.yaml descriptions (credentials are always omitted; infra topology such as api base is included only for proxy admins, with embedded URL credentials scrubbed)
          *
          *     Parameters:
          *         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)
@@ -19333,11 +19333,13 @@ export interface paths {
          * @description Paginated model metadata for proxy deployments (pricing, provider, team access).
          *
          *     Returns configured router deployments with enriched `model_info` (costs, provider,
-         *     context window, etc.). Credential and infra-topology fields (API keys, tokens,
-         *     api_base, cloud role/project identifiers) are omitted. Results are scoped to
-         *     deployments the caller can use: key/team model allowlists, BYOK team
-         *     membership, and experimental-deployment tags are all enforced, including
-         *     for `modelId` lookups.
+         *     context window, etc.). Credential fields (API keys, tokens) are always omitted.
+         *     Infra-topology fields (api_base, cloud role/project identifiers) are included only
+         *     for proxy admins, and omitted for every other caller. URL-valued infra fields are
+         *     scrubbed of embedded credentials (userinfo, credential query params) before
+         *     returning. Results are scoped to deployments the caller can use: key/team model
+         *     allowlists, BYOK team membership, and experimental-deployment tags are all
+         *     enforced, including for `modelId` lookups.
          *
          *     Query parameters:
          *         model: Filter to a single public `model_name`.

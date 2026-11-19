@@ -174,3 +174,101 @@ def test_remove_sensitive_info_drops_router_config_paths():
         "quality_router_config",
     ):
         assert key not in sanitized["litellm_params"]
+
+
+def test_keep_infra_metadata_preserves_infra_keys_but_still_drops_credentials():
+    """keep_infra_metadata=True (admin + IS_EXTERNAL path) leaves infra topology
+    keys in place, while credential keys are still dropped and masked."""
+    deployment = {
+        "model_name": "gpt-4",
+        "litellm_params": {
+            "model": "openai/gpt-4",
+            "api_key": "sk-sensitive-key-123",
+            "api_base": "https://internal-gw.juspay-prod.internal/v1",
+            "vertex_project": "xyne-prod",
+            "aws_role_name": "arn:aws:iam::123456789012:role/llm-proxy-prod",
+            "temperature": 0.7,
+        },
+    }
+    sanitized = remove_sensitive_info_from_deployment(deployment, keep_infra_metadata=True)
+    assert sanitized["litellm_params"]["api_base"] == "https://internal-gw.juspay-prod.internal/v1"
+    assert sanitized["litellm_params"]["vertex_project"] == "xyne-prod"
+    assert sanitized["litellm_params"]["aws_role_name"] == "arn:aws:iam::123456789012:role/llm-proxy-prod"
+    assert "api_key" not in sanitized["litellm_params"]
+
+
+def test_keep_infra_metadata_scrubs_userinfo_from_url():
+    """A kept api_base with embedded user:pass userinfo must reach the caller
+    with the credential removed, host and path intact."""
+    deployment = {
+        "model_name": "gpt-4",
+        "litellm_params": {
+            "model": "openai/gpt-4",
+            "api_base": "https://svc:s3cret-pw@internal-gw.example.internal/v1",
+        },
+    }
+    sanitized = remove_sensitive_info_from_deployment(deployment, keep_infra_metadata=True)
+    assert sanitized["litellm_params"]["api_base"] == "https://internal-gw.example.internal/v1"
+    assert "s3cret-pw" not in sanitized["litellm_params"]["api_base"]
+
+
+def test_keep_infra_metadata_scrubs_credential_query_params():
+    """A kept base_url carrying key/token/signature query params loses those
+    params while non-credential params survive."""
+    deployment = {
+        "model_name": "gpt-4",
+        "litellm_params": {
+            "model": "openai/gpt-4",
+            "base_url": "https://internal-gw.example.internal/v1?api-version=2024-02&sig=abcd1234&key=sk-live",
+        },
+    }
+    sanitized = remove_sensitive_info_from_deployment(deployment, keep_infra_metadata=True)
+    assert "sig=abcd1234" not in sanitized["litellm_params"]["base_url"]
+    assert "sk-live" not in sanitized["litellm_params"]["base_url"]
+    assert "api-version=2024-02" in sanitized["litellm_params"]["base_url"]
+
+
+def test_keep_infra_metadata_scrubs_nonstandard_credential_params():
+    """Credential-bearing params under non-credential names still leak unless
+    the token appears in the param name; e.g. SAS token params on Azure-style
+    URLs (se, sp, sv are policy fields, not secrets, but 'sig' is)."""
+    from litellm.proxy.common_utils.openai_endpoint_utils import sanitize_url_credentials
+
+    assert (
+        sanitize_url_credentials("https://h/v1?sv=2023&sig=XYZ&sp=r")
+        == "https://h/v1?sv=2023&sp=r"
+    )
+    assert sanitize_url_credentials("https://user@host/v1") == "https://host/v1"
+    assert sanitize_url_credentials("https://host:8080/v1") == "https://host:8080/v1"
+    assert sanitize_url_credentials("not-a-url") == "not-a-url"
+
+
+def test_sanitize_url_credentials_preserves_ipv6_brackets():
+    """Rebuilding the authority from urlparse.hostname loses the IPv6 brackets
+    (http://[::1]:8000/v1 -> http://::1:8000/v1, an invalid URL). Brackets must
+    be restored for any host containing colons, with and without userinfo or
+    port, and plain IPv4/hostnames must stay untouched."""
+    from litellm.proxy.common_utils.openai_endpoint_utils import sanitize_url_credentials
+
+    assert sanitize_url_credentials("http://[::1]:8000/v1") == "http://[::1]:8000/v1"
+    assert (
+        sanitize_url_credentials("https://svc:pw@[2001:db8::1]:8443/v1")
+        == "https://[2001:db8::1]:8443/v1"
+    )
+    assert sanitize_url_credentials("http://[2001:db8::1]/v1") == "http://[2001:db8::1]/v1"
+    assert sanitize_url_credentials("http://127.0.0.1:8000/v1") == "http://127.0.0.1:8000/v1"
+    assert sanitize_url_credentials("http://host/v1") == "http://host/v1"
+
+
+def test_drop_infra_metadata_path_still_drops_urls_entirely():
+    """Without keep_infra_metadata the whole field is popped, so no URL (and no
+    embedded credential in it) can appear in the response."""
+    deployment = {
+        "model_name": "gpt-4",
+        "litellm_params": {
+            "model": "openai/gpt-4",
+            "api_base": "https://svc:pw@host/v1",
+        },
+    }
+    sanitized = remove_sensitive_info_from_deployment(deployment)
+    assert "api_base" not in sanitized["litellm_params"]

@@ -30,6 +30,7 @@ vi.mock("./networking", () => ({
   modelPatchUpdateCall: vi.fn(),
   modelDeleteCall: vi.fn(),
   credentialCreateCall: vi.fn(),
+  vectorStoreListCall: vi.fn(),
 }));
 
 const mockUseModelsInfo = vi.fn();
@@ -55,6 +56,7 @@ const mockTestConnectionRequest = vi.mocked(networking.testConnectionRequest);
 const mockModelPatchUpdateCall = vi.mocked(networking.modelPatchUpdateCall);
 const mockModelDeleteCall = vi.mocked(networking.modelDeleteCall);
 const mockCredentialCreateCall = vi.mocked(networking.credentialCreateCall);
+const mockVectorStoreListCall = vi.mocked(networking.vectorStoreListCall);
 
 describe("ModelInfoView", () => {
   let queryClient: QueryClient;
@@ -72,6 +74,7 @@ describe("ModelInfoView", () => {
       created_by: "123",
       created_at: "2024-01-01T00:00:00Z",
       db_model: true,
+      sticky_weight: 1,
       input_cost_per_token: 0.00003,
       output_cost_per_token: 0.00006,
     },
@@ -141,6 +144,8 @@ describe("ModelInfoView", () => {
     mockGetGuardrailsList.mockResolvedValue({
       guardrails: [{ guardrail_name: "content_filter" }, { guardrail_name: "toxicity_filter" }],
     });
+
+    mockVectorStoreListCall.mockResolvedValue({ data: [] });
 
     mockTagListCall.mockResolvedValue({
       test_tag: {
@@ -676,6 +681,60 @@ describe("ModelInfoView", () => {
     expect(updatePayload.litellm_params.azure_ad_token).not.toBe(maskedSecret);
     // No masked value may appear anywhere in the outbound params.
     expect(JSON.stringify(updatePayload.litellm_params)).not.toContain("**");
+  });
+
+  it("does not re-send untouched sanitized URL fields on save (regression: sanitized URLs must not overwrite stored authenticated URLs)", async () => {
+    // /model/info returns every URL-valued infra field with embedded
+    // credentials scrubbed (https://user:pass@host -> https://host), not just
+    // api_base. The form loads those sanitized values; submitting them on
+    // every save would replace the stored authenticated URLs and break
+    // subsequent requests. None of them may be sent unless the user actually
+    // edited the field (only api_base has a dedicated form field today).
+    const sanitizedModelData = {
+      ...defaultModelData,
+      litellm_params: {
+        model: "openai/gpt-4o",
+        api_base: "https://example-gw.internal/v1",
+        base_url: "https://example-gw2.internal/v1",
+        aws_bedrock_runtime_endpoint: "https://bedrock.internal/v1",
+        custom_llm_provider: "openai",
+        rpm: 100,
+      },
+    };
+    mockUseModelsInfo.mockReturnValue({
+      data: { data: [sanitizedModelData] },
+      isLoading: false,
+      error: null,
+    });
+    mockModelInfoV1Call.mockResolvedValue({ data: [sanitizedModelData] });
+
+    const user = userEvent.setup();
+    render(<ModelInfoView {...DEFAULT_ADMIN_PROPS} />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /edit settings/i })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("button", { name: /edit settings/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+    });
+
+    // Change an unrelated field (RPM) and save; no sanitized URL may be in the payload.
+    const rpmInput = screen.getByPlaceholderText("Enter RPM");
+    await user.clear(rpmInput);
+    await user.type(rpmInput, "60");
+    await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(mockModelPatchUpdateCall).toHaveBeenCalled();
+    });
+
+    const updatePayload = mockModelPatchUpdateCall.mock.calls[0][1];
+    expect(Number(updatePayload.litellm_params.rpm)).toBe(60);
+    expect(updatePayload.litellm_params).not.toHaveProperty("api_base");
+    expect(updatePayload.litellm_params).not.toHaveProperty("base_url");
+    expect(updatePayload.litellm_params).not.toHaveProperty("aws_bedrock_runtime_endpoint");
   });
 
   it("should display health check model field for wildcard models", async () => {

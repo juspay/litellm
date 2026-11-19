@@ -9,11 +9,13 @@ Pins (PR2):
 
 from __future__ import annotations
 
+import copy
 from unittest.mock import MagicMock
 
 import pytest
 
 from litellm.proxy import proxy_server
+from litellm.proxy._types import LitellmUserRoles
 
 from .conftest import normalize  # type: ignore[import-not-found]
 
@@ -92,7 +94,7 @@ def configured_router(monkeypatch):
     monkeypatch.setattr(proxy_server, "llm_router", router)
     monkeypatch.setattr(proxy_server, "llm_model_list", [{"model_name": "gpt-4"}])
     monkeypatch.setattr(proxy_server, "user_model", None)
-    monkeypatch.setattr(proxy_server, "_get_proxy_model_info", lambda model: model)
+    monkeypatch.setattr(proxy_server, "_get_proxy_model_info", lambda model, keep_infra_metadata=False: model)
     yield router
 
 
@@ -635,7 +637,7 @@ def test_v1_model_info_specific_id_scoped_to_caller(client, auth_as, v2_scoped_r
 
 
 def test_v2_model_info_drops_infra_metadata(client, auth_as, v2_scoped_router, mock_prisma, monkeypatch):
-    """No caller, including admins, receives infra topology fields in the
+    """Non-admin callers never receive infra topology fields in the
     model-info payload: api_base, cloud role/project ids, bucket names."""
     from litellm.proxy._types import LitellmUserRoles
 
@@ -655,7 +657,7 @@ def test_v2_model_info_drops_infra_metadata(client, auth_as, v2_scoped_router, m
     }
     v2_scoped_router.model_list = v2_scoped_router.model_list + [infra_row]
 
-    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None):
         response = client.get("/v2/model/info")
 
     assert response.status_code == 200
@@ -665,6 +667,157 @@ def test_v2_model_info_drops_infra_metadata(client, auth_as, v2_scoped_router, m
         assert "aws_role_name" not in params
         assert "vertex_project" not in params
         assert "s3_bucket_name" not in params
+
+
+# ---------------------------------------------------------------------------
+# Infra metadata (api_base etc.) — admin role gate, URL credential scrubbing
+# ---------------------------------------------------------------------------
+
+_INFRA_ROW = {
+    "model_name": "infra-model",
+    "litellm_params": {
+        "model": "openai/gpt-4",
+        "api_base": "https://internal-gw.juspay-prod.internal/v1",
+        "aws_role_name": "arn:aws:iam::123456789012:role/llm-proxy-prod",
+        "vertex_project": "xyne-prod",
+    },
+    "model_info": {"id": "infra-id", "db_model": False},
+}
+
+
+@pytest.fixture
+def infra_router(monkeypatch):
+    router = MagicMock()
+    router.model_list = [copy.deepcopy(_INFRA_ROW)]
+    router.get_model_list_from_model_alias = MagicMock(return_value=[])
+    router.get_model_names = MagicMock(return_value=[])
+    router.get_model_access_groups = MagicMock(return_value={})
+    router.get_model_ids = MagicMock(return_value=[])
+
+    monkeypatch.setattr(proxy_server, "llm_router", router)
+    monkeypatch.setattr(proxy_server, "llm_model_list", router.model_list)
+    monkeypatch.setattr(proxy_server, "user_model", None)
+    yield router
+
+
+def _infra_params(response_body: dict) -> dict:
+    rows = [m for m in response_body["data"] if m.get("model_name") == "infra-model"]
+    assert rows, "infra-model row must be present in the listing"
+    return rows[0].get("litellm_params", {})
+
+
+@pytest.mark.parametrize(
+    "role",
+    [LitellmUserRoles.PROXY_ADMIN, LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY],
+)
+def test_v2_model_info_admin_sees_infra_metadata(
+    client, auth_as, infra_router, mock_prisma, monkeypatch, role
+):
+    """Admin and view-only-admin callers receive infra topology fields;
+    credentials stay dropped and URL fields stay scrubbed."""
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(role=role):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    params = _infra_params(response.json())
+    assert params["api_base"] == "https://internal-gw.juspay-prod.internal/v1"
+    assert params["aws_role_name"] == "arn:aws:iam::123456789012:role/llm-proxy-prod"
+    assert params["vertex_project"] == "xyne-prod"
+    assert "api_key" not in params
+
+
+def test_v2_model_info_non_admin_never_gets_infra_metadata(
+    client, auth_as, infra_router, mock_prisma, monkeypatch
+):
+    """A non-admin caller gets no infra fields regardless of environment."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    params = _infra_params(response.json())
+    assert "api_base" not in params
+    assert "aws_role_name" not in params
+    assert "vertex_project" not in params
+
+
+def test_v2_model_info_admin_sees_infra_metadata_scrubbed_of_url_credentials(
+    client, auth_as, infra_router, mock_prisma, monkeypatch
+):
+    """Infra fields an admin receives must not carry embedded URL credentials:
+    userinfo is stripped and credential query params dropped, non-credential
+    params survive."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    infra_router.model_list[0]["litellm_params"]["api_base"] = (
+        "https://svc:s3cret-pw@internal-gw.juspay-prod.internal/v1?api-version=2024-02&sig=abcd1234"
+    )
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    api_base = _infra_params(response.json())["api_base"]
+    assert "s3cret-pw" not in api_base
+    assert "abcd1234" not in api_base
+    assert "api-version=2024-02" in api_base
+
+
+@pytest.mark.parametrize("path", ["/v1/model/info", "/model/info"])
+def test_v1_model_info_admin_sees_infra_metadata(
+    client, auth_as, infra_router, mock_prisma, monkeypatch, path
+):
+    """/v1/model/info full listing honors the same admin-role gate."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get(path)
+
+    assert response.status_code == 200
+    params = _infra_params(response.json())
+    assert params["api_base"] == "https://internal-gw.juspay-prod.internal/v1"
+    assert params["vertex_project"] == "xyne-prod"
+    assert "api_key" not in params
+
+
+@pytest.mark.parametrize("path", ["/v1/model/info", "/model/info"])
+def test_v1_model_info_id_lookup_honors_infra_gate(
+    client, auth_as, infra_router, mock_prisma, monkeypatch, path
+):
+    """The litellm_model_id lookup branch honors the same admin-role gate as
+    the listings, so it cannot be used to serve infra fields to a non-admin."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+
+    deployment = MagicMock()
+    deployment.model_dump = MagicMock(return_value=copy.deepcopy(_INFRA_ROW))
+    infra_router.get_deployment = MagicMock(return_value=deployment)
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get(path, params={"litellm_model_id": "infra-id"})
+    assert response.status_code == 200
+    params = _infra_params(response.json())
+    assert params["api_base"] == "https://internal-gw.juspay-prod.internal/v1"
+
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None):
+        response = client.get(path, params={"litellm_model_id": "infra-id"})
+    assert response.status_code == 200
+    params = _infra_params(response.json())
+    assert "api_base" not in params
 
 
 # ---------------------------------------------------------------------------
