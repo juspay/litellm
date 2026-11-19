@@ -184,8 +184,15 @@ def test_is_combined_false_when_delta_missing():
 
 
 def test_split_clears_reasoning_and_thinking_on_finish_chunk():
-    """When the combined delta carries reasoning/thinking, only the content
-    chunk keeps them — the finish chunk is cleared."""
+    """A chunk carrying reasoning + text + finish_reason decomposes into three
+    ordered chunks: reasoning-only, content-only, then finish-only.
+
+    ``_split`` composes three passes: finish separation, reasoning/content
+    separation (so a bundled first text token is not preempted by
+    ``reasoning_content``), and multi-tool-call separation. Reasoning/thinking
+    live on the reasoning chunk, the visible text on the content chunk, and the
+    finish chunk is fully cleared of payload.
+    """
     delta = SimpleNamespace(
         content="hi",
         tool_calls=None,
@@ -196,9 +203,23 @@ def test_split_clears_reasoning_and_thinking_on_finish_chunk():
         choices=[SimpleNamespace(finish_reason="stop", delta=delta)]
     )
 
-    content_chunk, finish_chunk = _CombinedChunkSplitter._split(chunk)
+    reasoning_chunk, content_chunk, finish_chunk = _CombinedChunkSplitter._split(chunk)
 
-    assert content_chunk.choices[0].delta.reasoning_content == "some reasoning"
-    assert content_chunk.choices[0].delta.thinking_blocks == [{"type": "thinking"}]
+    # Reasoning chunk keeps reasoning/thinking, drops the visible text.
+    assert reasoning_chunk.choices[0].delta.reasoning_content == "some reasoning"
+    assert reasoning_chunk.choices[0].delta.thinking_blocks == [{"type": "thinking"}]
+    assert reasoning_chunk.choices[0].delta.content is None
+    assert reasoning_chunk.choices[0].finish_reason is None
+
+    # Content chunk keeps the visible text, drops reasoning/thinking so the
+    # translator falls through to text_delta instead of thinking_delta.
+    assert content_chunk.choices[0].delta.content == "hi"
+    assert content_chunk.choices[0].delta.reasoning_content is None
+    assert content_chunk.choices[0].delta.thinking_blocks is None
+    assert content_chunk.choices[0].finish_reason is None
+
+    # Finish chunk carries only the stop signal.
+    assert finish_chunk.choices[0].finish_reason == "stop"
+    assert finish_chunk.choices[0].delta.content is None
     assert finish_chunk.choices[0].delta.reasoning_content is None
     assert finish_chunk.choices[0].delta.thinking_blocks is None
