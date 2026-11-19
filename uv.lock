@@ -185,9 +185,9 @@ name = "aiologic"
 version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "sniffio" },
+    { name = "sniffio", marker = "python_full_version < '3.13'" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
-    { name = "wrapt" },
+    { name = "wrapt", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/53/a7/809482759f40079f4c4328c7318bf569ae25d457f5017aad30a1b9aafedc/aiologic-0.17.0.tar.gz", hash = "sha256:65aa058e858c94cd208badb188e7f00b54dcabb3ba85b34f794db98074d108b9", size = 251625, upload-time = "2026-06-14T12:24:35.367Z" }
 wheels = [
@@ -1083,7 +1083,7 @@ name = "culsans"
 version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiologic" },
+    { name = "aiologic", marker = "python_full_version < '3.13'" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d9/e3/49afa1bc180e0d28008ec6bcdf82a4072d1c7a41032b5b759b60814ca4b0/culsans-0.11.0.tar.gz", hash = "sha256:0b43d0d05dce6106293d114c86e3fb4bfc63088cfe8ff08ed3fe36891447fe33", size = 107546, upload-time = "2025-12-31T23:15:38.196Z" }
@@ -1234,15 +1234,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/81/e1/56027a71e31b02ddc53c7d65b01e68edf64dea2932122fe7746a516f75d5/dill-0.4.1.tar.gz", hash = "sha256:423092df4182177d4d8ba8290c8a5b640c66ab35ec7da59ccfa00f6fa3eea5fa", size = 187315, upload-time = "2026-01-19T02:36:56.85Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1e/77/dc8c558f7593132cf8fefec57c4f60c83b16941c574ac5f619abb3ae7933/dill-0.4.1-py3-none-any.whl", hash = "sha256:1e1ce33e978ae97fcfcff5638477032b801c46c7c65cf717f95fbc2248f79a9d", size = 120019, upload-time = "2026-01-19T02:36:55.663Z" },
-]
-
-[[package]]
-name = "diskcache"
-version = "5.6.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3f/21/1c1ffc1a039ddcc459db43cc108658f32c57d271d7289a2794e401d0fdb6/diskcache-5.6.3.tar.gz", hash = "sha256:2c3a3fa2743d8535d832ec61c2054a1641f41775aa7c556758a109941e33e4fc", size = 67916, upload-time = "2023-08-31T06:12:00.316Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/27/4570e78fc0bf5ea0ca45eb1de3818a23787af9b390c0b0a0033a1b8236f9/diskcache-5.6.3-py3-none-any.whl", hash = "sha256:5e31b2d5fbad117cc363ebaf6b689474db18a1f6438bc82358b024abd4c2ca19", size = 45550, upload-time = "2023-08-31T06:11:58.822Z" },
 ]
 
 [[package]]
@@ -3026,9 +3017,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-caching = [
-    { name = "diskcache" },
-]
 cli = [
     { name = "pyyaml" },
     { name = "requests" },
@@ -3225,7 +3213,6 @@ requires-dist = [
     { name = "ddtrace", marker = "extra == 'proxy-runtime'", specifier = ">=4.8.2,<5.0" },
     { name = "defusedxml", specifier = ">=0.7.1,<1.0" },
     { name = "detect-secrets", marker = "extra == 'proxy-runtime'", specifier = ">=1.5.0,<2.0" },
-    { name = "diskcache", marker = "extra == 'caching'", specifier = ">=5.6.3,<6.0" },
     { name = "expression", marker = "extra == 'proxy'", specifier = ">=5.6.0,<6.0" },
     { name = "fastapi", marker = "extra == 'proxy'", specifier = ">=0.136.3,<1.0" },
     { name = "fastapi-sso", marker = "extra == 'proxy'", specifier = ">=0.19.0,<1.0" },
@@ -3293,7 +3280,7 @@ requires-dist = [
     { name = "uvloop", marker = "sys_platform != 'win32' and extra == 'proxy'", specifier = ">=0.21.0,<1.0" },
     { name = "websockets", marker = "extra == 'proxy'", specifier = ">=15.0.1,<16.0" },
 ]
-provides-extras = ["proxy", "cli", "extra-proxy", "utils", "caching", "semantic-router", "mlflow", "grpc", "stt-nvidia-riva", "google", "proxy-runtime"]
+provides-extras = ["proxy", "cli", "extra-proxy", "utils", "semantic-router", "mlflow", "grpc", "stt-nvidia-riva", "google", "proxy-runtime"]
 
 [package.metadata.requires-dev]
 ci = [
