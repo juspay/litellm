@@ -313,7 +313,6 @@ from litellm.proxy.common_utils.load_config_utils import (
 )
 from litellm.proxy.common_utils.model_listing_utils import TeamModelNameTranslator
 from litellm.proxy.common_utils.openai_endpoint_utils import (
-    is_external_deployment,
     remove_sensitive_info_from_deployment,
 )
 from litellm.proxy.common_utils.proxy_state import ProxyState
@@ -11136,7 +11135,7 @@ def _enrich_model_info_with_litellm_data(
         llm_router: Optional router instance for debug info
         keep_infra_metadata: When True, infra topology fields (api_base etc.)
             survive sanitization. The caller is responsible for having checked
-            the admin role and IS_EXTERNAL env gate first.
+            the admin role first.
 
     Returns:
         Enriched model dictionary with sensitive info removed
@@ -11817,17 +11816,13 @@ def _caller_gets_infra_metadata(user_api_key_dict: UserAPIKeyAuth) -> bool:
     """Whether the caller may receive infra topology fields (api_base, cloud
     role/project ids, bucket names) in a model/info payload.
 
-    Requires a proxy-admin role and IS_EXTERNAL_DEPLOYMENT to be false: only
-    admins on an internal deployment get the topology. On the external-facing
-    proxy it stays hidden from every caller, admins included.
+    Requires a proxy-admin role. URL-valued fields are scrubbed of embedded
+    credentials before returning, so the topology is shareable without the
+    secrets that may be riding inside it.
     """
-    return (
-        user_api_key_dict.user_role
-        in (
-            LitellmUserRoles.PROXY_ADMIN,
-            LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
-        )
-        and not is_external_deployment()
+    return user_api_key_dict.user_role in (
+        LitellmUserRoles.PROXY_ADMIN,
+        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
     )
 
 
@@ -11978,8 +11973,9 @@ async def model_info_v2(
     Returns configured router deployments with enriched `model_info` (costs, provider,
     context window, etc.). Credential fields (API keys, tokens) are always omitted.
     Infra-topology fields (api_base, cloud role/project identifiers) are included only
-    for proxy admins when IS_EXTERNAL_DEPLOYMENT is false, and omitted for every other
-    caller. Results are scoped to deployments the caller can use: key/team model
+    for proxy admins, and omitted for every other caller. URL-valued infra fields are
+    scrubbed of embedded credentials (userinfo, credential query params) before
+    returning. Results are scoped to deployments the caller can use: key/team model
     allowlists, BYOK team membership, and experimental-deployment tags are all
     enforced, including for `modelId` lookups.
 
@@ -12781,7 +12777,7 @@ async def model_info_v1(
     ),
 ):
     """
-    Provides more info about each model in /models, including config.yaml descriptions (credentials are always omitted; infra topology such as api base is included only for proxy admins when IS_EXTERNAL_DEPLOYMENT is false)
+    Provides more info about each model in /models, including config.yaml descriptions (credentials are always omitted; infra topology such as api base is included only for proxy admins, with embedded URL credentials scrubbed)
 
     Parameters:
         litellm_model_id: Optional[str] = None (this is the value of `x-litellm-model-id` returned in response headers)

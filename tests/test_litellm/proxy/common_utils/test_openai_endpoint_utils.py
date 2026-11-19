@@ -197,19 +197,6 @@ def test_keep_infra_metadata_preserves_infra_keys_but_still_drops_credentials():
     assert "api_key" not in sanitized["litellm_params"]
 
 
-def test_is_external_deployment_env_parsing(monkeypatch):
-    from litellm.proxy.common_utils.openai_endpoint_utils import is_external_deployment
-
-    for raw in ("true", "TRUE", "1"):
-        monkeypatch.setenv("IS_EXTERNAL_DEPLOYMENT", raw)
-        assert is_external_deployment() is True
-    for raw in ("false", "0", "", "yes", "on"):
-        monkeypatch.setenv("IS_EXTERNAL_DEPLOYMENT", raw)
-        assert is_external_deployment() is False
-    monkeypatch.delenv("IS_EXTERNAL_DEPLOYMENT", raising=False)
-    assert is_external_deployment() is False
-
-
 def test_keep_infra_metadata_scrubs_userinfo_from_url():
     """A kept api_base with embedded user:pass userinfo must reach the caller
     with the credential removed, host and path intact."""
@@ -254,6 +241,23 @@ def test_keep_infra_metadata_scrubs_nonstandard_credential_params():
     assert sanitize_url_credentials("https://user@host/v1") == "https://host/v1"
     assert sanitize_url_credentials("https://host:8080/v1") == "https://host:8080/v1"
     assert sanitize_url_credentials("not-a-url") == "not-a-url"
+
+
+def test_sanitize_url_credentials_preserves_ipv6_brackets():
+    """Rebuilding the authority from urlparse.hostname loses the IPv6 brackets
+    (http://[::1]:8000/v1 -> http://::1:8000/v1, an invalid URL). Brackets must
+    be restored for any host containing colons, with and without userinfo or
+    port, and plain IPv4/hostnames must stay untouched."""
+    from litellm.proxy.common_utils.openai_endpoint_utils import sanitize_url_credentials
+
+    assert sanitize_url_credentials("http://[::1]:8000/v1") == "http://[::1]:8000/v1"
+    assert (
+        sanitize_url_credentials("https://svc:pw@[2001:db8::1]:8443/v1")
+        == "https://[2001:db8::1]:8443/v1"
+    )
+    assert sanitize_url_credentials("http://[2001:db8::1]/v1") == "http://[2001:db8::1]/v1"
+    assert sanitize_url_credentials("http://127.0.0.1:8000/v1") == "http://127.0.0.1:8000/v1"
+    assert sanitize_url_credentials("http://host/v1") == "http://host/v1"
 
 
 def test_drop_infra_metadata_path_still_drops_urls_entirely():

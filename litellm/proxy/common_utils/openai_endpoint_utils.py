@@ -2,7 +2,6 @@
 Contains utils used by OpenAI compatible endpoints
 """
 
-import os
 from typing import Final, Optional, Set
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -12,10 +11,6 @@ from litellm.litellm_core_utils.sensitive_data_masker import SensitiveDataMasker
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
 
 SENSITIVE_DATA_MASKER = SensitiveDataMasker()
-
-
-def is_external_deployment() -> bool:
-    return os.getenv("IS_EXTERNAL_DEPLOYMENT", "").lower() in ("true", "1")
 
 
 _CREDENTIAL_KEYS: Final[frozenset[str]] = frozenset(
@@ -91,6 +86,8 @@ def sanitize_url_credentials(url: str) -> str:
         return url
 
     netloc = parsed.hostname or ""
+    if ":" in netloc:
+        netloc = f"[{netloc}]"
     if parsed.port is not None:
         netloc = f"{netloc}:{parsed.port}"
 
@@ -132,11 +129,11 @@ def remove_sensitive_info_from_deployment(
         deployment_dict (dict): The deployment dictionary to remove sensitive information from.
         excluded_keys (Optional[Set[str]]): Set of keys that should not be masked (exact match).
         keep_infra_metadata (bool): When True, infra metadata keys are left in
-            place. Callers must combine this with both an admin-role check and
-            the IS_EXTERNAL env gate; this function does not verify either.
-            URL-valued kept fields (api_base etc.) are scrubbed of embedded
-            userinfo (user:pass@) and credential query params, since those are
-            credentials hiding inside an otherwise-safe field.
+            place. Callers must combine this with an admin-role check; this
+            function does not verify the caller. URL-valued kept fields
+            (api_base etc.) are scrubbed of embedded userinfo (user:pass@) and
+            credential query params, since those are credentials hiding inside
+            an otherwise-safe field.
 
     Returns:
         dict: The modified deployment dictionary with sensitive information removed.

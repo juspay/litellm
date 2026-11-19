@@ -261,7 +261,6 @@ export default function ModelInfoView({
         ...values.litellm_params,
         ...parsedExtraParams,
         model: values.litellm_model_name,
-        api_base: values.api_base,
         custom_llm_provider: values.custom_llm_provider,
         organization: values.organization,
         tpm: values.tpm,
@@ -271,6 +270,14 @@ export default function ModelInfoView({
         stream_timeout: values.stream_timeout,
         tags: values.tags,
       };
+
+      // api_base arrives sanitized (embedded credentials stripped by the
+      // proxy), so resubmitting an untouched field would overwrite the stored
+      // authenticated URL with its credential-free version. Only send it when
+      // the user actually edited the field.
+      if (form.isFieldTouched("api_base")) {
+        updatedLitellmParams.api_base = values.api_base;
+      }
 
       if (form.isFieldTouched("input_cost")) {
         if (values.input_cost !== undefined && values.input_cost !== null && values.input_cost !== "") {
@@ -753,7 +760,8 @@ export default function ModelInfoView({
                     litellm_extra_params: JSON.stringify(
                       Object.fromEntries(
                         Object.entries(localModelData.litellm_params || {}).filter(
-                          ([key, value]) => key !== "litellm_credential_name" && !isMaskedSecret(value),
+                          ([key, value]) =>
+                            key !== "litellm_credential_name" && key !== "api_base" && !isMaskedSecret(value),
                         ),
                       ),
                       null,

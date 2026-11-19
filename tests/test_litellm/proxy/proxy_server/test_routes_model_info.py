@@ -643,7 +643,6 @@ def test_v2_model_info_drops_infra_metadata(client, auth_as, v2_scoped_router, m
 
     monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
     mock_prisma.db.litellm_usertable.find_unique.return_value = None
-    monkeypatch.delenv("IS_EXTERNAL_DEPLOYMENT", raising=False)
 
     infra_row = {
         "model_name": "infra-model",
@@ -671,7 +670,7 @@ def test_v2_model_info_drops_infra_metadata(client, auth_as, v2_scoped_router, m
 
 
 # ---------------------------------------------------------------------------
-# Infra metadata (api_base etc.) — admin role + internal deployment gate
+# Infra metadata (api_base etc.) — admin role gate, URL credential scrubbing
 # ---------------------------------------------------------------------------
 
 _INFRA_ROW = {
@@ -698,15 +697,7 @@ def infra_router(monkeypatch):
     monkeypatch.setattr(proxy_server, "llm_router", router)
     monkeypatch.setattr(proxy_server, "llm_model_list", router.model_list)
     monkeypatch.setattr(proxy_server, "user_model", None)
-    monkeypatch.delenv("IS_EXTERNAL_DEPLOYMENT", raising=False)
     yield router
-
-
-@pytest.fixture
-def external_deployment_env(monkeypatch):
-    monkeypatch.setenv("IS_EXTERNAL_DEPLOYMENT", "true")
-    yield
-    monkeypatch.delenv("IS_EXTERNAL_DEPLOYMENT", raising=False)
 
 
 def _infra_params(response_body: dict) -> dict:
@@ -715,17 +706,19 @@ def _infra_params(response_body: dict) -> dict:
     return rows[0].get("litellm_params", {})
 
 
-def test_v2_model_info_admin_on_internal_deployment_sees_infra_metadata(
-    client, auth_as, infra_router, mock_prisma, monkeypatch
+@pytest.mark.parametrize(
+    "role",
+    [LitellmUserRoles.PROXY_ADMIN, LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY],
+)
+def test_v2_model_info_admin_sees_infra_metadata(
+    client, auth_as, infra_router, mock_prisma, monkeypatch, role
 ):
-    """Admin on an internal deployment (IS_EXTERNAL_DEPLOYMENT unset/false):
-    infra topology fields are returned."""
-    from litellm.proxy._types import LitellmUserRoles
-
+    """Admin and view-only-admin callers receive infra topology fields;
+    credentials stay dropped and URL fields stay scrubbed."""
     monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
     mock_prisma.db.litellm_usertable.find_unique.return_value = None
 
-    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+    with auth_as(role=role):
         response = client.get("/v2/model/info")
 
     assert response.status_code == 200
@@ -736,33 +729,10 @@ def test_v2_model_info_admin_on_internal_deployment_sees_infra_metadata(
     assert "api_key" not in params
 
 
-@pytest.mark.parametrize(
-    "role",
-    [LitellmUserRoles.PROXY_ADMIN, LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY],
-)
-def test_v2_model_info_admin_on_external_deployment_gets_no_infra_metadata(
-    client, auth_as, infra_router, external_deployment_env, mock_prisma, monkeypatch, role
-):
-    """IS_EXTERNAL_DEPLOYMENT=true: even admins get no infra topology fields.
-    The external-facing proxy must never emit internal topology."""
-    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
-    mock_prisma.db.litellm_usertable.find_unique.return_value = None
-
-    with auth_as(role=role):
-        response = client.get("/v2/model/info")
-
-    assert response.status_code == 200
-    params = _infra_params(response.json())
-    assert "api_base" not in params
-    assert "aws_role_name" not in params
-    assert "vertex_project" not in params
-
-
 def test_v2_model_info_non_admin_never_gets_infra_metadata(
     client, auth_as, infra_router, mock_prisma, monkeypatch
 ):
-    """A non-admin on an internal deployment still gets no infra fields: the
-    admin role check cannot be satisfied by the env being absent."""
+    """A non-admin caller gets no infra fields regardless of environment."""
     from litellm.proxy._types import LitellmUserRoles
 
     monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
@@ -778,11 +748,35 @@ def test_v2_model_info_non_admin_never_gets_infra_metadata(
     assert "vertex_project" not in params
 
 
+def test_v2_model_info_admin_sees_infra_metadata_scrubbed_of_url_credentials(
+    client, auth_as, infra_router, mock_prisma, monkeypatch
+):
+    """Infra fields an admin receives must not carry embedded URL credentials:
+    userinfo is stripped and credential query params dropped, non-credential
+    params survive."""
+    from litellm.proxy._types import LitellmUserRoles
+
+    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
+    mock_prisma.db.litellm_usertable.find_unique.return_value = None
+    infra_router.model_list[0]["litellm_params"]["api_base"] = (
+        "https://svc:s3cret-pw@internal-gw.juspay-prod.internal/v1?api-version=2024-02&sig=abcd1234"
+    )
+
+    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
+        response = client.get("/v2/model/info")
+
+    assert response.status_code == 200
+    api_base = _infra_params(response.json())["api_base"]
+    assert "s3cret-pw" not in api_base
+    assert "abcd1234" not in api_base
+    assert "api-version=2024-02" in api_base
+
+
 @pytest.mark.parametrize("path", ["/v1/model/info", "/model/info"])
-def test_v1_model_info_admin_on_internal_deployment_sees_infra_metadata(
+def test_v1_model_info_admin_sees_infra_metadata(
     client, auth_as, infra_router, mock_prisma, monkeypatch, path
 ):
-    """/v1/model/info full listing honors the same admin + internal-deployment gate."""
+    """/v1/model/info full listing honors the same admin-role gate."""
     from litellm.proxy._types import LitellmUserRoles
 
     monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
@@ -799,31 +793,11 @@ def test_v1_model_info_admin_on_internal_deployment_sees_infra_metadata(
 
 
 @pytest.mark.parametrize("path", ["/v1/model/info", "/model/info"])
-def test_v1_model_info_admin_on_external_deployment_drops_infra_metadata(
-    client, auth_as, infra_router, external_deployment_env, mock_prisma, monkeypatch, path
-):
-    """/v1/model/info with IS_EXTERNAL_DEPLOYMENT=true: admin gets no infra fields."""
-    from litellm.proxy._types import LitellmUserRoles
-
-    monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
-    mock_prisma.db.litellm_usertable.find_unique.return_value = None
-
-    with auth_as(role=LitellmUserRoles.PROXY_ADMIN):
-        response = client.get(path)
-
-    assert response.status_code == 200
-    params = _infra_params(response.json())
-    assert "api_base" not in params
-    assert "vertex_project" not in params
-
-
-@pytest.mark.parametrize("path", ["/v1/model/info", "/model/info"])
 def test_v1_model_info_id_lookup_honors_infra_gate(
     client, auth_as, infra_router, mock_prisma, monkeypatch, path
 ):
-    """The litellm_model_id lookup branch honors the same admin +
-    internal-deployment gate as the listings, so it cannot be used to bypass
-    the env gate."""
+    """The litellm_model_id lookup branch honors the same admin-role gate as
+    the listings, so it cannot be used to serve infra fields to a non-admin."""
     from litellm.proxy._types import LitellmUserRoles
 
     monkeypatch.setattr(proxy_server, "prisma_client", mock_prisma)
@@ -839,8 +813,7 @@ def test_v1_model_info_id_lookup_honors_infra_gate(
     params = _infra_params(response.json())
     assert params["api_base"] == "https://internal-gw.juspay-prod.internal/v1"
 
-    with auth_as(role=LitellmUserRoles.PROXY_ADMIN), monkeypatch.context() as m:
-        m.setenv("IS_EXTERNAL_DEPLOYMENT", "true")
+    with auth_as(role=LitellmUserRoles.INTERNAL_USER, user_id=None):
         response = client.get(path, params={"litellm_model_id": "infra-id"})
     assert response.status_code == 200
     params = _infra_params(response.json())
