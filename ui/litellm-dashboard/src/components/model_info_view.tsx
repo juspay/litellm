@@ -65,6 +65,17 @@ interface ModelInfoViewProps {
 // UpdateModelCredentialsModal instead, which sends only the new key.
 const isMaskedSecret = (value: unknown): boolean => typeof value === "string" && /\*{2,}/.test(value);
 
+// /model/info returns these fields with embedded URL credentials stripped
+// (userinfo, credential query params). Echoing the sanitized values back on
+// save would overwrite the stored authenticated URLs. They are excluded from
+// the extra-params JSON seed entirely and only re-sent through the dedicated
+// api_base form field when the user actually edits it.
+const SERVER_SANITIZED_PARAM_KEYS: ReadonlySet<string> = new Set([
+  "api_base",
+  "base_url",
+  "aws_bedrock_runtime_endpoint",
+]);
+
 const stripMaskedSecrets = (params: Record<string, unknown>): Record<string, unknown> =>
   Object.fromEntries(Object.entries(params).filter(([, value]) => !isMaskedSecret(value)));
 
@@ -761,7 +772,9 @@ export default function ModelInfoView({
                       Object.fromEntries(
                         Object.entries(localModelData.litellm_params || {}).filter(
                           ([key, value]) =>
-                            key !== "litellm_credential_name" && key !== "api_base" && !isMaskedSecret(value),
+                            key !== "litellm_credential_name" &&
+                            !SERVER_SANITIZED_PARAM_KEYS.has(key) &&
+                            !isMaskedSecret(value),
                         ),
                       ),
                       null,

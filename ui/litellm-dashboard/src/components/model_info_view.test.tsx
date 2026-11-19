@@ -683,17 +683,20 @@ describe("ModelInfoView", () => {
     expect(JSON.stringify(updatePayload.litellm_params)).not.toContain("**");
   });
 
-  it("does not re-send an untouched sanitized api_base on save (regression: sanitized URL must not overwrite the stored authenticated URL)", async () => {
-    // /model/info returns api_base with embedded credentials scrubbed
-    // (https://user:pass@host -> https://host). The form loads that sanitized
-    // value; submitting it on every save would replace the stored authenticated
-    // URL and break subsequent requests. api_base must only be sent when the
-    // user actually edited the field.
+  it("does not re-send untouched sanitized URL fields on save (regression: sanitized URLs must not overwrite stored authenticated URLs)", async () => {
+    // /model/info returns every URL-valued infra field with embedded
+    // credentials scrubbed (https://user:pass@host -> https://host), not just
+    // api_base. The form loads those sanitized values; submitting them on
+    // every save would replace the stored authenticated URLs and break
+    // subsequent requests. None of them may be sent unless the user actually
+    // edited the field (only api_base has a dedicated form field today).
     const sanitizedModelData = {
       ...defaultModelData,
       litellm_params: {
         model: "openai/gpt-4o",
         api_base: "https://example-gw.internal/v1",
+        base_url: "https://example-gw2.internal/v1",
+        aws_bedrock_runtime_endpoint: "https://bedrock.internal/v1",
         custom_llm_provider: "openai",
         rpm: 100,
       },
@@ -717,7 +720,7 @@ describe("ModelInfoView", () => {
       expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
     });
 
-    // Change an unrelated field (RPM) and save; api_base must not be in the payload.
+    // Change an unrelated field (RPM) and save; no sanitized URL may be in the payload.
     const rpmInput = screen.getByPlaceholderText("Enter RPM");
     await user.clear(rpmInput);
     await user.type(rpmInput, "60");
@@ -730,6 +733,8 @@ describe("ModelInfoView", () => {
     const updatePayload = mockModelPatchUpdateCall.mock.calls[0][1];
     expect(Number(updatePayload.litellm_params.rpm)).toBe(60);
     expect(updatePayload.litellm_params).not.toHaveProperty("api_base");
+    expect(updatePayload.litellm_params).not.toHaveProperty("base_url");
+    expect(updatePayload.litellm_params).not.toHaveProperty("aws_bedrock_runtime_endpoint");
   });
 
   it("should display health check model field for wildcard models", async () => {
