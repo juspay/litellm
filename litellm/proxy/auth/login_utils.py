@@ -146,6 +146,7 @@ async def authenticate_user(
             LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
             LitellmUserRoles.INTERNAL_USER,
             LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+            LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
         ]
     ] = None
 

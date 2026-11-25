@@ -10,6 +10,7 @@ export const processSSOSettingsPayload = (formValues: Record<string, any>): Reco
     admin_viewer_teams,
     internal_user_teams,
     internal_viewer_teams,
+    internal_user_team_admin_teams,
     default_role,
     group_claim,
     use_role_mappings,
@@ -38,6 +39,7 @@ export const processSSOSettingsPayload = (formValues: Record<string, any>): Reco
     // Map default role display values to backend values
     const defaultRoleMapping: Record<string, string> = {
       internal_user_viewer: "internal_user_viewer",
+      internal_user_team_admin: "internal_user_team_admin",
       internal_user: "internal_user",
       proxy_admin_viewer: "proxy_admin_viewer",
       proxy_admin: "proxy_admin",
@@ -52,6 +54,7 @@ export const processSSOSettingsPayload = (formValues: Record<string, any>): Reco
         proxy_admin_viewer: splitTeams(admin_viewer_teams),
         internal_user: splitTeams(internal_user_teams),
         internal_user_viewer: splitTeams(internal_viewer_teams),
+        internal_user_team_admin: splitTeams(internal_user_team_admin_teams),
       },
     };
   }

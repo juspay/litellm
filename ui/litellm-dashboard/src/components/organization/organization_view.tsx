@@ -527,6 +527,11 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
             value: "internal_user_viewer",
             description: "Can only view their keys within organization.",
           },
+          {
+            label: "internal_user_team_admin",
+            value: "internal_user_team_admin",
+            description: "Can only view their keys within organization.",
+          },
         ]}
         defaultRole="internal_user"
       />
@@ -544,6 +549,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
             { label: "Org Admin", value: "org_admin" },
             { label: "Internal User", value: "internal_user" },
             { label: "Internal User Viewer", value: "internal_user_viewer" },
+            { label: "Internal User View Team Admin", value: "internal_user_team_admin" },
           ],
         }}
       />

@@ -62,6 +62,7 @@ const EditSSOSettingsModal: React.FC<EditSSOSettingsModalProps> = ({ isVisible, 
           admin_viewer_teams: joinTeams(roleMappings.roles?.proxy_admin_viewer),
           internal_user_teams: joinTeams(roleMappings.roles?.internal_user),
           internal_viewer_teams: joinTeams(roleMappings.roles?.internal_user_viewer),
+          internal_user_team_admin_teams: joinTeams(roleMappings.roles?.internal_user_team_admin),
         };
       }
 

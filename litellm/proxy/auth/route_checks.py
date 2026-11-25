@@ -347,6 +347,11 @@ class RouteChecks:
             allowed_routes=LiteLLMRoutes.internal_user_view_only_routes.value,
         ):
             pass
+        elif _user_role == LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN.value and RouteChecks.check_route_access(
+            route=route,
+            allowed_routes=LiteLLMRoutes.internal_user_view_only_routes.value,
+        ):
+            pass
         elif RouteChecks.check_route_access(
             route=route, allowed_routes=LiteLLMRoutes.self_managed_routes.value
         ):  # routes that manage their own allowed/disallowed logic

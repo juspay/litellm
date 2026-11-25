@@ -226,6 +226,7 @@ const BaseSSOSettingsForm: React.FC<BaseSSOSettingsFormProps> = ({ form, onFormS
                 <Form.Item label="Default Role" name="default_role" initialValue="Internal User">
                   <Select>
                     <Select.Option value="internal_user_viewer">Internal Viewer</Select.Option>
+                    <Select.Option value="internal_user_team_admin">Internal User View Team Admin</Select.Option>
                     <Select.Option value="internal_user">Internal User</Select.Option>
                     <Select.Option value="proxy_admin_viewer">Admin Viewer</Select.Option>
                     <Select.Option value="proxy_admin">Proxy Admin</Select.Option>
@@ -245,6 +246,10 @@ const BaseSSOSettingsForm: React.FC<BaseSSOSettingsFormProps> = ({ form, onFormS
                 </Form.Item>
 
                 <Form.Item label="Internal Viewer Teams" name="internal_viewer_teams">
+                  <TextInput />
+                </Form.Item>
+
+                <Form.Item label="Internal User View Team Admin Teams" name="internal_user_team_admin_teams">
                   <TextInput />
                 </Form.Item>
               </>
