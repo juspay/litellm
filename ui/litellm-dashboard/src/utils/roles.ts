@@ -10,7 +10,7 @@ export const internalUserRoles = [
   "Internal Viewer",
   "internal_user",
   "internal_user_viewer",
-  "internal_user_team_admin",
+  "internal_user__view_team_admin",
 ];
 export const rolesAllowedToSeeUsage = ["Admin", "Admin Viewer", "Internal User", "Internal Viewer"];
 export const rolesWithWriteAccess = ["Internal User", "Admin", "proxy_admin"];
@@ -65,7 +65,7 @@ export const formatUserRole = (userRole: string): string => {
     case "internal_user_viewer":
     case "internal_viewer": // TODO:remove if deprecated
       return "Internal Viewer";
-    case "internal_user_team_admin":
+    case "internal_user__view_team_admin":
       return "Internal User View Team Admin";
     case "app_user":
       return "App User";

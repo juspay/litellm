@@ -123,7 +123,7 @@ class LitellmUserRoles(str, enum.Enum):
     # Internal User Roles
     INTERNAL_USER = "internal_user"
     INTERNAL_USER_VIEW_ONLY = "internal_user_viewer"
-    INTERNAL_USER_TEAM_ADMIN = "internal_user_team_admin"
+    INTERNAL_USER_VIEW_TEAM_ADMIN = "internal_user__view_team_admin"
 
     # Team Roles
     TEAM = "team"
@@ -147,7 +147,7 @@ class LitellmUserRoles(str, enum.Enum):
             "proxy_admin_viewer": "view all keys, view all spend",
             "internal_user": "view/create/delete their own keys, view their own spend",
             "internal_user_viewer": "view their own keys, view their own spend",
-            "internal_user_team_admin": "view their own keys, view their own spend",
+            "internal_user__view_team_admin": "view their own keys, view their own spend",
             "team": "team scope used for JWT auth",
             "customer": "customer",
         }
@@ -163,7 +163,7 @@ class LitellmUserRoles(str, enum.Enum):
             "proxy_admin_viewer": "Admin (View Only)",
             "internal_user": "Internal User (Create/Delete/View)",
             "internal_user_viewer": "Internal User (View Only)",
-            "internal_user_team_admin": "Internal User View Team Admin",
+            "internal_user__view_team_admin": "Internal User View Team Admin",
             "team": "Team",
             "customer": "Customer",
         }
@@ -171,11 +171,11 @@ class LitellmUserRoles(str, enum.Enum):
 
     @property
     def is_internal_user_role(self) -> bool:
-        """returns true if this role is an `internal_user`, `internal_user_viewer` or `internal_user_team_admin` role"""
+        """returns true if this role is an `internal_user`, `internal_user_viewer` or `internal_user__view_team_admin` role"""
         return self.value in [
             self.INTERNAL_USER,
             self.INTERNAL_USER_VIEW_ONLY,
-            self.INTERNAL_USER_TEAM_ADMIN,
+            self.INTERNAL_USER_VIEW_TEAM_ADMIN,
         ]
 
 
@@ -1543,7 +1543,7 @@ class NewUserRequest(GenerateRequestBase):
             LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
             LitellmUserRoles.INTERNAL_USER,
             LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-            LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
+            LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
         ]
     ] = None
     teams: Optional[Union[List[str], List[NewUserRequestTeam]]] = None
@@ -1576,7 +1576,7 @@ class NewUserResponse(GenerateKeyResponse):
             LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
             LitellmUserRoles.INTERNAL_USER,
             LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-            LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
+            LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
         ]
     ] = None
     teams: Optional[list] = None
@@ -1597,7 +1597,7 @@ class UpdateUserRequestNoUserIDorEmail(GenerateRequestBase):  # shared with Bulk
             LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
             LitellmUserRoles.INTERNAL_USER,
             LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-            LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
+            LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
         ]
     ] = None
     max_budget: Optional[float] = None
@@ -1732,7 +1732,7 @@ class OrgMember(MemberBase):
         LitellmUserRoles.ORG_ADMIN,
         LitellmUserRoles.INTERNAL_USER,
         LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-        LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
+        LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
     ]
 
 
@@ -3652,7 +3652,7 @@ ROLES_WITHIN_ORG = [
     LitellmUserRoles.ORG_ADMIN,
     LitellmUserRoles.INTERNAL_USER,
     LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-    LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
+    LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
 ]
 
 
@@ -3824,7 +3824,7 @@ class UserManagementEndpointParamDocStringEnums(str, enum.Enum):
     teams_doc_str = "Optional[list] - specify a list of team id's a user belongs to."
     user_email_doc_str = "Optional[str] - Specify a user email."
     send_invite_email_doc_str = "Optional[bool] - Specify if an invite email should be sent."
-    user_role_doc_str = """Optional[str] - Specify a user role - "proxy_admin", "proxy_admin_viewer", "internal_user", "internal_user_viewer", "internal_user_team_admin", "team", "customer". Info about each role here: `https://github.com/BerriAI/litellm/litellm/proxy/_types.py#L20`"""
+    user_role_doc_str = """Optional[str] - Specify a user role - "proxy_admin", "proxy_admin_viewer", "internal_user", "internal_user_viewer", "internal_user__view_team_admin", "team", "customer". Info about each role here: `https://github.com/BerriAI/litellm/litellm/proxy/_types.py#L20`"""
     max_budget_doc_str = """Optional[float] - Specify max budget for a given user."""
     budget_duration_doc_str = """Optional[str] - Budget is reset at the end of specified duration. If not set, budget is never reset. You can set duration as seconds ("30s"), minutes ("30m"), hours ("30h"), days ("30d"), months ("1mo")."""
     models_doc_str = (

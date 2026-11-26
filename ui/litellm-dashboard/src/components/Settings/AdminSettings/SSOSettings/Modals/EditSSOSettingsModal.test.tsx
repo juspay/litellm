@@ -438,7 +438,7 @@ describe("EditSSOSettingsModal", () => {
             admin_viewer_teams: "viewer-group",
             internal_user_teams: "user-group",
             internal_viewer_teams: "readonly-group",
-            internal_user_team_admin_teams: "",
+            internal_user__view_team_admin_teams: "",
           });
         });
       });
@@ -467,7 +467,7 @@ describe("EditSSOSettingsModal", () => {
             admin_viewer_teams: "",
             internal_user_teams: "user-group",
             internal_viewer_teams: "",
-            internal_user_team_admin_teams: "",
+            internal_user__view_team_admin_teams: "",
           });
         });
       });
@@ -584,7 +584,7 @@ describe("EditSSOSettingsModal", () => {
           admin_viewer_teams: "",
           internal_user_teams: "",
           internal_viewer_teams: "",
-          internal_user_team_admin_teams: "",
+          internal_user__view_team_admin_teams: "",
         });
       });
     });
@@ -665,7 +665,7 @@ describe("EditSSOSettingsModal", () => {
           admin_viewer_teams: "",
           internal_user_teams: "",
           internal_viewer_teams: "",
-          internal_user_team_admin_teams: "",
+          internal_user__view_team_admin_teams: "",
           use_team_mappings: true,
           team_ids_jwt_field: "teams",
         });

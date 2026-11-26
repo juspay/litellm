@@ -37,7 +37,7 @@ export interface RoleMappings {
   default_role:
     | "internal_user"
     | "internal_user_viewer"
-    | "internal_user_team_admin"
+    | "internal_user__view_team_admin"
     | "proxy_admin"
     | "proxy_admin_viewer";
   roles: {

@@ -476,11 +476,11 @@ async def test_org_admin_create_user_team_wrong_org_permissions(prisma_client):
         ("/team/delete", LitellmUserRoles.INTERNAL_USER_VIEW_ONLY, False),
         ("/team/update", LitellmUserRoles.INTERNAL_USER_VIEW_ONLY, False),
         # Internal User Team Admin (view-only parity with Internal User Viewer)
-        ("/key/generate", LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN, False),
-        ("/key/delete", LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN, False),
-        ("/team/new", LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN, False),
-        ("/team/update", LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN, False),
-        ("/spend/logs", LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN, True),
+        ("/key/generate", LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN, False),
+        ("/key/delete", LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN, False),
+        ("/team/new", LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN, False),
+        ("/team/update", LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN, False),
+        ("/spend/logs", LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN, True),
         # Proxy Admin Viewer
         ("/global/spend/logs", LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY, True),
         ("/key/delete", LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY, False),

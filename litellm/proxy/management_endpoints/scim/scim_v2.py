@@ -253,7 +253,7 @@ ScimUserRole = Literal[
     LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
     LitellmUserRoles.INTERNAL_USER,
     LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-    LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
+    LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
 ]
 
 
@@ -566,7 +566,7 @@ async def _create_user_if_not_exists(user_id: str, created_via: str = "scim_grou
                 LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
                 LitellmUserRoles.INTERNAL_USER,
                 LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-                LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN,
+                LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
             ]
         ] = LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
         if litellm.default_internal_user_params:

@@ -159,7 +159,7 @@ const SSOModals: React.FC<SSOModalsProps> = ({
                 admin_viewer_teams: joinTeams(roleMappings.roles?.proxy_admin_viewer),
                 internal_user_teams: joinTeams(roleMappings.roles?.internal_user),
                 internal_viewer_teams: joinTeams(roleMappings.roles?.internal_user_viewer),
-                internal_user_team_admin_teams: joinTeams(roleMappings.roles?.internal_user_team_admin),
+                internal_user__view_team_admin_teams: joinTeams(roleMappings.roles?.internal_user__view_team_admin),
               };
             }
 
@@ -200,7 +200,7 @@ const SSOModals: React.FC<SSOModalsProps> = ({
         admin_viewer_teams,
         internal_user_teams,
         internal_viewer_teams,
-        internal_user_team_admin_teams,
+        internal_user__view_team_admin_teams,
         default_role,
         group_claim,
         use_role_mappings,
@@ -225,7 +225,7 @@ const SSOModals: React.FC<SSOModalsProps> = ({
         // Map default role display values to backend values
         const defaultRoleMapping: Record<string, string> = {
           internal_user_viewer: "internal_user_viewer",
-          internal_user_team_admin: "internal_user_team_admin",
+          internal_user__view_team_admin: "internal_user__view_team_admin",
           internal_user: "internal_user",
           proxy_admin_viewer: "proxy_admin_viewer",
           proxy_admin: "proxy_admin",
@@ -240,7 +240,7 @@ const SSOModals: React.FC<SSOModalsProps> = ({
             proxy_admin_viewer: splitTeams(admin_viewer_teams),
             internal_user: splitTeams(internal_user_teams),
             internal_user_viewer: splitTeams(internal_viewer_teams),
-            internal_user_team_admin: splitTeams(internal_user_team_admin_teams),
+            internal_user__view_team_admin: splitTeams(internal_user__view_team_admin_teams),
           },
         };
       }
@@ -450,7 +450,7 @@ const SSOModals: React.FC<SSOModalsProps> = ({
                     <Form.Item label="Default Role" name="default_role" initialValue="Internal User">
                       <Select>
                         <Select.Option value="internal_user_viewer">Internal Viewer</Select.Option>
-                        <Select.Option value="internal_user_team_admin">Internal User View Team Admin</Select.Option>
+                        <Select.Option value="internal_user__view_team_admin">Internal User View Team Admin</Select.Option>
                         <Select.Option value="internal_user">Internal User</Select.Option>
                         <Select.Option value="proxy_admin_viewer">Admin Viewer</Select.Option>
                         <Select.Option value="proxy_admin">Proxy Admin</Select.Option>
@@ -473,7 +473,7 @@ const SSOModals: React.FC<SSOModalsProps> = ({
                       <TextInput />
                     </Form.Item>
 
-                    <Form.Item label="Internal User View Team Admin Teams" name="internal_user_team_admin_teams">
+                    <Form.Item label="Internal User View Team Admin Teams" name="internal_user__view_team_admin_teams">
                       <TextInput />
                     </Form.Item>
                   </>

@@ -455,10 +455,10 @@ async def rag_ingest(
         # Parse request
         ingest_options, file_data, file_url, file_id = await parse_rag_ingest_request(request)
 
-        # INTERNAL_USER_VIEW_ONLY / INTERNAL_USER_TEAM_ADMIN can ingest to existing vector stores only
+        # INTERNAL_USER_VIEW_ONLY / INTERNAL_USER_VIEW_TEAM_ADMIN can ingest to existing vector stores only
         if user_api_key_dict.user_role in (
             LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value,
-            LitellmUserRoles.INTERNAL_USER_TEAM_ADMIN.value,
+            LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN.value,
         ) and not ingest_options.get("vector_store", {}).get("vector_store_id"):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
