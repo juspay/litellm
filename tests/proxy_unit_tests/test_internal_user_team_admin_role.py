@@ -6,11 +6,13 @@ permissions identical to `INTERNAL_USER_VIEW_ONLY`. These tests pin that
 contract without requiring a database: they exercise the enum property,
 the route gate, and the spend-log view helper directly.
 
-Mutation targets that would fail a test below:
-- removing INTERNAL_USER_VIEW_TEAM_ADMIN from `is_internal_user_role`
-- wiring the route gate to `internal_user_routes` (write routes) instead of
-  `internal_user_view_only_routes`
-- omitting the route-checks elif branch for the new role entirely
+Every test below fails when a specific part of the feature is broken:
+- test_is_internal_user_role_true: remove the role from is_internal_user_role
+- test_can_user_view_spend_log_true_for_team_admin: same removal
+- test_dispatch_grants_view_route_for_team_admin: remove the role from the
+  route_checks elif, or wire it to internal_user_routes (write routes)
+- test_dispatch_denies_write_route_for_team_admin: wire the role to
+  internal_user_routes instead of internal_user_view_only_routes
 """
 
 import os
@@ -26,7 +28,6 @@ from fastapi import Request
 from starlette.datastructures import URL
 
 from litellm.proxy._types import (
-    LiteLLMRoutes,
     LitellmUserRoles,
     UserAPIKeyAuth,
 )
@@ -36,16 +37,8 @@ from litellm.proxy.spend_tracking.spend_management_endpoints import (
 )
 
 
-VIEW_ONLY_ROUTES = LiteLLMRoutes.internal_user_view_only_routes.value
-WRITE_ROUTES = LiteLLMRoutes.internal_user_routes.value
-
-
 VIEW_ROUTE_SAMPLE = "/spend/logs"
 WRITE_ROUTE_SAMPLE = "/key/generate"
-
-
-def _route_in_list(route: str, allowed_routes) -> bool:
-    return RouteChecks.check_route_access(route=route, allowed_routes=allowed_routes)
 
 
 def test_role_value_and_label():
@@ -64,52 +57,6 @@ def test_not_an_admin_role():
         LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
     )
     assert LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN not in admin_view_roles
-
-
-def test_view_only_route_access_matches_internal_user_viewer():
-    """INTERNAL_USER_VIEW_TEAM_ADMIN must be granted the same routes as
-    INTERNAL_USER_VIEW_ONLY via the internal_user_view_only_routes list."""
-    assert _route_in_list(VIEW_ROUTE_SAMPLE, VIEW_ONLY_ROUTES) is True
-
-
-@pytest.mark.parametrize(
-    "route,expected",
-    [
-        (VIEW_ROUTE_SAMPLE, True),
-        (WRITE_ROUTE_SAMPLE, False),
-        ("/team/new", False),
-        ("/team/delete", False),
-        ("/team/update", False),
-        ("/global/spend/logs", False),
-    ],
-)
-def test_route_access_parity_with_internal_user_viewer(route: str, expected: bool):
-    """Every route reachable by INTERNAL_USER_VIEW_ONLY must be reachable by
-    INTERNAL_USER_VIEW_TEAM_ADMIN, and no write/admin route may be."""
-    team_admin_access = _route_in_list(route, VIEW_ONLY_ROUTES)
-    viewer_access = _route_in_list(route, VIEW_ONLY_ROUTES)
-    assert team_admin_access == viewer_access == expected
-
-
-def test_team_admin_not_granted_write_routes():
-    """The write/internal_user_routes list contains key-management routes.
-    INTERNAL_USER_VIEW_TEAM_ADMIN must NOT be granted those (it is view-only)."""
-    assert _route_in_list(WRITE_ROUTE_SAMPLE, WRITE_ROUTES) is True
-    team_admin_allowed = RouteChecks.check_route_access(
-        route=WRITE_ROUTE_SAMPLE,
-        allowed_routes=VIEW_ONLY_ROUTES,
-    )
-    assert team_admin_allowed is False
-
-
-def test_route_checks_dispatch_grants_view_route():
-    """End-to-end-ish: the RouteChecks minified-route dispatch path used by
-    user_api_key_auth must allow a view route for INTERNAL_USER_VIEW_TEAM_ADMIN."""
-    allowed = RouteChecks.check_route_access(
-        route=VIEW_ROUTE_SAMPLE,
-        allowed_routes=LiteLLMRoutes.internal_user_view_only_routes.value,
-    )
-    assert allowed is True
 
 
 def test_can_user_view_spend_log_true_for_team_admin():
@@ -145,9 +92,8 @@ def _build_request(route: str) -> Request:
 @pytest.mark.asyncio
 async def test_dispatch_grants_view_route_for_team_admin():
     """The role-dispatch path in non_proxy_admin_allowed_routes_check must
-    grant a view-only route to INTERNAL_USER_VIEW_TEAM_ADMIN. If the elif branch
-    for the new role is removed, this falls through to the admin-only
-    exception and raises."""
+    grant a view-only route to INTERNAL_USER_VIEW_TEAM_ADMIN. If the role is
+    removed from the elif, this falls through to the admin-only exception."""
     valid_token = UserAPIKeyAuth(
         user_role=LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
         user_id="team-admin-1",
@@ -166,7 +112,8 @@ async def test_dispatch_grants_view_route_for_team_admin():
 @pytest.mark.asyncio
 async def test_dispatch_denies_write_route_for_team_admin():
     """INTERNAL_USER_VIEW_TEAM_ADMIN must NOT be able to reach a write route
-    (/key/generate). The dispatch must raise HTTPException(403)."""
+    (/key/generate). If the role is wired to internal_user_routes instead of
+    internal_user_view_only_routes, this stops raising and the test fails."""
     valid_token = UserAPIKeyAuth(
         user_role=LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
         user_id="team-admin-1",

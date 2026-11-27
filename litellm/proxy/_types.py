@@ -4315,6 +4315,7 @@ class DefaultInternalUserParams(LiteLLMPydanticObjectBase):
         Literal[
             LitellmUserRoles.INTERNAL_USER,
             LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+            LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
             LitellmUserRoles.PROXY_ADMIN,
             LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
         ]

@@ -463,7 +463,7 @@ async def rag_ingest(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
-                    "error": "internal_user_viewer role can only ingest files to an existing vector store. "
+                    "error": "your role can only ingest files to an existing vector store. "
                     "Provide 'vector_store_id' in ingest_options.vector_store."
                 },
             )

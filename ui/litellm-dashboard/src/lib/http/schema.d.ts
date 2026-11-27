@@ -23775,7 +23775,7 @@ export interface components {
              * @description Default role assigned to new users created
              * @default internal_user_viewer
              */
-            user_role: ("internal_user" | "internal_user_viewer" | "proxy_admin" | "proxy_admin_viewer") | null;
+            user_role: ("internal_user" | "internal_user_viewer" | "internal_user__view_team_admin" | "proxy_admin" | "proxy_admin_viewer") | null;
         };
         /**
          * DefaultTeamSSOParams
