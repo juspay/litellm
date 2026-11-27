@@ -128,4 +128,3 @@ async def test_dispatch_denies_write_route_for_team_admin():
             valid_token=valid_token,
             request_data={},
         )
-
