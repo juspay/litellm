@@ -34,7 +34,12 @@ export interface SSOSettingsValues {
 export interface RoleMappings {
   provider: string;
   group_claim: string;
-  default_role: "internal_user" | "internal_user_viewer" | "proxy_admin" | "proxy_admin_viewer";
+  default_role:
+    | "internal_user"
+    | "internal_user_viewer"
+    | "internal_user__view_team_admin"
+    | "proxy_admin"
+    | "proxy_admin_viewer";
   roles: {
     [key: string]: string[];
   };

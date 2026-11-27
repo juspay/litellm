@@ -404,6 +404,7 @@ describe("SSOModals", () => {
             proxy_admin_viewer: [],
             internal_user: [],
             internal_user_viewer: [],
+            internal_user__view_team_admin: [],
           },
         },
       });

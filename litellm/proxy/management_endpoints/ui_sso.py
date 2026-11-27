@@ -861,6 +861,7 @@ def determine_role_from_groups(
     - proxy_admin_viewer
     - internal_user
     - internal_user_viewer
+    - internal_user__view_team_admin
 
     Args:
         user_groups: List of group names from the SSO token
@@ -879,6 +880,7 @@ def determine_role_from_groups(
         LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
         LitellmUserRoles.INTERNAL_USER,
         LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+        LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN,
     ]
 
     # Convert user_groups to a set for efficient lookup

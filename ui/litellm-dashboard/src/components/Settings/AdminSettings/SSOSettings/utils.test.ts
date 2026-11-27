@@ -58,6 +58,7 @@ describe("processSSOSettingsPayload", () => {
         admin_viewer_teams: "viewer1, viewer2, viewer3",
         internal_user_teams: "user1",
         internal_viewer_teams: "internal_viewer1, internal_viewer2",
+        internal_user__view_team_admin_teams: "ta1, ta2",
         default_role: "proxy_admin",
         group_claim: "groups",
         use_role_mappings: true,
@@ -77,6 +78,7 @@ describe("processSSOSettingsPayload", () => {
           proxy_admin_viewer: ["viewer1", "viewer2", "viewer3"],
           internal_user: ["user1"],
           internal_user_viewer: ["internal_viewer1", "internal_viewer2"],
+          internal_user__view_team_admin: ["ta1", "ta2"],
         },
       });
     });
@@ -87,6 +89,7 @@ describe("processSSOSettingsPayload", () => {
         admin_viewer_teams: "",
         internal_user_teams: "",
         internal_viewer_teams: "",
+        internal_user__view_team_admin_teams: "",
         default_role: "internal_user",
         group_claim: "groups",
         use_role_mappings: true,
@@ -100,6 +103,7 @@ describe("processSSOSettingsPayload", () => {
         proxy_admin_viewer: [],
         internal_user: [],
         internal_user_viewer: [],
+        internal_user__view_team_admin: [],
       });
     });
 
@@ -118,6 +122,7 @@ describe("processSSOSettingsPayload", () => {
         proxy_admin_viewer: [],
         internal_user: [],
         internal_user_viewer: [],
+        internal_user__view_team_admin: [],
       });
     });
 
@@ -127,6 +132,7 @@ describe("processSSOSettingsPayload", () => {
         admin_viewer_teams: ", , ,",
         internal_user_teams: "user1, , user2",
         internal_viewer_teams: "viewer1,   ,viewer2",
+        internal_user__view_team_admin_teams: "  ,  ",
         default_role: "proxy_admin_viewer",
         group_claim: "groups",
         use_role_mappings: true,
@@ -140,6 +146,7 @@ describe("processSSOSettingsPayload", () => {
         proxy_admin_viewer: [],
         internal_user: ["user1", "user2"],
         internal_user_viewer: ["viewer1", "viewer2"],
+        internal_user__view_team_admin: [],
       });
     });
 
@@ -149,6 +156,7 @@ describe("processSSOSettingsPayload", () => {
         admin_viewer_teams: " viewer1 ",
         internal_user_teams: "  user1  ,  user2  ",
         internal_viewer_teams: "viewer1,viewer2",
+        internal_user__view_team_admin_teams: "  ta1  ,  ta2  ",
         default_role: "internal_user",
         group_claim: "groups",
         use_role_mappings: true,
@@ -162,6 +170,7 @@ describe("processSSOSettingsPayload", () => {
         proxy_admin_viewer: ["viewer1"],
         internal_user: ["user1", "user2"],
         internal_user_viewer: ["viewer1", "viewer2"],
+        internal_user__view_team_admin: ["ta1", "ta2"],
       });
     });
 

@@ -389,10 +389,7 @@ async def get_global_activity(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
 
-        if (
-            user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
-            or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
-        ):
+        if user_api_key_dict.user_role is not None and user_api_key_dict.user_role.is_internal_user_role:
             db_response = await get_global_activity_internal_user(user_api_key_dict, start_date_obj, end_date_obj)
         else:
             sql_query = """
@@ -551,10 +548,7 @@ async def get_global_activity_model(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
 
-        if (
-            user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
-            or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
-        ):
+        if user_api_key_dict.user_role is not None and user_api_key_dict.user_role.is_internal_user_role:
             db_response = await get_global_activity_model_internal_user(user_api_key_dict, start_date_obj, end_date_obj)
         else:
             sql_query = """
@@ -927,10 +921,7 @@ async def get_global_spend_provider(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
 
-        if (
-            user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
-            or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
-        ):
+        if user_api_key_dict.user_role is not None and user_api_key_dict.user_role.is_internal_user_role:
             user_id = user_api_key_dict.user_id
             if user_id is None:
                 raise HTTPException(status_code=400, detail={"error": "No user_id found"})
@@ -2954,10 +2945,7 @@ async def view_spend_logs(
     """
     from litellm.proxy.proxy_server import prisma_client
 
-    if (
-        user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
-        or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
-    ):
+    if user_api_key_dict.user_role is not None and user_api_key_dict.user_role.is_internal_user_role:
         user_id = user_api_key_dict.user_id
 
     try:
@@ -3299,10 +3287,7 @@ async def global_spend_logs(
                 code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        if (
-            user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
-            or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
-        ):
+        if user_api_key_dict.user_role is not None and user_api_key_dict.user_role.is_internal_user_role:
             response = await global_spend_for_internal_user(api_key=api_key, user_api_key_dict=user_api_key_dict)
 
             return response
@@ -3463,10 +3448,7 @@ async def global_spend_keys(
     """
     from litellm.proxy.proxy_server import prisma_client
 
-    if (
-        user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
-        or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
-    ):
+    if user_api_key_dict.user_role is not None and user_api_key_dict.user_role.is_internal_user_role:
         response = await global_spend_key_internal_user(user_api_key_dict=user_api_key_dict)
 
         return response
@@ -3712,10 +3694,7 @@ async def global_spend_models(
     """
     from litellm.proxy.proxy_server import prisma_client
 
-    if (
-        user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
-        or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
-    ):
+    if user_api_key_dict.user_role is not None and user_api_key_dict.user_role.is_internal_user_role:
         response = await global_spend_models_internal_user(user_api_key_dict=user_api_key_dict, limit=limit)
         return response
 
@@ -4210,14 +4189,7 @@ def _can_user_view_spend_log(user_api_key_dict: UserAPIKeyAuth) -> bool:
     """
     user_role = user_api_key_dict.user_role
     user_id = user_api_key_dict.user_id
-    return (
-        user_role
-        in (
-            LitellmUserRoles.INTERNAL_USER,
-            LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
-        )
-        and user_id is not None
-    )
+    return user_role is not None and user_role.is_internal_user_role and user_id is not None
 
 
 async def _assert_user_can_view_request_id(

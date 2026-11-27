@@ -342,7 +342,10 @@ class RouteChecks:
             route=route, allowed_routes=LiteLLMRoutes.org_admin_allowed_routes.value
         ):
             pass
-        elif _user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value and RouteChecks.check_route_access(
+        elif _user_role in (
+            LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value,
+            LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN.value,
+        ) and RouteChecks.check_route_access(
             route=route,
             allowed_routes=LiteLLMRoutes.internal_user_view_only_routes.value,
         ):

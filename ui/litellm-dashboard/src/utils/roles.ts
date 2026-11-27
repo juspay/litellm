@@ -5,7 +5,13 @@ export const old_admin_roles = ["Admin", "Admin Viewer"];
 export const v2_admin_role_names = ["proxy_admin", "proxy_admin_viewer", "org_admin"];
 export const all_admin_roles = [...old_admin_roles, ...v2_admin_role_names];
 
-export const internalUserRoles = ["Internal User", "Internal Viewer", "internal_user", "internal_user_viewer"];
+export const internalUserRoles = [
+  "Internal User",
+  "Internal Viewer",
+  "internal_user",
+  "internal_user_viewer",
+  "internal_user__view_team_admin",
+];
 export const rolesAllowedToSeeUsage = ["Admin", "Admin Viewer", "Internal User", "Internal Viewer"];
 export const rolesWithWriteAccess = ["Internal User", "Admin", "proxy_admin"];
 // Admin-tier read parity: Admin Viewer sees Models + Endpoints, Agents, and
@@ -59,6 +65,8 @@ export const formatUserRole = (userRole: string): string => {
     case "internal_user_viewer":
     case "internal_viewer": // TODO:remove if deprecated
       return "Internal Viewer";
+    case "internal_user__view_team_admin":
+      return "Internal User View Team Admin";
     case "app_user":
       return "App User";
     default:

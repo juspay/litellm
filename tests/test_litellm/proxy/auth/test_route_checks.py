@@ -2737,6 +2737,7 @@ def test_internal_users_can_access_scoped_tag_usage_routes(user_role, route):
     [
         LitellmUserRoles.INTERNAL_USER.value,
         LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value,
+        LitellmUserRoles.INTERNAL_USER_VIEW_TEAM_ADMIN.value,
         LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
     ],
 )
